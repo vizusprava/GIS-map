@@ -76,7 +76,11 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const rastersRef = useRef<Map<string, { raster: GeoRaster; layer: Cesium.ImageryLayer; rect: Cesium.Rectangle }>>(new Map())
   const rasterFileRef = useRef<HTMLInputElement>(null)
   const googleRef = useRef<Cesium.Cesium3DTileset | null>(null)
+  // rozpracované načítání Google dlaždic — než dojde ze sítě, je googleRef ještě null, takže
+  // rychlé přepnutí tam a zpět by jinak spustilo druhé stahování a první tileset osiřel ve scéně
+  const googlePendingRef = useRef<Promise<Cesium.Cesium3DTileset | null> | null>(null)
   const osmRef = useRef<Cesium.Cesium3DTileset | null>(null)
+  const osmPendingRef = useRef<Promise<Cesium.Cesium3DTileset | null> | null>(null)
   const modelsRef = useRef<Map<string, ModelEntry>>(new Map())
   const selectedIdRef = useRef<string | null>(null)
   // multi-parcela: vybrané parcely (klíč = id parcely)
@@ -448,6 +452,12 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       setViewerReady(false)
       for (const e of modelsRef.current.values()) URL.revokeObjectURL(e.url)
       modelsRef.current.clear()
+      // Tilesety patřily viewru, který se za chvíli zničí. Kdyby reference přežily, `ensureGoogle`
+      // by je považovala za načtené a vrátila mrtvé objekty místo aby si řekla o nové —
+      // v novém viewru by se pak 3D dlaždice nezobrazily vůbec a nebylo by z čeho poznat proč.
+      googleRef.current = null; googlePendingRef.current = null
+      osmRef.current = null; osmPendingRef.current = null
+      splatRef.current = null
       if (!viewer.isDestroyed()) viewer.destroy()
     }
   }, [])
@@ -507,8 +517,14 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // líné vytvoření Google fotorealistických 3D dlaždic (přes ion token — vzhled Google Earth)
   async function ensureGoogle(viewer: Cesium.Viewer): Promise<Cesium.Cesium3DTileset | null> {
     if (googleRef.current) return googleRef.current
+    if (googlePendingRef.current) return googlePendingRef.current
+    googlePendingRef.current = (async () => {
     const ts = await Cesium.Cesium3DTileset.fromIonAssetId(GOOGLE_3D_ION_ASSET)
     if (viewer.isDestroyed()) return null
+    // Vzniká SKRYTÝ. Než dlaždice dorazí ze sítě, uživatel už může být zpátky na ortofotu —
+    // a Cesium má u nového tilesetu show=true, takže by se samy zjevily nad špatným podkladem.
+    // Viditelnost nastaví až applyGoogleAlpha() podle aktuálního stavu.
+    ts.show = false
     ts.enableCollision = true
     // ── ladění streamování/LOD, ať je „skákání" dlaždic klidnější (kompromis detail ↔ výkon/data) ──
     // Nižší SSE = jemnější dlaždice načtené dřív (i z dálky), takže přiblížení není tak skokové.
@@ -527,6 +543,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     updateExcavation() // kdyby byl model naimportovaný dřív, než se Google načetl
     applySection()     // aplikuj řez na čerstvě načtené dlaždice
     return ts
+    })()
+    try { return await googlePendingRef.current } finally { googlePendingRef.current = null }
   }
 
   // skryje mapu (ortofoto/topo + terén na globu i Google dlaždice) pod modely s maskou nebo uvnitř
@@ -890,11 +908,15 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     if (katastrRef.current) katastrRef.current.show = katastrOn
     v.scene.globe.show = google ? googleUnder !== 'none' : true // 'none' = čistě 3D, glóbus schovat
 
+    // Načítání dlaždic trvá vteřiny a `applyGoogleAlpha` níž si drží `base` z TOHOHLE průchodu.
+    // Bez téhle pojistky by doběhlé stahování zaplo dlaždice podle podkladu, který už neplatí.
+    let alive = true
+
     if (googleWanted) {
       setGoogleErr(null)
       setGoogleLoading(true)
       ensureGoogle(v)
-        .then(ts => { if (ts) { applyGoogleAlpha(); updateExcavation() } }) // po načtení nastav i ořez (g3d)
+        .then(ts => { if (alive && ts) { applyGoogleAlpha(); updateExcavation() } }) // po načtení nastav i ořez (g3d)
         .catch((e: unknown) => {
           console.error('Google 3D Tiles selhalo:', e)
           // Cesium RequestErrorEvent nese statusCode; podle něj poznáme, co je vážně špatně,
@@ -913,6 +935,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       googleRef.current.show = false
       googleRef.current.style = undefined
     }
+
+    return () => { alive = false }
   }, [base, ztmTier, katastrOn, googleUnder, parcelClip])
 
   // pozadí scény: hvězdy / přechod / plná barva. Řeší i barvu glóbu MIMO dostupná data
@@ -2424,20 +2448,26 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // OSM budovy (Cesium ion) — líné vytvoření + zap/vyp
   async function ensureOsm(viewer: Cesium.Viewer): Promise<Cesium.Cesium3DTileset | null> {
     if (osmRef.current) return osmRef.current
-    const ts = await Cesium.createOsmBuildingsAsync()
-    if (viewer.isDestroyed()) return null
-    viewer.scene.primitives.add(ts)
-    osmRef.current = ts
-    return ts
+    if (osmPendingRef.current) return osmPendingRef.current
+    osmPendingRef.current = (async () => {
+      const ts = await Cesium.createOsmBuildingsAsync()
+      if (viewer.isDestroyed()) return null
+      ts.show = false // stejně jako u Google: dorazí ze sítě až po vypnutí, ať se nezjeví samo
+      viewer.scene.primitives.add(ts)
+      osmRef.current = ts
+      return ts
+    })()
+    try { return await osmPendingRef.current } finally { osmPendingRef.current = null }
   }
 
   useEffect(() => {
     const v = viewerRef.current
     if (!v || v.isDestroyed()) return
+    let alive = true
     if (osmOn) {
       setOsmLoading(true)
       ensureOsm(v).then(ts => {
-        if (!ts) return
+        if (!alive || !ts) return
         // výškový posun podél „nahoru" (střed ČR) — aplikuje se při každém zapnutí (i po HMR)
         const c = Cesium.Cartesian3.fromDegrees(15.5, 49.8)
         const up = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(c, new Cesium.Cartesian3())
@@ -2447,6 +2477,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     } else if (osmRef.current) {
       osmRef.current.show = false
     }
+    return () => { alive = false }
   }, [osmOn])
 
   // Jen JEDEN zdroj výběru naráz: parcely (klik/oblast) × dlaždice × území. Při zapnutí jednoho
