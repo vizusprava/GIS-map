@@ -39,6 +39,7 @@ import {
   pairRasterFiles, loadGeoRaster, makeRasterView, disposeRasterSrc, CRS_IDS, CRS_LABELS,
   type GeoRaster, type CrsId,
 } from './worldRaster'
+import { MapSearch, type PlaceHit } from './mapSearch'
 import { makeDmrTerrain } from './terrain'
 import { fetchElevSampler } from './elevation'
 import { simplifyRingCapped, pointInRing, ringCentroid } from './rings'
@@ -225,7 +226,6 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [regionChoices, setRegionChoices] = useState<AdminUnit[]>([])
   const [regionName, setRegionName] = useState<string | null>(null)
   const [regionDim, setRegionDim] = useState(0.2) // viditelnost okolí (0 = černé, 1 = plné)
-  const [regionQuery, setRegionQuery] = useState('')
   const [regionParts, setRegionParts] = useState<AdminUnit[]>([]) // katastrální území vybrané obce
   const regionEntsRef = useRef<Cesium.Entity[]>([])
   const regionDimEntRef = useRef<Cesium.Entity | null>(null)
@@ -353,10 +353,11 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [selectedDistrict, setSelectedDistrict] = useState<string | null>(null)
   const districtsRef = useRef<Map<string, { name: string; color: Cesium.Color; rings: Cesium.Cartesian3[][]; ents: Cesium.Entity[]; prims: Cesium.Primitive[] }>>(new Map())
 
-  // vyhledávání
+  // vyhledávání (lišta nahoře uprostřed — území i místa naráz, viz mapSearch.tsx)
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
-  const [searchErr, setSearchErr] = useState<string | null>(null)
+  const [placeHits, setPlaceHits] = useState<PlaceHit[]>([])
+  const [searchOpen, setSearchOpen] = useState(false)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -687,7 +688,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       setRegionBusy(true)
       try {
         const units = await fetchAdminUnits(g.lon, g.lat)
-        setRegionParts([]); setRegionChoices(units)
+        setRegionParts([]); setRegionChoices(units); setPlaceHits([])
+        // výsledky klikem chodí do TÉŽE nabídky jako výsledky hledání — jedno místo, kde se vybírá
+        setSearchOpen(units.length > 0)
         if (!units.length) toast.info('Tady jsem žádné území nenašel')
       } catch (e) { console.error('Načtení území selhalo:', e); toast.error('Načtení území selhalo') }
       finally { setRegionBusy(false) }
@@ -764,39 +767,71 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     finally { setRegionBusy(false) }
   }
 
-  // vyhledání území podle názvu: nejdřív přímo v RÚIAN (kraj/okres/obec/k.ú.), Nominatim jako záloha
-  async function searchRegion(e: React.FormEvent) {
-    e.preventDefault()
-    const q = regionQuery.trim()
-    if (!q || regionBusy) return
-    setRegionBusy(true)
+  /** Název → správní jednotky z RÚIAN. Katastrální území jdou zvlášť, bývá jich na jeden dotaz moc. */
+  async function searchAdminUnits(q: string): Promise<{ units: AdminUnit[]; parts: AdminUnit[] }> {
+    const like = `UPPER(nazev) LIKE UPPER('%${q.replace(/'/g, "''")}%')`
+    const layers: [number, string][] = [[17, 'Kraj'], [15, 'Okres'], [12, 'Obec'], [7, 'k.ú.']]
+    const found: AdminUnit[] = []
+    for (const [layer, level] of layers) {
+      // Vrstvy se ptají nezávisle — když jedna vypadne, zbytek výsledků má pořád cenu ukázat.
+      try { for (const r of (await ruianQuery(layer, like, false)).slice(0, 12)) found.push({ level, name: r.nazev, kod: r.kod, layer }) } catch { /* přeskoč */ }
+    }
+    return { units: found.filter(u => u.level !== 'k.ú.'), parts: found.filter(u => u.level === 'k.ú.') }
+  }
+
+  /** Název → místa z geokodéru (jen ČR). Slouží čistě k přeletu, nic se tím nevybírá. */
+  async function searchPlaces(q: string): Promise<PlaceHit[]> {
     try {
-      const like = `UPPER(nazev) LIKE UPPER('%${q.replace(/'/g, "''")}%')`
-      const layers: [number, string][] = [[17, 'Kraj'], [15, 'Okres'], [12, 'Obec'], [7, 'k.ú.']]
-      const found: AdminUnit[] = []
-      for (const [layer, level] of layers) {
-        try { for (const r of (await ruianQuery(layer, like, false)).slice(0, 15)) found.push({ level, name: r.nazev, kod: r.kod, layer }) } catch { /* přeskoč */ }
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=cz&limit=5&q=${encodeURIComponent(q)}`
+      const data = await (await fetch(url, { headers: { 'Accept-Language': 'cs' } })).json() as
+        Array<{ display_name: string; lat: string; lon: string; boundingbox?: [string, string, string, string] }>
+      return data.map(h => ({
+        name: h.display_name,
+        lon: Number(h.lon),
+        lat: Number(h.lat),
+        bbox: h.boundingbox ? (h.boundingbox.map(Number) as [number, number, number, number]) : undefined,
+      }))
+    } catch { return [] } // geokodér je doplněk; když neodpoví, RÚIAN výsledky stačí
+  }
+
+  // Jedno hledání pro obojí. Dřív se uživatel musel dopředu rozhodnout, jestli chce „najít místo"
+  // (přelet) nebo „vybrat území" (výběr) — a psal do obou stejný název. Teď se ptáme jednou a
+  // obě sady výsledků nabídneme vedle sebe; co je co, rozliší skupina v nabídce.
+  async function runSearch() {
+    const q = query.trim()
+    if (!q || searching) return
+    setSearching(true)
+    setSearchOpen(true)
+    try {
+      // souběžně: RÚIAN je pomalejší (čtyři vrstvy za sebou), ať na něj geokodér nečeká
+      const [admin, places] = await Promise.all([searchAdminUnits(q), searchPlaces(q)])
+      setRegionChoices(admin.units)
+      setRegionParts(admin.parts)
+      setPlaceHits(places)
+      // právě jedna možnost → rovnou ji zobraz, ať se nekliká do nabídky o jedné položce
+      if (admin.units.length === 1 && !admin.parts.length && !places.length) {
+        setSearchOpen(false)
+        await isolateRegion(admin.units[0])
       }
-      if (found.length) {
-        const parts = found.filter(u => u.level === 'k.ú.')
-        const choices = found.filter(u => u.level !== 'k.ú.')
-        setRegionChoices(choices); setRegionParts(parts)
-        if (found.length === 1) await isolateRegion(found[0]) // jediná shoda → rovnou zobraz
-        return
-      }
-      // záloha: geokód (Nominatim) → bod → jednotky v tom bodě
-      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=cz&limit=1&q=${encodeURIComponent(q)}`
-      const data = await (await fetch(url, { headers: { 'Accept-Language': 'cs' } })).json() as Array<{ lat: string; lon: string }>
-      const hit = data[0]
-      if (!hit) { toast.info('Nic nenalezeno'); return }
-      const lon = Number(hit.lon), lat = Number(hit.lat)
-      const v = viewerRef.current
-      if (v && !v.isDestroyed()) v.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, lat, 20000) })
-      const units = await fetchAdminUnits(lon, lat)
-      setRegionParts([]); setRegionChoices(units)
-      if (!units.length) toast.info('Pro to místo jsem nenašel správní jednotky')
-    } catch (err) { console.error('Vyhledání území selhalo:', err); toast.error('Vyhledání území selhalo') }
-    finally { setRegionBusy(false) }
+    } catch (err) {
+      console.error('Vyhledávání selhalo:', err)
+      toast.error('Vyhledávání selhalo')
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  /** Přelet na místo z geokodéru — na obálku, když ji nabídne, jinak na bod z 10 km. */
+  function flyToPlace(h: PlaceHit) {
+    const v = viewerRef.current
+    if (!v || v.isDestroyed()) return
+    setSearchOpen(false)
+    if (h.bbox) {
+      const [s, n, w, e] = h.bbox
+      v.camera.flyTo({ destination: Cesium.Rectangle.fromDegrees(w, s, e, n) })
+    } else {
+      v.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(h.lon, h.lat, 10000) })
+    }
   }
 
   // počká, až se dokreslí terén i Google dlaždice (nebo timeout) — ať snímek není rozmazaný/nedočtený
@@ -3590,32 +3625,6 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     setPlacement(p => p ? { ...p, ...part } : p)
   }
 
-  async function runSearch(e: React.FormEvent) {
-    e.preventDefault()
-    const q = query.trim()
-    if (!q || searching) return
-    setSearching(true)
-    setSearchErr(null)
-    try {
-      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=cz&limit=1&q=${encodeURIComponent(q)}`
-      const res = await fetch(url, { headers: { 'Accept-Language': 'cs' } })
-      const data = await res.json() as Array<{ lat: string; lon: string; boundingbox?: [string, string, string, string] }>
-      const hit = data[0]
-      const v = viewerRef.current
-      if (!hit || !v || v.isDestroyed()) { setSearchErr('Nenalezeno'); return }
-      if (hit.boundingbox) {
-        const [s, n, w, e2] = hit.boundingbox.map(Number)
-        v.camera.flyTo({ destination: Cesium.Rectangle.fromDegrees(w, s, e2, n) })
-      } else {
-        v.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(Number(hit.lon), Number(hit.lat), 10000) })
-      }
-    } catch {
-      setSearchErr('Chyba vyhledávání')
-    } finally {
-      setSearching(false)
-    }
-  }
-
   const activeView = camViews.find(cv => cv.id === activeViewId) ?? null
   // vysunuté jsou jen popisky patřící aktivnímu pohledu; bez pohledu nesvítí nic
   const visibleCallouts = new Set(presentOn && activeViewId ? callouts.filter(c => c.views.includes(activeViewId)).map(c => c.id) : [])
@@ -3639,8 +3648,30 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="absolute inset-0" />
+
+      <MapSearch
+        query={query}
+        onQuery={setQuery}
+        onSubmit={runSearch}
+        busy={searching || regionBusy}
+        units={regionChoices}
+        parts={regionParts}
+        places={placeHits}
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onOpen={() => setSearchOpen(true)}
+        onPickUnit={u => { setSearchOpen(false); isolateRegion(u) }}
+        onPickPlace={flyToPlace}
+        onExpandParts={loadParts}
+        pickMode={regionMode}
+        onTogglePickMode={() => setRegionMode(m => !m)}
+        activeName={regionName}
+        onClearActive={clearRegion}
+      />
+
+      {/* pod vyhledávací lištou, ať se nepřekrývají — obojí míří doprostřed nahoru */}
       {restoring && (
-        <div className="absolute top-3 left-1/2 z-30 -translate-x-1/2 flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900/90 px-3 py-1.5 text-xs text-gray-200 backdrop-blur">
+        <div className="absolute top-16 left-1/2 z-30 -translate-x-1/2 flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900/90 px-3 py-1.5 text-xs text-gray-200 backdrop-blur">
           <Loader2 size={13} className="animate-spin" /> {restoring}
         </div>
       )}
@@ -3750,19 +3781,6 @@ export function MapView({ scene }: { scene: ScenePersist }) {
               <span className="truncate">{restoring}</span>
             </div>
           )}
-          <form onSubmit={runSearch} className="flex items-center gap-1.5 rounded-lg bg-gray-800/70 p-1">
-            <Search size={15} className="ml-1.5 shrink-0 text-gray-500" />
-            <input
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="Najít místo (např. Liberec)…"
-              className="min-w-0 flex-1 bg-transparent text-sm text-gray-100 placeholder-gray-500 outline-none"
-            />
-            {searchErr && <span className="shrink-0 text-xs text-amber-400">{searchErr}</span>}
-            <button type="submit" disabled={searching} className="shrink-0 rounded-lg bg-emerald-600 px-2.5 py-1 text-sm text-white hover:bg-emerald-500 disabled:opacity-50">
-              {searching ? <Loader2 size={14} className="animate-spin" /> : 'Jdi'}
-            </button>
-          </form>
         </div>
 
         {/* Jediná scrollovaná oblast. Pořadí sekcí kopíruje postup práce: podklad → výběr →
@@ -3916,12 +3934,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             <ToggleBtn active={tileMode} onClick={toggleTileMode} icon={<Grid3x3 size={15} />} label={tileMode ? `Klikej / táhni (${tileCount})` : 'Vybrat dlaždice'} />
             <ToggleBtn active={regionMode} onClick={() => setRegionMode(m => !m)} icon={regionBusy ? <Loader2 size={15} className="animate-spin" /> : <Landmark size={15} />} label={regionMode ? 'Klikni na mapu (kraj/obec)' : 'Vybrat území'} />
             {regionMode && (
-              <div className="flex flex-col gap-1 px-1 pb-0.5 max-w-[200px]">
-                <div className="text-[10px] text-gray-500 leading-snug">Klikni na mapu, nebo napiš název:</div>
-                <form onSubmit={searchRegion} className="flex items-center gap-1">
-                  <input value={regionQuery} onChange={e => setRegionQuery(e.target.value)} placeholder="obec / kraj…" className="flex-1 min-w-0 bg-gray-800 rounded px-2 py-1 text-xs text-gray-100 outline-none placeholder:text-gray-600" />
-                  <button type="submit" title="Vyhledat" className="shrink-0 p-1 rounded bg-gray-800 text-gray-300 hover:bg-gray-700">{regionBusy ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}</button>
-                </form>
+              <div className="px-1 pb-0.5 max-w-[200px] text-[10px] leading-snug text-gray-500">
+                Klikni na mapu. Podle názvu se hledá v liště nahoře uprostřed.
               </div>
             )}
             {tileMode && (
@@ -4245,36 +4259,10 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             )}
           </Section>
           )}
-          {(regionChoices.length > 0 || regionParts.length > 0 || regionName) && (
+          {/* Nalezená území se vybírají v liště nahoře uprostřed (mapSearch.tsx). Tady zůstává
+              jen to, co následuje po výběru: co je zvýrazněné, ztmavení okolí a exporty. */}
+          {regionName && (
           <Section id="uzemi" title="Správní území" dflt={true} open={openSec} onToggle={toggleSec}>
-            {regionChoices.length > 0 && (
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <Landmark size={14} className="text-cyan-400 shrink-0" />
-                <span className="text-gray-400 text-xs shrink-0">Vyber:</span>
-                {regionChoices.map((u, i) => (
-                  <button key={i} onClick={() => isolateRegion(u)} title={`${u.level}: ${u.name}`} className="px-2 py-0.5 rounded-lg text-xs bg-gray-800 text-gray-200 hover:bg-emerald-600 hover:text-white">
-                    <span className="text-gray-500">{u.level}:</span> {u.name}
-                  </button>
-                ))}
-                {regionChoices.some(c => c.level === 'Obec') && (
-                  <button onClick={() => { const o = regionChoices.find(c => c.level === 'Obec'); if (o) loadParts(o.kod) }} title="Rozbalit katastrální území (části) obce" className="px-2 py-0.5 rounded-lg text-xs bg-gray-800 text-cyan-300 hover:bg-gray-700 flex items-center gap-1">
-                    {regionBusy ? <Loader2 size={12} className="animate-spin" /> : <ChevronDown size={12} />} Části (k.ú.)
-                  </button>
-                )}
-                <button onClick={() => setRegionChoices([])} title="Zavřít nabídku" className="p-0.5 rounded text-gray-400 hover:text-red-300"><X size={13} /></button>
-              </div>
-            )}
-            {regionParts.length > 0 && (
-              <div className="flex items-start gap-1.5">
-                <span className="text-gray-400 text-xs shrink-0 mt-1">Části:</span>
-                <div className="flex items-center gap-1 flex-wrap max-h-24 overflow-auto">
-                  {regionParts.map((u, i) => (
-                    <button key={i} onClick={() => isolateRegion(u)} title={u.name} className="px-2 py-0.5 rounded-lg text-xs bg-gray-800 text-gray-200 hover:bg-emerald-600 hover:text-white">{u.name}</button>
-                  ))}
-                </div>
-                <button onClick={() => setRegionParts([])} title="Zavřít části" className="p-0.5 rounded text-gray-400 hover:text-red-300 mt-0.5"><X size={13} /></button>
-              </div>
-            )}
             {regionName && (
               <>
                 <div className="flex items-center gap-1.5">
