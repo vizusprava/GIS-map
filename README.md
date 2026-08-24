@@ -4,6 +4,8 @@ Webová aplikace pro usazování 3D modelů, výkresů (DXF/DWG) a georeferencov
 do reálné mapy ČR — terén DMR 5G a ortofoto z ČÚZK, katastr, měření, export.
 Každý uživatel má vlastní účet a svoje scény se vším, co do nich nahraje.
 
+**Živá verze:** <https://vizusprava.github.io/GIS-map/>
+
 ## Rychlý start (lokálně)
 
 ```bash
