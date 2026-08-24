@@ -1,0 +1,18 @@
+node_modules
+dist
+*.local
+
+# env (tokeny – nikdy do gitu)
+.env
+.env.*
+!.env.example
+
+# Lokální ortofoto dlaždice napečené scriptem seed-liberec.mjs — stovky MB, patří na disk,
+# ne do gitu.
+local-tiles/
+
+# Testovací zdroje, se kterými se osahává import (splaty, výkresy). Uživatel je do appky
+# nahrává přes rozhraní, do repa nepatří — a jsou velké.
+*.ply
+*.dwg
+*.dxf
