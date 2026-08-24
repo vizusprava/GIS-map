@@ -125,9 +125,14 @@ export function ScenesPage() {
         {error && (
           <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">
             {(error as Error).message}
-            <p className="text-xs text-red-300/70 mt-1">
-              Nezapomněl jsi spustit <code>sql/001_init.sql</code> ve svém Supabase projektu?
-            </p>
+            {/* Tip na migraci jen když opravdu chybí tabulka. Ukazoval se na každou chybu
+                včetně těch přihlašovacích a posílal hledat problém do databáze, i když
+                schéma bylo celou dobu v pořádku. */}
+            {/schema cache|does not exist|relation/i.test((error as Error).message) && (
+              <p className="text-xs text-red-300/70 mt-1">
+                Nezapomněl jsi spustit <code>sql/001_init.sql</code> ve svém Supabase projektu?
+              </p>
+            )}
           </div>
         )}
 
