@@ -49,6 +49,16 @@ export const ZOOM_SENS = 0.0013              // log jednotek na pixel kolečka (
 export const ZOOM_TAU = 0.22                 // měkkost pružiny v s — vyšší = delší, měkčí doklouznutí
 export const ZOOM_MAX = 1.5                  // strop nedojetého zoomu (~4,5×), ať rychlé rolování neodletí
 
+// Náhled uloženého pohledu. Leží přímo ve stavu scény (viz CamView.thumb), a ten se ukládá celý
+// naráz — proto tak malý. 160×90 se v seznamu pozná, JPEG na 0,5 vyjde na ~2 kB.
+export const VIEW_THUMB_W = 160
+export const VIEW_THUMB_H = 90
+export const VIEW_THUMB_Q = 0.5
+// Kdy hlásit „upraveno": o kolik se musí kamera odchýlit od uloženého pohledu, aby to nebyl
+// jen numerický šum z přeletu. Metry pro pozici, stupně pro natočení.
+export const VIEW_DIRTY_M = 1
+export const VIEW_DIRTY_DEG = 0.5
+
 export const CR_EXTENT = Cesium.Rectangle.fromDegrees(12.0, 48.5, 18.9, 51.1)
 // úvodní pohled: přiblížení na Liberec
 export const LIBEREC_EXTENT = Cesium.Rectangle.fromDegrees(14.98, 50.72, 15.13, 50.81)

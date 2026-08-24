@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import * as THREE from 'three'
@@ -24,12 +24,13 @@ import { applyBackground, BG_MODES, type BgMode } from './background'
 import proj4 from 'proj4'
 import polygonClipping from 'polygon-clipping'
 import { toast } from 'sonner'
-import { Box, Layers, Map as MapIcon, Image, Search, Loader2, Building2, Upload, Move, Crosshair, Trash2, ArrowDownToLine, RotateCcw, MapPin, Mountain, Download, Eye, EyeOff, Hexagon, Check, Sparkles, Grid3x3, X, ChevronRight, ChevronLeft, ChevronDown, Landmark, Camera, Play, Ruler } from 'lucide-react'
+import { Box, Layers, Map as MapIcon, Image, Search, Loader2, Building2, Upload, Move, Crosshair, Trash2, ArrowDownToLine, RotateCcw, MapPin, Mountain, Download, Eye, EyeOff, Hexagon, Check, Sparkles, Grid3x3, X, ChevronRight, ChevronLeft, ChevronDown, Landmark, Play, Ruler } from 'lucide-react'
 import {
   ION_TOKEN, isAbortError, ENABLE_GOOGLE_3D, ENABLE_OSM_BUILDINGS, ENABLE_LIBEREC_DISTRICTS, NEEDS_ION,
   GOOGLE_3D_ION_ASSET, SPLAT_ASSET_ID, SPLAT_ANCHOR, SPLAT_BASE_ROLL,
   SHAKE_KEY, SHAKE_MAX_DEG, SHARP_KEY, SPIN_KEY, SPIN_DEFAULT_DEG_S, ZOOM_SENS, ZOOM_TAU, ZOOM_MAX,
   CR_EXTENT, LIBEREC_EXTENT, GEOID_CZ, GOOGLE_LIFT_M, MAX_GLB_YAW_DEG, OSM_LIFT_M, MODEL_GLOW, EMPTY_NAMESET,
+  VIEW_THUMB_W, VIEW_THUMB_H, VIEW_THUMB_Q, VIEW_DIRTY_M, VIEW_DIRTY_DEG,
 } from './config'
 import type {
   Base, Placement, CamLook, CamView, Parcel, Anchor, ModelEntry, SceneObj, DrawLayer, DrawingEntry,
@@ -39,6 +40,7 @@ import {
   pairRasterFiles, loadGeoRaster, makeRasterView, disposeRasterSrc, CRS_IDS, CRS_LABELS,
   type GeoRaster, type CrsId,
 } from './worldRaster'
+import { CamViews } from './camViews'
 import { MapSearch, type PlaceHit } from './mapSearch'
 import { makeDmrTerrain } from './terrain'
 import { fetchElevSampler } from './elevation'
@@ -59,6 +61,27 @@ import { NumRow, ProjSwitch, Section, ToggleBtn, type CamProj } from './ui'
 import type { ScenePersist } from './lib/scenePersist'
 import type { AssetConfig, SavedParcel } from './lib/types'
 import { fetchAssetFile, fetchAssetSidecar } from './lib/assets'
+
+/**
+ * Shodují se dva vzhledy pohledu?
+ *
+ * Nejde porovnat přes JSON: pohledy uložené dřív nemají klíče `shake*`/`spin*` vůbec, a chybějící
+ * hodnota přitom znamená totéž co vypnuto. Doprovodné hodnoty (intenzita, rychlost) se porovnávají
+ * jen když je efekt zapnutý — jinak by „upraveno" naskočilo po pohnutí sliderem, který stejně nic
+ * nedělá, protože je vypínač zhasnutý.
+ */
+function sameLook(a: CamLook, b: CamLook): boolean {
+  if (a.fov !== b.fov || a.bloom !== b.bloom) return false
+  if (a.dofOn !== b.dofOn) return false
+  if (a.dofOn && (a.dofMode !== b.dofMode || a.dofBlur !== b.dofBlur)) return false
+  if (a.dofOn && a.dofMode === 'dist' && a.dofFocal !== b.dofFocal) return false
+  if (a.dofOn && a.dofMode === 'circle' && (a.dofRadius !== b.dofRadius || a.dofFeather !== b.dofFeather)) return false
+  if (!!a.shakeOn !== !!b.shakeOn) return false
+  if (a.shakeOn && a.shakeAmt !== b.shakeAmt) return false
+  if (!!a.spinOn !== !!b.spinOn) return false
+  if (a.spinOn && a.spinSpeed !== b.spinSpeed) return false
+  return true
+}
 
 /**
  * Mapa jedné scény. Co se má pamatovat, hlásí přes `scene` (viz lib/scenePersist.ts) —
@@ -149,7 +172,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [pulseColor, setPulseColor] = useState(PULSE_COLOR_DEFAULT)
   const [pulseCount, setPulseCount] = useState(PULSE_COUNT_DEFAULT)
   const pulseLayerRef = useRef<PulseLayer | null>(null)
-  const [camName, setCamName] = useState('')
+  // pohled, jehož název se právě přepisuje (nový nebo duplikovaný se otevře rovnou).
+  // Pozor na `renamingId` níž — to je přejmenování OBJEKTU scény, jiná věc.
+  const [renamingViewId, setRenamingViewId] = useState<string | null>(null)
   const [dofOn, setDofOn] = useState(false)
   // 'dist' = ostré je vše v dané vzdálenosti (vestavěná DOF), 'circle' = ostrý kruh uprostřed obrazovky
   const [dofMode, setDofMode] = useState<'dist' | 'circle'>('circle')
@@ -3022,18 +3047,134 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     }
     requestAnimationFrame(step)
   }
+  /**
+   * Náhled pohledu — malý JPEG rovnou do stavu scény (proč ne do Storage viz `CamView.thumb`).
+   * 160×90 stačí na to, aby se v seznamu poznal záběr, a vyjde na ~2 kB.
+   */
+  function captureViewThumb(v: Cesium.Viewer): string | undefined {
+    try {
+      v.render() // bez překreslení drží buffer minulý snímek (jedeme s preserveDrawingBuffer)
+      const src = v.scene.canvas
+      const c = document.createElement('canvas')
+      c.width = VIEW_THUMB_W; c.height = VIEW_THUMB_H
+      const ctx = c.getContext('2d')
+      if (!ctx) return undefined
+      // „cover": poměr stran zůstane, přebytek se ořízne — jinak by byl náhled roztažený
+      const sr = src.width / src.height, dr = VIEW_THUMB_W / VIEW_THUMB_H
+      const sw = sr > dr ? src.height * dr : src.width
+      const sh = sr > dr ? src.height : src.width / dr
+      ctx.drawImage(src, (src.width - sw) / 2, (src.height - sh) / 2, sw, sh, 0, 0, VIEW_THUMB_W, VIEW_THUMB_H)
+      return c.toDataURL('image/jpeg', VIEW_THUMB_Q)
+    } catch { return undefined } // náhled je bonus; kvůli němu ukládání pohledu spadnout nesmí
+  }
+
+  /** Aktuální kamera + vzhled + náhled jako tělo pohledu (společné pro uložení i přepsání). */
+  function currentViewBody(v: Cesium.Viewer) {
+    const c = v.camera, pos = c.positionWC
+    return { dest: [pos.x, pos.y, pos.z] as [number, number, number], h: c.heading, p: c.pitch, r: c.roll, look: currentLook(), thumb: captureViewThumb(v) }
+  }
+
+  // Ukládá se HNED, bez předchozího psaní názvu. Dřív se muselo nejdřív vyplnit pole a teprve
+  // pak kliknout — jenže záběr máš právě teď, kdežto pojmenovat ho jde i za pět minut. Nový
+  // pohled proto dostane pracovní název a rovnou se otevře k přejmenování.
   function saveCamView() {
     const v = viewerRef.current; if (!v || v.isDestroyed()) return
-    const c = v.camera, pos = c.positionWC
-    persistCamViews([...camViews, { id: `v${Date.now()}`, name: camName.trim() || `Pohled ${camViews.length + 1}`, dest: [pos.x, pos.y, pos.z], h: c.heading, p: c.pitch, r: c.roll, look: currentLook() }])
-    setCamName('')
+    const id = `v${Date.now()}`
+    persistCamViews([...camViews, { id, name: `Pohled ${camViews.length + 1}`, ...currentViewBody(v) }])
+    setActiveViewId(id)
+    setRenamingViewId(id)
   }
   /** přepíše kameru i vzhled uloženého pohledu aktuálním stavem (pohled zůstane na svém místě v seznamu) */
   function updateCamView(i: number) {
     const v = viewerRef.current; if (!v || v.isDestroyed()) return
-    const c = v.camera, pos = c.positionWC
-    persistCamViews(camViews.map((cv, j) => j === i ? { ...cv, dest: [pos.x, pos.y, pos.z], h: c.heading, p: c.pitch, r: c.roll, look: currentLook() } : cv))
+    persistCamViews(camViews.map((cv, j) => j === i ? { ...cv, ...currentViewBody(v) } : cv))
   }
+  function renameCamView(id: string, name: string) {
+    const n = name.trim()
+    if (n) persistCamViews(camViews.map(cv => cv.id === id ? { ...cv, name: n } : cv))
+    setRenamingViewId(null)
+  }
+  /** Kopie i s náhledem — základ pro variantu záběru, kterou pak jen doladíš a přepíšeš. */
+  function duplicateCamView(i: number) {
+    const src = camViews[i]; if (!src) return
+    const id = `v${Date.now()}`
+    const copy = { ...src, id, name: `${src.name} (kopie)` }
+    persistCamViews([...camViews.slice(0, i + 1), copy, ...camViews.slice(i + 1)])
+    setRenamingViewId(id)
+  }
+  /** Přesun v seznamu — pohledy jsou scénář prezentace, takže na pořadí záleží. */
+  function moveCamView(from: number, to: number) {
+    if (from === to || from < 0 || to < 0 || from >= camViews.length || to >= camViews.length) return
+    const next = [...camViews]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    persistCamViews(next)
+  }
+  /**
+   * Sedí aktivní pohled na to, co je právě vidět?
+   *
+   * Tohle je jádro toho, co dřív chybělo: slidery zorného úhlu, rozostření, chvění a kroužení
+   * JSOU vzhledem pohledu (jdou do `CamLook`), jenže když se s nimi hnulo, nic o tom neřeklo —
+   * uložený pohled se tiše rozešel se skutečností a bylo na uživateli si vzpomenout na přepsání.
+   *
+   * Kamera se mění mimo React, takže se to přepočítá po dojetí pohybu (`moveEnd`); vzhled je
+   * ve stavu, ten si React ohlídá sám.
+   */
+  const [camTick, setCamTick] = useState(0)
+  useEffect(() => {
+    const v = viewerRef.current
+    if (!v || v.isDestroyed()) return
+    const bump = () => setCamTick(t => t + 1)
+    v.camera.moveEnd.addEventListener(bump)
+    return () => { if (!v.isDestroyed()) v.camera.moveEnd.removeEventListener(bump) }
+  }, [viewerReady])
+
+  const activeDirty = useMemo(() => {
+    void camTick // závislost schválně: kamera se hýbe mimo React a přepočet visí na moveEnd
+    const v = viewerRef.current
+    const cv = camViews.find(x => x.id === activeViewId)
+    if (!v || v.isDestroyed() || !cv) return false
+    const c = v.camera
+    const moved = Cesium.Cartesian3.distance(c.positionWC, new Cesium.Cartesian3(cv.dest[0], cv.dest[1], cv.dest[2])) > VIEW_DIRTY_M
+    // rozdíl úhlů přes hranici 0/360 musí vyjít malý, ne skoro celá otáčka
+    const turned = (a: number, b: number) => {
+      let d = Cesium.Math.toDegrees(a - b) % 360
+      if (d > 180) d -= 360
+      if (d < -180) d += 360
+      return Math.abs(d) > VIEW_DIRTY_DEG
+    }
+    const rotated = turned(c.heading, cv.h) || turned(c.pitch, cv.p) || turned(c.roll, cv.r)
+    // Starší pohledy `look` nemají — z jejich chybějícího vzhledu se „upraveno" dělat nesmí,
+    // jinak by u nich svítilo pořád a nešlo by to nijak umlčet.
+    const lookOff = !!cv.look && !sameLook(cv.look, currentLook())
+    return moved || rotated || lookOff
+  }, [camTick, camViews, activeViewId, fov, bloomOn, dofOn, dofMode, dofFocal, dofBlur, dofRadius, dofFeather, shakeOn, shakeAmt, spinOn, spinSpeed])
+
+  /** Další/předchozí pohled — pro procházení scénáře při prezentaci (tlačítka i šipky). */
+  function stepCamView(dir: 1 | -1) {
+    if (!camViews.length) return
+    const cur = camViews.findIndex(cv => cv.id === activeViewId)
+    // bez aktivního pohledu začni od kraje podle směru, jinak cyklicky dokola
+    const next = cur < 0 ? (dir === 1 ? 0 : camViews.length - 1) : (cur + dir + camViews.length) % camViews.length
+    gotoCamView(camViews[next])
+  }
+
+  // Šipkami se dá projít scénář bez klikání do seznamu. Posluchač se registruje jednou a sahá
+  // na aktuální `stepCamView` přes ref — jinak by se musel přepisovat při každé změně pohledů.
+  const stepRef = useRef(stepCamView)
+  useEffect(() => { stepRef.current = stepCamView })
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+      // v poli se šipkami posouvá kurzor — tam prezentace co dělat nemá
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      e.preventDefault()
+      stepRef.current(e.key === 'ArrowRight' ? 1 : -1)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   function gotoCamView(cv: CamView) {
     setActiveViewId(cv.id)               // řídí, které popisky jsou vysunuté
     // Přelet trvá 3 s a kameru si po tu dobu řídí sám — kroužení musí počkat, jinak si přepisují
@@ -3127,14 +3268,21 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     }
     requestAnimationFrame(step)
   }
+  // Smazání pohledu s sebou vezme i vazby popisků a pulzů, které na něm visely. Dřív zmizely
+  // tiše a nebylo je jak vrátit — proto se ptáme a rovnou řekneme, čeho se to týká.
   function delCamView(i: number) {
-    const gone = camViews[i]?.id
+    const gone = camViews[i]; if (!gone) return
+    const nc = callouts.filter(c => c.views.includes(gone.id)).length
+    const np = pulses.filter(p => p.views.includes(gone.id)).length
+    const parts: string[] = []
+    if (nc) parts.push(`${nc}× popisek`)
+    if (np) parts.push(`${np}× pulz`)
+    const tail = parts.length ? `\n\nPřestane se v něm ukazovat: ${parts.join(', ')}.` : ''
+    if (!confirm(`Smazat pohled „${gone.name}"?${tail}`)) return
     persistCamViews(camViews.filter((_, j) => j !== i))
-    if (gone) {
-      persistCallouts(callouts.map(c => c.views.includes(gone) ? { ...c, views: c.views.filter(x => x !== gone) } : c))
-      persistPulses(pulses.map(p => p.views.includes(gone) ? { ...p, views: p.views.filter(x => x !== gone) } : p))
-      if (activeViewId === gone) setActiveViewId(null)
-    }
+    persistCallouts(callouts.map(c => c.views.includes(gone.id) ? { ...c, views: c.views.filter(x => x !== gone.id) } : c))
+    persistPulses(pulses.map(p => p.views.includes(gone.id) ? { ...p, views: p.views.filter(x => x !== gone.id) } : p))
+    if (activeViewId === gone.id) setActiveViewId(null)
   }
 
   useEffect(() => {
@@ -4577,7 +4725,35 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             </div>
           </Section>
           )}
-          <Section id="kamera" title="Kamera a pohledy" dflt={false} badge={camViews.length} open={openSec} onToggle={toggleSec}>
+          {/* Pohledy a vzhled kamery byly jedna sekce — přes dvacet ovládacích prvků na sobě,
+              a seznam pohledů (to, co se používá nejvíc) až úplně dole pod slidery. Teď jsou
+              to dvě věci: scénář nahoře a jeho vzhled zabalený pod ním. */}
+          <Section id="pohledy" title="Pohledy" dflt={true} badge={camViews.length} open={openSec} onToggle={toggleSec}>
+            <CamViews
+              views={camViews}
+              activeId={activeViewId}
+              dirty={activeDirty}
+              renamingId={renamingViewId}
+              onRenameStart={setRenamingViewId}
+              onRename={renameCamView}
+              onGoto={gotoCamView}
+              onOverwrite={updateCamView}
+              onDuplicate={duplicateCamView}
+              onDelete={delCamView}
+              onMove={moveCamView}
+              onSave={saveCamView}
+              onStep={stepCamView}
+            />
+            <label className="flex cursor-pointer items-center gap-1.5 text-xs" title="Kamera nepoletí napřímo, ale obloukem kolem toho, na co zrovna koukáš — objekt uprostřed zůstane uprostřed.">
+              <input type="checkbox" checked={orbitOn} onChange={e => setOrbitOn(e.target.checked)} className="accent-sky-500" />
+              <span className="text-gray-200">Přelet obloukem (orbit kolem středu)</span>
+            </label>
+          </Section>
+
+          <Section id="kamera" title="Vzhled kamery" dflt={false} open={openSec} onToggle={toggleSec}>
+            <div className="px-1 text-[10px] leading-snug text-gray-500">
+              Všechno tady se ukládá <span className="text-gray-400">s pohledem</span> — každý může vypadat jinak.
+            </div>
             <ProjSwitch mode={camProj} onPersp={camPerspective} onOrtho={camTopOrtho} />
             {/* FOV — v ortho projekci nemá co dělat, tak je zhasnutý místo aby tiše nedělal nic */}
             <label className="flex items-center gap-1.5 text-xs border-t border-gray-700 pt-2">
@@ -4686,32 +4862,6 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                 <div className="px-1 text-[10px] leading-snug text-gray-600">Čas je jedna celá otáčka.</div>
               </>)}
             </div>
-            {/* uložené pohledy */}
-            <div className="flex flex-col gap-1">
-              <div className="text-[10px] uppercase tracking-wide text-gray-500">Uložené pohledy</div>
-              <div className="flex gap-1">
-                <input value={camName} onChange={e => setCamName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') saveCamView() }} placeholder="název pohledu…" className="flex-1 min-w-0 bg-gray-800 rounded px-1.5 py-1 text-xs text-gray-100 outline-none placeholder:text-gray-600" />
-                <button onClick={saveCamView} title="Uložit aktuální pohled kamery" className="px-2 py-1 rounded-lg text-xs bg-emerald-600 hover:bg-emerald-500 text-white">Uložit</button>
-              </div>
-              {camViews.map((cv, i) => (
-                <div key={i} className="flex items-center gap-1">
-                  <button
-                    onClick={() => gotoCamView(cv)}
-                    title={cv.look ? 'Přeletět a nastavit uložený zorný úhel a rozostření' : 'Přeletět. Tenhle pohled je z dřívějška a vzhled uložený nemá — přepiš ho ikonou fotoaparátu.'}
-                    className="flex-1 min-w-0 text-left truncate px-1.5 py-0.5 rounded text-xs bg-gray-800 hover:bg-sky-600 hover:text-white text-gray-200"
-                  >
-                    {cv.name}{!cv.look && <span className="ml-1 text-[9px] text-gray-500">bez vzhledu</span>}
-                  </button>
-                  <button onClick={() => updateCamView(i)} title="Přepsat tento pohled aktuální kamerou i nastavením" className="p-0.5 rounded text-gray-500 hover:text-emerald-300"><Camera size={13} /></button>
-                  <button onClick={() => delCamView(i)} title="Smazat" className="p-0.5 rounded text-gray-500 hover:text-red-300"><Trash2 size={13} /></button>
-                </div>
-              ))}
-              {!camViews.length && <div className="text-[10px] text-gray-600 leading-snug">Zatím žádné — natoč si kameru, napiš název a dej „Uložit". Uloží se i zorný úhel, rozostření, chvění a kroužení. Přežijí refresh.</div>}
-              <label className="flex items-center gap-1.5 text-xs cursor-pointer mt-0.5" title="Kamera nepoletí napřímo, ale obloukem kolem toho, na co zrovna koukáš — objekt uprostřed zůstane uprostřed.">
-                <input type="checkbox" checked={orbitOn} onChange={e => setOrbitOn(e.target.checked)} className="accent-sky-500" />
-                <span className="text-gray-200">Přelet obloukem (orbit kolem středu)</span>
-              </label>
-            </div>
           </Section>
           {/* Popisky i pulz visí na uloženém pohledu a řídí je vypínač „Prezentace" nahoře —
               patří k sobě, tak jsou v jedné sekci a ne rozstrkané pod kamerou. */}
@@ -4722,7 +4872,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
               {!presentOn && <span className="shrink-0 text-amber-500/80">vypnutá</span>}
             </div>
             {!activeViewId && !!(callouts.length || pulses.length) && (
-              <div className="text-[10px] leading-snug text-amber-500/80">Není vybraný pohled, takže je vše zasunuté. Klikni na některý uložený pohled v sekci „Kamera a pohledy".</div>
+              <div className="text-[10px] leading-snug text-amber-500/80">Není vybraný pohled, takže je vše zasunuté. Klikni na některý v sekci „Pohledy".</div>
             )}
             <Section id="popisky" title="Popisky" dflt={false} badge={callouts.length} open={openSec} onToggle={toggleSec}>
               <button

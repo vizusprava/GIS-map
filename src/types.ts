@@ -23,7 +23,17 @@ export type CamLook = {
 }
 // `look` je NEPOVINNÝ schválně: pohledy uložené dřív ho v localStorage nemají a musí se dál načíst.
 // Když chybí, přelet nechá aktuální nastavení být (viz gotoCamView).
-export type CamView = { id: string; name: string; dest: [number, number, number]; h: number; p: number; r: number; look?: CamLook }
+//
+// `thumb` je malý JPEG jako data URL (~2 kB, viz VIEW_THUMB_* v MapView). Schválně přímo ve stavu
+// scény a ne ve Storage: náhled tak patří k pohledu jako jeho vlastnost — smazání pohledu ho vezme
+// s sebou a nemůže po něm zůstat osiřelý soubor v bucketu, ani se nemusí řešit podepsané odkazy.
+// Za to platíme velikostí stavu, proto je náhled tak malý; deset pohledů vyjde na ~20 kB.
+export type CamView = {
+  id: string; name: string
+  dest: [number, number, number]; h: number; p: number; r: number
+  look?: CamLook
+  thumb?: string
+}
 
 export type GroundHit = { lon: number; lat: number; height: number }
 // `holes` = vykrojené parcely uvnitř (typicky stavební parcela v zahradě). Bez jejich
