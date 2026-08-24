@@ -69,8 +69,16 @@ export const useAuthStore = create<AuthState>((set, _get) => ({
     const { data, error } = await supabase.auth.signUp({
       email: email.trim(),
       password,
-      // jméno si přečte trigger handle_new_user() a založí podle něj profil
-      options: { data: { display_name: displayName.trim() } },
+      options: {
+        // jméno si přečte trigger handle_new_user() a založí podle něj profil
+        data: { display_name: displayName.trim() },
+        // Bez tohohle se potvrzovací odkaz řídí Site URL projektu — jenže ta je jedna,
+        // zatímco appka běží na localhostu i na Pages v podsložce /GIS-map/. Řekneme si
+        // proto o návrat tam, odkud se registrovalo (stejně jako resetPassword níž).
+        // Adresa musí být v Supabase v Redirect URLs, jinak ji GoTrue zahodí a spadne
+        // zpátky na Site URL.
+        emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
+      },
     })
     if (error) throw new Error(czech(error.message))
     return !data.session
