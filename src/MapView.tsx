@@ -41,6 +41,7 @@ import {
   type GeoRaster, type CrsId,
 } from './worldRaster'
 import { CamViews } from './camViews'
+import { MapTools } from './mapTools'
 import { MapSearch, type PlaceHit } from './mapSearch'
 import { makeDmrTerrain } from './terrain'
 import { fetchElevSampler } from './elevation'
@@ -768,6 +769,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       const rings = u.rings ?? await fetchAdminGeom(u.layer, u.kod)
       if (!rings.length) { toast.error('Území nemá geometrii'); return }
       if (v.isDestroyed()) return
+      claimMapClick('region')   // ostatní nástroje pustit klik — území si ho bere
       exclusiveSelect('region') // území aktivní → zruš parcely/oblast/dlaždice (jen jeden zdroj naráz)
       clearRegionEnts()
       const worldRings = rings.map(r => r.map(([x, y]) => { const [lo, la] = wgsOf(x, y) as number[]; return Cesium.Cartesian3.fromDegrees(lo, la) }))
@@ -1395,8 +1397,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     if (rulerMode && rulerKind === kind) { finishRuler(); setRulerMode(false); return }
     finishRuler()                 // rozkreslené se ukončí, i když se jen přepíná druh
     setRulerKind(kind)
-    setMoveMode(false); setParcelMode(false); setTileMode(false); setRegionMode(false)
-    if (areaMode) { clearArea(); setAreaMode(false) }
+    claimMapClick('ruler')
     setRulerMode(true)
   }
 
@@ -1413,7 +1414,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   }
   function toggleAreaMode() {
     if (areaMode) { clearArea(); setAreaMode(false); return }
-    exclusiveSelect('parcel'); setParcelMode(false) // oblast plní parcely → parcely nemazat, jen ostatní
+    claimMapClick('area')
+    exclusiveSelect('parcel') // oblast parcely plní → jejich data nemazat, jen ostatní zdroje
     setAreaMode(true)
   }
 
@@ -1530,6 +1532,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
 
   function toggleTileMode() {
     if (tileMode) { setTileMode(false); setGridOn(false); return } // ať mřížka nezůstane viset bez tlačítka
+    claimMapClick('tile')
     exclusiveSelect('tile') // zruš parcely/oblast/území — jen jeden zdroj výběru naráz
     setTileMode(true)
   }
@@ -2542,16 +2545,41 @@ export function MapView({ scene }: { scene: ScenePersist }) {
 
   // Jen JEDEN zdroj výběru naráz: parcely (klik/oblast) × dlaždice × území. Při zapnutí jednoho
   // vyčisti ostatní (jejich VÝBĚR i REŽIM), ať nejde mít „zaškrtnuté" víc věcí současně.
+  /**
+   * Klik do mapy má právě jednoho majitele.
+   *
+   * Každý režim si registruje vlastní posluchač levého kliku. Když jich běželo víc naráz, udělal
+   * jeden klik několik věcí — a dělo se to: `calloutMode` nevypínal nikdo a `regionMode` se při
+   * zapnutí neptal, takže „přidat popisek" a „vybrat parcelu" spolu klidně jely a jedno kliknutí
+   * položilo bublinu A vybralo parcelu. Vypínalo se to na třech místech (exclusiveSelect,
+   * startRuler, toggleMove), pokaždé jiným výčtem — proto to teď dělá jedna funkce.
+   *
+   * DATA se tím nemažou. Od toho je `exclusiveSelect`, který hlídá jinou věc: aby výběr
+   * (parcely × dlaždice × území) měl vždycky jen jeden zdroj.
+   */
+  function claimMapClick(owner: 'parcel' | 'area' | 'tile' | 'region' | 'ruler' | 'callout' | 'move' | 'none') {
+    if (owner !== 'parcel') setParcelMode(false)
+    if (owner !== 'area' && areaMode) { clearArea(); setAreaMode(false) }
+    if (owner !== 'tile') { setTileMode(false); setGridOn(false) } // ať mřížka nezůstane viset bez tlačítka
+    if (owner !== 'region') setRegionMode(false)
+    if (owner !== 'ruler' && rulerMode) { finishRuler(); setRulerMode(false) }
+    if (owner !== 'callout') setCalloutMode(false)
+    if (owner !== 'move') setMoveMode(false)
+  }
+
+  /** Jen JEDEN zdroj výběru naráz — maže DATA. Režimy klikání řeší `claimMapClick`. */
   function exclusiveSelect(keep: 'parcel' | 'tile' | 'region') {
-    setMoveMode(false)
-    setRulerMode(false) // měření si taky bere klik — jinak by jeden klik dělal dvě věci
-    if (keep !== 'parcel') { clearAllParcels(); setParcelMode(false); clearArea(); setAreaMode(false) }
-    if (keep !== 'tile') { clearTiles(); setTileMode(false); setGridOn(false) }
+    if (keep !== 'parcel') { clearAllParcels(); clearArea() }
+    if (keep !== 'tile') clearTiles()
     if (keep !== 'region') clearRegion()
   }
 
-  function toggleMove() { setMoveMode(m => { const nv = !m; if (nv) { setParcelMode(false); setTileMode(false); if (areaMode) { clearArea(); setAreaMode(false) } } return nv }) }
-  function toggleParcel() { setParcelMode(m => { const nv = !m; if (nv) { exclusiveSelect('parcel'); if (areaMode) { clearArea(); setAreaMode(false) } } return nv }) }
+  // Vypínání ostatních režimů schválně MIMO funkci pro nastavení stavu: ta se v StrictMode volá
+  // dvakrát a vedlejší účinky uvnitř ní by proběhly taky dvakrát.
+  function toggleMove() { const nv = !moveMode; if (nv) claimMapClick('move'); setMoveMode(nv) }
+  function toggleCallout() { const nv = !calloutMode; if (nv) claimMapClick('callout'); setCalloutMode(nv) }
+  function toggleRegionMode() { const nv = !regionMode; if (nv) claimMapClick('region'); setRegionMode(nv) }
+  function toggleParcel() { const nv = !parcelMode; if (nv) { claimMapClick('parcel'); exclusiveSelect('parcel') } setParcelMode(nv) }
 
   // ── Výkresy (DXF/DWG) ──────────────────────────────────────────────────────────────
   const dwgColor = (rgb: number) => Cesium.Color.fromBytes((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, 255)
@@ -3812,7 +3840,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
         onPickPlace={flyToPlace}
         onExpandParts={loadParts}
         pickMode={regionMode}
-        onTogglePickMode={() => setRegionMode(m => !m)}
+        onTogglePickMode={toggleRegionMode}
         activeName={regionName}
         onClearActive={clearRegion}
       />
@@ -3880,9 +3908,18 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           rozejít. Střed se počítá z VIDITELNÉ mapy, ne z okna, aby lišta neutíkala pod panel.
           `bottom-6` míjí pruh s popiskami zdrojů, který si Cesium kreslí úplně dole. */}
       <div className={`pointer-events-none absolute bottom-6 right-0 z-20 flex justify-center transition-[left] ${panelOpen ? 'left-80' : 'left-0'}`}>
-        <div className="pointer-events-auto rounded-xl border border-gray-700 bg-gray-900/85 p-1 shadow-lg backdrop-blur">
+        <MapTools
+          rulerMode={rulerMode}
+          rulerKind={rulerKind}
+          rulerDrafting={!!rulerDraftId}
+          onRuler={startRuler}
+          onFinishRuler={finishRuler}
+          moveMode={moveMode}
+          onMove={toggleMove}
+          canMove={!!placement}
+        >
           <ProjSwitch mode={camProj} onPersp={camPerspective} onOrtho={camTopOrtho} />
-        </div>
+        </MapTools>
       </div>
 
       {/* Kompas v rohu, mimo střed s lištou — ať se s ní neperou o místo, když je okno úzké.
@@ -4009,18 +4046,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
               </div>
             </div>
           </Section>
-          <Section id="rastr" title="Vlastní ortofoto (.jgw)" dflt={false} badge={rasterList.length} open={openSec} onToggle={toggleSec}>
-            <button
-              onClick={() => rasterFileRef.current?.click()}
-              disabled={rasterBusy}
-              className="flex items-center gap-2 rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50"
-            >
-              {rasterBusy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} Načíst snímek + .jgw
-            </button>
-            <div className="max-w-[190px] px-1 text-[10px] leading-snug text-gray-500">
-              Vyber najednou <span className="text-gray-300">obrázek i world file</span> (u GeoTIFFu stačí .tif sám).
-              Snímek se natáhne na terén nad ČÚZK podklad — krytím ho buď přimícháš, nebo ten kus mapy nahradíš.
-            </div>
+          {rasterList.length > 0 && (
+          <Section id="rastr" title="Vlastní ortofoto" dflt={true} badge={rasterList.length} open={openSec} onToggle={toggleSec}>
             {rasterList.map(r => (
               <div key={r.id} className="flex flex-col gap-1 rounded-lg border border-gray-700/70 bg-gray-800/40 p-1.5">
                 <div className="flex items-center gap-1">
@@ -4060,6 +4087,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
               </div>
             ))}
           </Section>
+          )}
           {districtsOn && selectedDistrict && (
           <Section id="mestcast" title="Městská část" dflt={true} open={openSec} onToggle={toggleSec}>
             <div className="flex items-center gap-1.5">
@@ -4080,7 +4108,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
               </button>
             )}
             <ToggleBtn active={tileMode} onClick={toggleTileMode} icon={<Grid3x3 size={15} />} label={tileMode ? `Klikej / táhni (${tileCount})` : 'Vybrat dlaždice'} />
-            <ToggleBtn active={regionMode} onClick={() => setRegionMode(m => !m)} icon={regionBusy ? <Loader2 size={15} className="animate-spin" /> : <Landmark size={15} />} label={regionMode ? 'Klikni na mapu (kraj/obec)' : 'Vybrat území'} />
+            <ToggleBtn active={regionMode} onClick={toggleRegionMode} icon={regionBusy ? <Loader2 size={15} className="animate-spin" /> : <Landmark size={15} />} label={regionMode ? 'Klikni na mapu (kraj/obec)' : 'Vybrat území'} />
             {regionMode && (
               <div className="px-1 pb-0.5 max-w-[200px] text-[10px] leading-snug text-gray-500">
                 Klikni na mapu. Podle názvu se hledá v liště nahoře uprostřed.
@@ -4122,31 +4150,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             )}
           </Section>
           <Section id="mereni" title="Měření" dflt={false} badge={rulers.length} open={openSec} onToggle={toggleSec}>
-            <ToggleBtn
-              active={rulerMode && rulerKind === 'line'}
-              onClick={() => startRuler('line')}
-              icon={<Ruler size={15} />}
-              label={rulerMode && rulerKind === 'line' ? (rulerDraftId ? 'Klikej další body' : 'Klikni první bod') : 'Měřit vzdálenost'}
-            />
-            <ToggleBtn
-              active={rulerMode && rulerKind === 'area'}
-              onClick={() => startRuler('area')}
-              icon={<Hexagon size={15} />}
-              label={rulerMode && rulerKind === 'area' ? (rulerDraftId ? 'Klikej obvod plochy' : 'Klikni první bod') : 'Měřit plochu'}
-            />
-            {rulerMode && (
-              <div className="max-w-[200px] px-1 text-[10px] leading-snug text-gray-500">
-                {rulerKind === 'area'
-                  ? 'Naklikej obvod plochy (aspoň tři body) — uvnitř se ukáže výměra, u stran jejich délky. Uzavře se sama, poslední bod s prvním spojovat nemusíš.'
-                  : 'Každý klik přidá bod, u úseku se ukáže jeho délka.'}
-                {' '}Bod jde chytit a přetáhnout jinam. Ukončíš pravým klikem nebo tlačítkem níž — zůstane v mapě a můžeš začít další.
-              </div>
-            )}
-            {rulerMode && rulerDraftId && (
-              <button onClick={finishRuler} className="flex items-center gap-2 rounded-lg bg-amber-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-amber-500">
-                <Check size={15} /> Ukončit {rulerKind === 'area' ? 'tuto plochu' : 'toto měření'}
-              </button>
-            )}
+            {/* Spouštění měření je v liště dole nad mapou (mapTools.tsx) — je to nástroj, u kterého
+                se pak kliká do mapy, takže patří k mapě. Tady zůstávají jen výsledky. */}
             {rulers.map(r => {
               // u plochy je hlavní číslo výměra, u čáry celková délka
               const a = r.kind === 'area' ? rulerArea(r.pts) : null
@@ -4174,7 +4179,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             )}
             {!rulers.length && !rulerMode && (
               <div className="max-w-[200px] px-1 text-[10px] leading-snug text-gray-600">
-                Zatím žádné. Měří se v prostoru — bod se bere z povrchu i s výškou, takže sedí na svahu i na budově.
+                Zatím žádné — začni tlačítkem <span className="text-gray-400">Měření</span> v liště dole.
+                Měří se v prostoru: bod se bere z povrchu i s výškou, takže sedí na svahu i na budově.
               </div>
             )}
           </Section>
@@ -4452,6 +4458,17 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             <button onClick={() => dwgRef.current?.click()} disabled={drawingLoading} title="Nahrát výkres DXF/DWG a zobrazit ho na mapě (v S-JTSK se umístí na správné místo; DWG se převede přes WASM)" className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50">
               {drawingLoading ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} Nahrát výkres (DXF/DWG)
             </button>
+            {/* Vlastní ortofoto bývalo samostatnou sekcí — je to ale taky „přines soubor zvenčí",
+                jen jiného druhu. Načtené snímky se vypisují níž ve vlastní sekci, jako parcely
+                nebo dlaždice: objeví se, až nějaké jsou. */}
+            <button
+              onClick={() => rasterFileRef.current?.click()}
+              disabled={rasterBusy}
+              title="Vyber najednou obrázek i world file (u GeoTIFFu stačí .tif sám). Snímek se natáhne na terén nad ČÚZK podklad."
+              className="flex items-center gap-2 rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:bg-gray-800 disabled:opacity-50"
+            >
+              {rasterBusy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} Vlastní ortofoto (snímek + .jgw)
+            </button>
             <button onClick={() => loadSplat()} disabled={splatLoading || splatOn} title="TEST: načíst Gaussian splat (Schillerova rozhledna, Kryry) z Cesium ion a posadit na mapu" className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-fuchsia-600 hover:bg-fuchsia-500 text-white transition-colors disabled:opacity-50">
               {splatLoading ? <Loader2 size={15} className="animate-spin" /> : <Box size={15} />} Splat (Kryry)
             </button>
@@ -4597,15 +4614,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
               </div>
             </div>
 
+            {/* Posun je nástroj — kliká se s ním do mapy, takže sedí v liště dole (mapTools.tsx).
+                Objeví se tam právě tehdy, když je model vybraný, tedy když má co posouvat. */}
             <div className="flex gap-1.5">
-              <button
-                onClick={toggleMove}
-                className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-sm transition-colors ${
-                  moveMode ? 'bg-emerald-600 text-white' : 'bg-gray-800 text-gray-200 hover:bg-gray-700'
-                }`}
-              >
-                <Move size={14} /> {moveMode ? 'Táhni model' : 'Přesunout'}
-              </button>
               <button onClick={focusModel} title="Zaměřit kameru na model" className="px-2 py-1.5 rounded-lg bg-gray-800 text-gray-200 hover:bg-gray-700">
                 <Crosshair size={15} />
               </button>
@@ -4876,7 +4887,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             )}
             <Section id="popisky" title="Popisky" dflt={false} badge={callouts.length} open={openSec} onToggle={toggleSec}>
               <button
-                onClick={() => setCalloutMode(m => !m)}
+                onClick={toggleCallout}
                 className={`px-2 py-1 rounded-lg text-xs ${calloutMode ? 'bg-sky-600 text-white' : 'bg-gray-800 hover:bg-gray-700 text-gray-300'}`}
               >{calloutMode ? 'Klikni do mapy…' : 'Přidat popisek'}</button>
               {callouts.map(c => (
