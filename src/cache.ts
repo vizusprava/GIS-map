@@ -95,6 +95,20 @@ export async function cachePut(key: string, bytes: Uint8Array): Promise<void> {
   } catch { /* kvóta / jiná chyba → prostě necachujeme */ }
 }
 
+/**
+ * Zahodí jednu položku. Pro soubory smazané ze scény — LRU by je vyhodila taky, ale až časem,
+ * a stomegový model nemá cenu držet na disku ani minutu potom, co ho uživatel smazal.
+ */
+export async function cacheDel(key: string): Promise<void> {
+  if (!hasIDB) return
+  try {
+    const row = await tx<Row | undefined>('readonly', s => s.get(key))
+    if (!row) return
+    await tx('readwrite', s => s.delete(key))
+    if (totalBytes >= 0) totalBytes = Math.max(0, totalBytes - row.n)
+  } catch { /* nevadí, LRU si s tím poradí sama */ }
+}
+
 /** Maže nejstarší NEPŘIPNUTÉ položky (podle indexu ts), dokud velikost neklesne pod target. */
 async function evictTo(target: number): Promise<void> {
   await openDb().then(db => new Promise<void>((resolve, reject) => {

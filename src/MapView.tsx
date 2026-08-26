@@ -31,6 +31,7 @@ import {
   SHAKE_KEY, SHAKE_MAX_DEG, SHARP_KEY, SPIN_KEY, SPIN_DEFAULT_DEG_S, ZOOM_SENS, ZOOM_TAU, ZOOM_MAX,
   CR_EXTENT, LIBEREC_EXTENT, GEOID_CZ, GOOGLE_LIFT_M, MAX_GLB_YAW_DEG, OSM_LIFT_M, MODEL_GLOW, EMPTY_NAMESET,
   VIEW_THUMB_W, VIEW_THUMB_H, VIEW_THUMB_Q, VIEW_DIRTY_M, VIEW_DIRTY_DEG,
+  GOOGLE_SSE_STILL, GOOGLE_SSE_MOVING, MOVE_SETTLE_MS,
 } from './config'
 import type {
   Base, Placement, CamLook, CamView, Parcel, Anchor, ModelEntry, SceneObj, DrawLayer, DrawingEntry,
@@ -358,11 +359,47 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // trvalá cache dlaždic (IndexedDB) — stav pro UI
   const [cacheInfo, setCacheInfo] = useState<{ count: number; bytes: number; pinnedBytes: number }>({ count: 0, bytes: 0, pinnedBytes: 0 })
   const refreshCache = () => { cacheStats().then(setCacheInfo).catch(() => {}) }
+  /**
+   * Sahá zrovna uživatel na mapu? Řídí kvalitu renderu za pohybu (níž).
+   *
+   * Schválně se to věší na VSTUP, ne na `camera.moveStart/moveEnd`. Kroužení a chvění hýbou
+   * kamerou v každém snímku — s událostmi kamery by prezentace jela natrvalo ve zhoršené kvalitě,
+   * tedy přesně tam, kde na obraze záleží nejvíc. Ze stejného důvodu se nesnižuje ani při přeletu
+   * na uložený pohled: ten končí tam, kam se člověk dívá.
+   *
+   * Reaguje se na tažení a kolečko, ne na samotné stisknutí — jinak by kvalita klesla i při
+   * obyčejném kliknutí na parcelu, kterým se nikam nehýbe.
+   */
+  const [interacting, setInteracting] = useState(false)
   useEffect(() => {
     const v = viewerRef.current
-    if (v && !v.isDestroyed()) v.resolutionScale = sharpness
+    if (!v || v.isDestroyed()) return
+    const el = v.scene.canvas
+    let t: ReturnType<typeof setTimeout> | undefined
+    const settle = () => { clearTimeout(t); t = setTimeout(() => setInteracting(false), MOVE_SETTLE_MS) }
+    const busy = () => { clearTimeout(t); setInteracting(true) }
+    const onMove = (e: PointerEvent) => { if (e.buttons) busy() }
+    const onUp = () => settle()
+    const onWheel = () => { busy(); settle() }
+    el.addEventListener('pointermove', onMove)
+    el.addEventListener('wheel', onWheel, { passive: true })
+    window.addEventListener('pointerup', onUp) // puštění může padnout mimo plátno
+    return () => {
+      clearTimeout(t)
+      el.removeEventListener('pointermove', onMove)
+      el.removeEventListener('wheel', onWheel)
+      window.removeEventListener('pointerup', onUp)
+    }
+  }, [viewerReady])
+
+  useEffect(() => {
+    const v = viewerRef.current
+    // Převzorkování nad rámec displeje je čistá práce navíc, tak za pohybu padá na nativní
+    // rozlišení. Kdo má ostrost na 1, nepozná nic — jemu tohle nemá co ubrat.
+    if (v && !v.isDestroyed()) v.resolutionScale = interacting ? Math.min(sharpness, 1) : sharpness
+    if (googleRef.current) googleRef.current.maximumScreenSpaceError = interacting ? GOOGLE_SSE_MOVING : GOOGLE_SSE_STILL
     try { localStorage.setItem(SHARP_KEY, String(sharpness)) } catch { /* */ }
-  }, [sharpness, viewerReady])
+  }, [sharpness, interacting, viewerReady])
 
   useEffect(() => { refreshCache(); const id = setInterval(refreshCache, 4000); return () => clearInterval(id) }, [])
   // „Lokální mapa" = dlaždicová pyramida napečená do IndexedDB (store BAKED). `bakedInfo` = počet
@@ -555,7 +592,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     ts.enableCollision = true
     // ── ladění streamování/LOD, ať je „skákání" dlaždic klidnější (kompromis detail ↔ výkon/data) ──
     // Nižší SSE = jemnější dlaždice načtené dřív (i z dálky), takže přiblížení není tak skokové.
-    ts.maximumScreenSpaceError = 8                       // default 16 → víc detailu dřív
+    // Za pohybu se zvedne na GOOGLE_SSE_MOVING (viz efekt u `interacting`) — tady je klidová hodnota.
+    ts.maximumScreenSpaceError = GOOGLE_SSE_STILL
     ts.cacheBytes = 1024 * 1024 * 1024                   // 1 GB (default 512 MB) → míň „reload" lupnutí při návratu
     ts.maximumCacheOverflowBytes = 768 * 1024 * 1024     // dočasný přetok, ať se nezahazuje při špičce
     ts.preloadFlightDestinations = true                  // při flyTo natáhni cíl předem (default true, explicitně)

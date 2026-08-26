@@ -9,6 +9,7 @@
  * sliderem jinak vystřelí request na každý pixel.
  */
 import { supabase } from './supabase'
+import { cacheDel, cacheGet, cachePut } from '../cache'
 import { downloadFile, extOf, removeFiles, uploadFile } from './storage'
 import type { AssetConfig, AssetKind, AssetRow } from './types'
 
@@ -84,15 +85,45 @@ export async function getAsset(assetId: string): Promise<AssetRow | null> {
   return (data as AssetRow | null) ?? null
 }
 
-/** Stáhne binárku souboru zpátky jako `File` — do stejného importu jako z disku. */
-export function fetchAssetFile(asset: AssetRow): Promise<File> {
-  return downloadFile(asset.file_path, asset.file_name)
+/**
+ * Klíč do lokální cache. Stačí `asset.id`, a to je podstatné: `createAsset` zakládá pro každé
+ * nahrání NOVÝ řádek s novým id a to id je součástí cesty v bucketu, takže se binárka nikdy
+ * nepřepisuje na místě — jedno id znamená navždycky tytéž bajty.
+ *
+ * Schválně NE `updated_at`: ten hlídá trigger a mění se i při pouhé změně `config`, tedy při
+ * každém posunutí modelu. Cache by se tím zahazovala pořád dokola.
+ */
+const assetKey = (id: string, part: 'file' | 'sidecar') => `asset/${id}/${part}`
+
+/**
+ * Stáhne binárku souboru zpátky jako `File` — do stejného importu jako z disku.
+ *
+ * Napřed se kouká na disk prohlížeče. Bez toho stahovalo každé otevření scény všechny modely,
+ * výkresy i rastry znovu ze Supabase, což je na free tarifu (5 GB přenosu měsíčně) ta věc, která
+ * dojde jako první — úložiště na 1 GB vydrží dýl než přenos, když scénu otevíráš denně.
+ *
+ * Cache je best-effort: cokoliv se pokazí (kvóta, privátní režim), tiše se stáhne ze sítě.
+ */
+export async function fetchAssetFile(asset: AssetRow): Promise<File> {
+  return cachedDownload(assetKey(asset.id, 'file'), asset.file_path, asset.file_name)
 }
 
 /** Stáhne doprovodný soubor rastru (world file), pokud ho asset má. */
 export async function fetchAssetSidecar(asset: AssetRow): Promise<File | null> {
   if (!asset.sidecar_path || !asset.sidecar_name) return null
-  return downloadFile(asset.sidecar_path, asset.sidecar_name)
+  return cachedDownload(assetKey(asset.id, 'sidecar'), asset.sidecar_path, asset.sidecar_name)
+}
+
+async function cachedDownload(key: string, path: string, fileName: string): Promise<File> {
+  const hit = await cacheGet(key)
+  if (hit) {
+    // kopie do čerstvého bufferu: to, co vrací IndexedDB, si nechceme nechat držet
+    return new File([new Uint8Array(hit)], fileName, { type: 'application/octet-stream' })
+  }
+  const file = await downloadFile(path, fileName)
+  // uložení běží na pozadí — na výsledek nemá vliv a velký soubor by jinak zdržel zobrazení
+  void file.arrayBuffer().then(b => cachePut(key, new Uint8Array(b))).catch(() => {})
+  return file
 }
 
 /** Smaže soubor scény i jeho binárky. Cesty si dohledá sám, stačí id. */
@@ -103,6 +134,9 @@ export async function deleteAsset(assetId: string): Promise<void> {
   if (row) await removeFiles([row.file_path, row.sidecar_path])
   const { error } = await supabase.from('geo_assets').delete().eq('id', assetId)
   if (error) throw new Error(`Smazání souboru selhalo: ${error.message}`)
+  // ať smazaný stomegový model nezabírá místo na disku, než na něj dojde LRU
+  void cacheDel(assetKey(assetId, 'file')).catch(() => {})
+  void cacheDel(assetKey(assetId, 'sidecar')).catch(() => {})
 }
 
 export async function renameAsset(assetId: string, name: string): Promise<void> {

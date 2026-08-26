@@ -49,6 +49,14 @@ export const ZOOM_SENS = 0.0013              // log jednotek na pixel kolečka (
 export const ZOOM_TAU = 0.22                 // měkkost pružiny v s — vyšší = delší, měkčí doklouznutí
 export const ZOOM_MAX = 1.5                  // strop nedojetého zoomu (~4,5×), ať rychlé rolování neodletí
 
+// ── Kvalita za pohybu ───────────────────────────────────────────────────────────
+// Dokud se s mapou hýbe, nemá cenu dotahovat detail, který stejně proletí přes obraz — a přitom
+// se kvůli němu stahují a dekódují dlaždice, tedy to, na co appka čeká nejvíc. V klidu se detail
+// vrátí. Rozdíl mezi 8 a 16 je zhruba ČTYŘNÁSOBEK počtu dlaždic.
+export const GOOGLE_SSE_STILL = 8     // v klidu: víc detailu dřív
+export const GOOGLE_SSE_MOVING = 16   // za pohybu: výchozí hodnota Cesia
+export const MOVE_SETTLE_MS = 400     // jak dlouho po puštění se čeká, než se kvalita vrátí
+
 // Náhled uloženého pohledu. Leží přímo ve stavu scény (viz CamView.thumb), a ten se ukládá celý
 // naráz — proto tak malý. 160×90 se v seznamu pozná, JPEG na 0,5 vyjde na ~2 kB.
 export const VIEW_THUMB_W = 160
