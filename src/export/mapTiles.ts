@@ -13,6 +13,7 @@
 import { Zip, ZipDeflate, ZipPassThrough, strToU8 } from 'three/examples/jsm/libs/fflate.module.js'
 import { type Tile, type MapLayer, tileBounds, tileName, pickTopoTier, mapBboxUrl, concatBytes } from '../tiles'
 import { download } from '../exportUtils'
+import { pointInRing } from '../rings'
 import { type ExportCtx, throwIfAborted } from './ctx'
 import { loadMapChunk } from './maps'
 
@@ -37,6 +38,86 @@ export function fmtBytes(b: number): string {
   if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`
   if (b >= 1e6) return `${Math.round(b / 1e6)} MB`
   return `${Math.round(b / 1e3)} kB`
+}
+
+type Rect = { x0: number; y0: number; x1: number; y1: number }
+
+/** Protíná úsečka obdélník? Rychlé zamítnutí obálkou, pak průsečík se čtyřmi stranami. */
+function segHitsRect(ax: number, ay: number, bx: number, by: number, r: Rect): boolean {
+  if (Math.max(ax, bx) < r.x0 || Math.min(ax, bx) > r.x1) return false
+  if (Math.max(ay, by) < r.y0 || Math.min(ay, by) > r.y1) return false
+  const side = (px: number, py: number) => (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+  const s = [side(r.x0, r.y0), side(r.x1, r.y0), side(r.x1, r.y1), side(r.x0, r.y1)]
+  // všechny rohy na téže straně přímky → úsečka obdélníkem neprochází
+  return !(s.every(v => v > 0) || s.every(v => v < 0))
+}
+
+/**
+ * Leží dlaždice CELÁ uvnitř tvaru?
+ *
+ * Rozhoduje o formátu: vnitřní dlaždice jde jako JPEG (nemá co ořezávat), okrajová musí být PNG
+ * s alfou. Většina dlaždic je vnitřní, takže se tím ušetří ta čtyřnásobná velikost PNG všude tam,
+ * kde by k ničemu nebyla.
+ *
+ * Nestačí otestovat rohy: hranice může dlaždici přeťít, aniž by v ní ležel vrchol. Proto se navíc
+ * hledá průsečík s libovolnou hranou tvaru.
+ */
+function tileFullyInside(b: Rect, rings: number[][][]): boolean {
+  const corners: [number, number][] = [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]]
+  if (!corners.every(([x, y]) => rings.some(r => pointInRing(x, y, r)))) return false
+  for (const r of rings) {
+    for (let i = 0; i < r.length; i++) {
+      const [ax, ay] = r[i], [bx, by] = r[(i + 1) % r.length]
+      if (segHitsRect(ax, ay, bx, by, b)) return false
+    }
+  }
+  return true
+}
+
+/**
+ * Dlaždice, které tvar pokrývá. Dva režimy, protože se ptáme na dvě různé věci:
+ *
+ *  - `center` — dlaždice se počítá, když v ní leží STŘED. Na výběr do scény: hranice sedí zhruba
+ *    na obrysu a nepřeteče na všechny strany o celou dlaždici.
+ *  - `touch` — stačí, že se dlaždice tvaru dotkne. Na OŘEZANÝ export: okrajové dlaždice musí být
+ *    v sadě, jinak by z nich zbyly díry a mapa by na krajích končila schodovitě.
+ */
+export function tilesInShape(
+  rings: number[][][], size: number, mode: 'center' | 'touch', max: number,
+): Tile[] | 'too-many' {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const r of rings) for (const [x, y] of r) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x
+    if (y < minY) minY = y; if (y > maxY) maxY = y
+  }
+  if (!isFinite(minX)) return []
+  const hits: Tile[] = []
+  for (let ix = Math.floor(minX / size); ix <= Math.floor(maxX / size); ix++) {
+    for (let iy = Math.floor(minY / size); iy <= Math.floor(maxY / size); iy++) {
+      const b: Rect = { x0: ix * size, y0: iy * size, x1: (ix + 1) * size, y1: (iy + 1) * size }
+      const inside = mode === 'center'
+        ? rings.some(r => pointInRing(b.x0 + size / 2, b.y0 + size / 2, r))
+        : tileTouches(b, rings)
+      if (inside) hits.push({ ix, iy, size })
+    }
+    if (hits.length > max) return 'too-many'
+  }
+  return hits
+}
+
+/** Dotýká se dlaždice tvaru? Roh uvnitř, vrchol tvaru uvnitř dlaždice, nebo protnutá hrana. */
+function tileTouches(b: Rect, rings: number[][][]): boolean {
+  const corners: [number, number][] = [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]]
+  if (corners.some(([x, y]) => rings.some(r => pointInRing(x, y, r)))) return true
+  for (const r of rings) {
+    for (let i = 0; i < r.length; i++) {
+      const [ax, ay] = r[i]
+      if (ax >= b.x0 && ax <= b.x1 && ay >= b.y0 && ay <= b.y1) return true
+      const [bx, by] = r[(i + 1) % r.length]
+      if (segHitsRect(ax, ay, bx, by, b)) return true
+    }
+  }
+  return false
 }
 
 /** Kam odcházejí chunky zipu. Disk drží paměť plochou, paměťová varianta je záložní. */
@@ -73,7 +154,7 @@ function memSink(name: string): Sink {
 
 export async function exportMapTiles(
   tiles: Tile[],
-  o: { tileSize: number; res: number; layer: MapLayer; toDisk: boolean },
+  o: { tileSize: number; res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][] },
   ctx: ExportCtx,
 ): Promise<string> {
   if (!tiles.length) throw new Error('Nejsou vybrané žádné dlaždice')
@@ -100,11 +181,29 @@ export async function exportMapTiles(
   const tier = pickTopoTier(o.tileSize)
   const edge = (n: number, i: number) => Math.round(i * side / n)
 
-  let done = 0
+  let done = 0, clipped = 0
   for (const t of tiles) {
     throwIfAborted(ctx.signal)
     const b = tileBounds(t)
     g.clearRect(0, 0, side, side)
+
+    // Okrajová dlaždice se ořízne na tvar území — mapa pak nekončí schodovitým obdélníkem, ale
+    // skutečným obrysem. Vnitřní dlaždice ořez nepotřebuje, a proto může zůstat úsporný JPEG.
+    const edgeTile = !!o.clip && !tileFullyInside(b, o.clip)
+    if (edgeTile && o.clip) {
+      const path = new Path2D()
+      for (const r of o.clip) {
+        r.forEach(([x, y], i) => {
+          const px = (x - b.x0) / (b.x1 - b.x0) * side
+          const py = (b.y1 - y) / (b.y1 - b.y0) * side // sever nahoře → Y obráceně
+          if (i === 0) path.moveTo(px, py); else path.lineTo(px, py)
+        })
+        path.closePath()
+      }
+      g.save()
+      g.clip(path, 'evenodd') // evenodd → díry uvnitř území zůstanou průhledné
+      clipped++
+    }
 
     // dlaždice se skládá z bloků, protože ČÚZK víc než CHUNK_PX na požadavek nedá
     for (let r = 0; r < nSub; r++) {
@@ -121,13 +220,19 @@ export async function exportMapTiles(
       }
     }
 
-    const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.9))
+    if (edgeTile) g.restore()
+
+    // JPEG průhlednost neumí → oříznutá dlaždice musí do PNG (a s ním i jiná přípona world filu)
+    const [ext, wext, mime, q] = edgeTile
+      ? ['png', 'pgw', 'image/png', undefined] as const
+      : ['jpg', 'jgw', 'image/jpeg', 0.9] as const
+    const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, mime, q))
     if (!blob) throw new Error('Zakódování dlaždice selhalo')
-    const jf = new ZipPassThrough(`${tileName(t)}.jpg`) // JPEG už komprimovaný je
+    const jf = new ZipPassThrough(`${tileName(t)}.${ext}`) // JPEG i PNG jsou komprimované už teď
     zip.add(jf); jf.push(new Uint8Array(await blob.arrayBuffer()), true); check()
 
     // world file: velikost pixelu, nulové rotace, střed levého horního pixelu
-    const wf = new ZipDeflate(`${tileName(t)}.jgw`, { level: 6 })
+    const wf = new ZipDeflate(`${tileName(t)}.${wext}`, { level: 6 })
     zip.add(wf)
     wf.push(strToU8([o.res, 0, 0, -o.res, b.x0 + o.res / 2, b.y1 - o.res / 2].join('\n') + '\n'), true)
     check()
@@ -143,7 +248,12 @@ export async function exportMapTiles(
     `Vrstva: ${o.layer === 'ortofoto' ? 'ortofoto ČÚZK' : 'topografická mapa ČÚZK'}`,
     '',
     'Souřadnicový systém: S-JTSK / Krovak East North (EPSG:5514).',
-    'Ke každému JPEGu patří stejnojmenný .jgw (world file) — drží georeferenci.',
+    'Ke každému obrázku patří stejnojmenný world file — drží georeferenci.',
+    ...(o.clip ? [
+      '',
+      `Ořezáno na obrys území. ${clipped} okrajových dlaždic je PNG s průhledným okolím`,
+      `(.pgw), zbylých ${tiles.length - clipped} vnitřních je JPEG (.jgw) — ořez tam nemá co dělat.`,
+    ] : []),
     '',
     'V QGIS: Layer > Add Raster Layer a označ všechny JPEGy najednou; poskládají se',
     'na správná místa. Pro jednu souvislou vrstvu udělej Raster > Miscellaneous > Build',

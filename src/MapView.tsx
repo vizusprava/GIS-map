@@ -57,7 +57,7 @@ import { fetchKatastrPolylines } from './export/katastrDxf'
 import { stitchMapsCore } from './export/maps'
 import type { ExportCtx } from './export/ctx'
 import { exportTilesObj as exportTilesObjCore } from './export/tilesObj'
-import { exportMapTiles as exportMapTilesCore, estimateMapTiles, fmtBytes, MAP_RES, type MapRes } from './export/mapTiles'
+import { exportMapTiles as exportMapTilesCore, estimateMapTiles, tilesInShape, fmtBytes, MAP_RES, type MapRes } from './export/mapTiles'
 import { exportCutout as exportCutoutCore } from './export/cutout'
 import { exportGoogleMesh as exportGoogleMeshCore, type GoogleTile } from './export/googleMesh'
 import { NumRow, ProjSwitch, Section, ToggleBtn, type CamProj } from './ui'
@@ -1322,25 +1322,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
    * Okrajové dlaždice, ze kterých tvar ukrajuje jen roh, vypadnou — jinak by výběr přetekl přes
    * hranici na všechny strany a člověk by dostal víc, než ukázal.
    */
-  function tilesInRings(rings: number[][][], size: number): Tile[] | 'too-many' {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-    for (const r of rings) for (const [x, y] of r) {
-      if (x < minX) minX = x; if (x > maxX) maxX = x
-      if (y < minY) minY = y; if (y > maxY) maxY = y
-    }
-    if (!isFinite(minX)) return []
-    const ix0 = Math.floor(minX / size), ix1 = Math.floor(maxX / size)
-    const iy0 = Math.floor(minY / size), iy1 = Math.floor(maxY / size)
-    const hits: Tile[] = []
-    for (let ix = ix0; ix <= ix1; ix++) {
-      for (let iy = iy0; iy <= iy1; iy++) {
-        const cx = (ix + 0.5) * size, cy = (iy + 0.5) * size
-        if (rings.some(r => pointInRing(cx, cy, r))) hits.push({ ix, iy, size })
-      }
-      if (hits.length > AREA_TILES_MAX) return 'too-many' // dopočítávat nemá cenu, stejně odmítneme
-    }
-    return hits
-  }
+  const tilesInRings = (rings: number[][][], size: number) =>
+    tilesInShape(rings, size, 'center', AREA_TILES_MAX)
 
   /** Společné dokončení hromadného výběru — ptaní se u velkých počtů, zapnutí režimu, hláška. */
   function applyBulkTiles(res: Tile[] | 'too-many', what: string, keepExisting: boolean): void {
@@ -1843,6 +1826,26 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       'velikosti může spadnout. Doporučuju hrubší rozlišení, nebo Chrome/Edge.\n\nPokračovat?')) return
     await runExport(tileUi, 'Export mapy selhal', ctx =>
       exportMapTilesCore(tiles, { tileSize, res: mapRes, layer: mapLayer, toDisk: big && hasPicker }, ctx))
+  }
+
+  /**
+   * 2D mapa zvýrazněného ÚZEMÍ ve zvoleném rozlišení, oříznutá na jeho skutečný obrys.
+   *
+   * Dlaždice se berou režimem `touch`, ne `center`: do ořezaného exportu musí i okrajové, jinak
+   * by po nich zbyly díry a mapa by na krajích končila schodovitě místo po hranici.
+   */
+  async function exportRegionMapTiles() {
+    const a = regionActiveRef.current
+    if (!a) { toast.info('Nejdřív vyber území ve vyhledávání nahoře'); return }
+    const res = tilesInShape(a.sjtskRings, tileSize, 'touch', AREA_TILES_MAX)
+    if (res === 'too-many') { toast.error(`Území pokrývá přes ${AREA_TILES_MAX} dlaždic. Přepni na větší dlaždici.`); return }
+    if (!res.length) { toast.error('Území nepokrývá žádnou dlaždici'); return }
+    const est = estimateMapTiles(res.length, tileSize, mapRes)
+    const hasPicker = 'showSaveFilePicker' in window
+    const big = est.bytes > 500e6
+    if (!confirm(`${a.name}: ${res.length} dlaždic, ~${fmtBytes(est.bytes)}${big && !hasPicker ? '\n\nTenhle prohlížeč neumí zápis na disk — u téhle velikosti může spadnout.' : ''}\n\nExportovat?`)) return
+    await runExport(cutoutUi, 'Export mapy selhal', ctx =>
+      exportMapTilesCore(res, { tileSize, res: mapRes, layer: mapLayer, toDisk: big && hasPicker, clip: a.sjtskRings }, ctx))
   }
 
 
@@ -4674,7 +4677,23 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                   <>
                     <div className="mt-0.5 border-t border-gray-700 px-0.5 pt-1.5 text-[10px] uppercase tracking-wide text-gray-500">Export území</div>
                     <button onClick={exportRegionCutout} title="Výřez terénu DMR 5G + zapečené ortofoto ořezaný na hranici území → OBJ (velké území = hrubší mřížka / velký soubor)" className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-2 py-1.5 text-xs text-white hover:bg-sky-500"><Download size={13} /> Terén + ortofoto (OBJ)</button>
-                    <button onClick={exportRegionMaps} title="Spojená 2D mapa ořezaná na tvar území (jako výřez terénu) — ortofoto (PNG s alfou) + topo jako georeferencovaný obrázek (world file), okolí průhledné" className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-2 py-1.5 text-xs text-white hover:bg-teal-500"><Image size={13} /> Spojená mapa (2D)</button>
+                    <button onClick={exportRegionMaps} title="Spojená 2D mapa ořezaná na tvar území (jako výřez terénu) — ortofoto (PNG s alfou) + topo jako georeferencovaný obrázek (world file), okolí průhledné. JEDEN obrázek → u velkého území klesne rozlišení." className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-2 py-1.5 text-xs text-white hover:bg-teal-500"><Image size={13} /> Spojená mapa (2D)</button>
+
+                    {/* Dlaždicová varianta téhož: drží zvolený detail i u kraje, protože nemusí
+                        skončit v jednom canvasu. Ořez na obrys je stejný, jen po dlaždicích. */}
+                    <div className="flex items-center gap-1">
+                      <span className="w-11 shrink-0 text-[10px] text-gray-500" title="Metry na pixel. Ortofoto ČÚZK má nativně 20 cm.">Detail</span>
+                      {MAP_RES.map(r => (
+                        <button
+                          key={r}
+                          onClick={() => setMapRes(r)}
+                          className={`rounded px-1.5 py-0.5 text-[11px] ${mapRes === r ? 'bg-teal-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+                        >{r < 1 ? `${r * 100}cm` : `${r}m`}</button>
+                      ))}
+                    </div>
+                    <button onClick={exportRegionMapTiles} title="2D mapa po dlaždicích, oříznutá na skutečný obrys území. Na rozdíl od spojené mapy drží zvolený detail i u kraje." className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-2 py-1.5 text-xs text-white hover:bg-teal-500">
+                      <Grid3x3 size={13} /> Mapa po dlaždicích ({mapRes < 1 ? `${mapRes * 100} cm` : `${mapRes} m`}/px)
+                    </button>
                     <button onClick={exportRegionKatastrDxf} disabled={exporting} title="Katastr území do DXF: hranice jednotlivých parcel (hladina PARCELY) + obrys území (HRANICE_UZEMI), reálné S-JTSK + výšky DMR → lícuje s Terén (OBJ) i dlaždicemi" className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs text-white hover:bg-indigo-500 disabled:opacity-50">{exporting ? <Loader2 size={13} className="animate-spin" /> : <Layers size={13} />} Katastr (DXF)</button>
                     <button onClick={exportRegionDxf} disabled={exporting} title="Jen obrys území jako uzavřená 3D křivka (DXF R12) drapovaná na DMR — lokální ENU rámec" className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs text-white hover:bg-indigo-500 disabled:opacity-50">{exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Obrys území (DXF)</button>
                     {!LOCAL_TILES && (
