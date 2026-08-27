@@ -162,6 +162,7 @@ export async function exportGeoTiff(
   if (!g) throw new Error('Canvas 2D kontext se nepodařilo získat')
   const tier = pickTopoTier(Math.max(b.x1 - b.x0, b.y1 - b.y0))
   const nCols = Math.ceil(W / CHUNK_PX)
+  let blanks = 0
 
   for (let s = 0; s < nStrips; s++) {
     throwIfAborted(ctx.signal)
@@ -192,7 +193,10 @@ export async function exportGeoTiff(
         }
         g.save(); g.clip(path, 'evenodd') // evenodd → enklávy uvnitř území zůstanou průhledné
       }
-      const bmp = await loadMapChunk(mapBboxUrl(bx0, by0, bx1, by1, cw, rows, o.layer, tier), ctx.signal)
+      // tolerujeme prázdno: obálka území u hranic zasahuje mimo pokrytí ČÚZK a shodit kvůli tomu
+      // několikahodinový export by bylo nesmyslné — vyjde tam bílá/průhledná plocha
+      const { bmp, blank } = await loadMapChunk(mapBboxUrl(bx0, by0, bx1, by1, cw, rows, o.layer, tier), ctx.signal, true)
+      if (blank) blanks++
       g.drawImage(bmp, 0, 0)
       bmp.close?.()
       if (o.clip) g.restore()
@@ -214,5 +218,6 @@ export async function exportGeoTiff(
   }
 
   await finish()
-  return `Hotovo: ${W}×${H} px ${where}`
+  const note = blanks ? ` · ${blanks} bloků mimo pokrytí ČÚZK (bílá plocha)` : ''
+  return `Hotovo: ${W}×${H} px ${where}${note}`
 }

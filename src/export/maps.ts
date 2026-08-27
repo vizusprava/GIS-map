@@ -18,14 +18,54 @@ const STITCH_CHUNK_PX = 4096  // strop ČÚZK REST na jeden požadavek
 const STITCH_RES_M = 0.2      // cílové rozlišení (ortofoto má nativně 20 cm/px)
 const STITCH_MAX_AREA = 16384 * 16384 // pojistka na paměť canvasu (~1 GB), ať to nespadne
 
+/** Velikost výřezu, na kterém se poznává prázdná mapa. */
+const PROBE = 48
+
+/**
+ * Je blok jednolitý (= chybová odpověď ČÚZK), nebo jen klidná krajina?
+ *
+ * Původně se zmenšoval CELÝ blok do 16×16. To fungovalo, dokud byly bloky zhruba čtvercové —
+ * jenže u dlouhého úzkého pruhu se do jednoho pixelu náhledu zprůměrují desetitisíce zdrojových
+ * a i obyčejné pole nebo les vyjdou jako jednolitá plocha. Export pak hlásil výpadek ČÚZK nad
+ * úplně platnými daty.
+ *
+ * Proto se čtou dva VÝŘEZY V NATIVNÍM rozlišení. Skutečný letecký snímek má i na klidné ploše
+ * zrno, chybový obrázek je matematicky plochý. Prázdno hlásíme jen když jsou ploché OBA — jeden
+ * výřez může padnout na střechu haly nebo na vodní hladinu.
+ */
+function looksBlank(bmp: ImageBitmap, pctx: CanvasRenderingContext2D): boolean {
+  const w = Math.min(PROBE, bmp.width), h = Math.min(PROBE, bmp.height)
+  const spots: [number, number][] = [
+    [Math.floor((bmp.width - w) / 2), Math.floor((bmp.height - h) / 2)],
+    [0, 0],
+  ]
+  return spots.every(([sx, sy]) => {
+    pctx.clearRect(0, 0, PROBE, PROBE)
+    pctx.drawImage(bmp, sx, sy, w, h, 0, 0, w, h) // 1:1, žádné zmenšování
+    const d = pctx.getImageData(0, 0, w, h).data
+    let mn = 255, mx = 0
+    for (let i = 0; i < d.length; i += 4) {
+      const v = (d[i] + d[i + 1] + d[i + 2]) / 3
+      if (v < mn) mn = v
+      if (v > mx) mx = v
+    }
+    return mx - mn < 6
+  })
+}
+
+/**
+ * `tolerateBlank` — u velkých exportů je prázdný blok obvykle území MIMO pokrytí ČÚZK (obálka
+ * kraje u hranic zasahuje do Polska nebo Německa). Shodit kvůli němu celý několikahodinový
+ * export by bylo nesmyslné, takže se vrátí tak, jak je, a volající si spočítá kolik jich bylo.
+ */
 /**
  * Stáhne jeden blok mapy jako ImageBitmap — s ověřením a opakováním. ČÚZK ArcGIS (hlavně ZTM)
  * u větších/paralelních požadavků občas vrátí 200 s prázdným (bílým) obrázkem. Velikost je na
  * detekci nepoužitelná (chyba mívá i 3 MB, reálný list i 10 kB), spolehlivé je jen to, že prázdná
- * mapa je JEDNOLITÁ plocha → zmenšíme na 16×16 a změříme rozptyl. Reálná mapa má obrovský.
+ * mapa je jednolitá — viz `looksBlank`.
  */
-export async function loadMapChunk(url: string, signal?: AbortSignal): Promise<ImageBitmap> {
-  const probe = document.createElement('canvas'); probe.width = 16; probe.height = 16
+export async function loadMapChunk(url: string, signal?: AbortSignal, tolerateBlank = false): Promise<{ bmp: ImageBitmap; blank: boolean }> {
+  const probe = document.createElement('canvas'); probe.width = PROBE; probe.height = PROBE
   const pctx = probe.getContext('2d', { willReadFrequently: true })
   let lastErr: unknown = null
   for (let attempt = 1; attempt <= 4; attempt++) {
@@ -35,15 +75,13 @@ export async function loadMapChunk(url: string, signal?: AbortSignal): Promise<I
       const ct = res.headers.get('content-type') || ''
       if (!res.ok || !ct.startsWith('image/')) throw new Error(`HTTP ${res.status} (${ct || 'bez typu'})`)
       const bmp = await createImageBitmap(await res.blob())
-      if (pctx) {
-        pctx.clearRect(0, 0, 16, 16)
-        pctx.drawImage(bmp, 0, 0, 16, 16)
-        const d = pctx.getImageData(0, 0, 16, 16).data
-        let mn = 255, mx = 0
-        for (let i = 0; i < d.length; i += 4) { const v = (d[i] + d[i + 1] + d[i + 2]) / 3; if (v < mn) mn = v; if (v > mx) mx = v }
-        if (mx - mn < 6) { bmp.close?.(); throw new Error('prázdný/jednolitý obrázek (výpadek ČÚZK)') }
+      if (pctx && looksBlank(bmp, pctx)) {
+        // poslední pokus a smíme to strávit → nejspíš mimo pokrytí, ne výpadek
+        if (attempt === 4 && tolerateBlank) return { bmp, blank: true }
+        bmp.close?.()
+        throw new Error('prázdný/jednolitý obrázek (výpadek ČÚZK)')
       }
-      return bmp
+      return { bmp, blank: false }
     } catch (e) {
       if (isAbortError(e) || signal?.aborted) throw e // uživatel zrušil → nezkoušet znovu
       lastErr = e
@@ -107,7 +145,7 @@ export async function stitchMapsCore(minX: number, minY: number, maxX: number, m
       // blok v S-JTSK (pixelové hranice → poměrná část obálky); sever = horní okraj
       const bx0 = minX + spanX * cx[c] / W, bx1 = minX + spanX * cx[c + 1] / W
       const by1 = maxY - spanY * cy[r] / H, by0 = maxY - spanY * cy[r + 1] / H
-      const bmp = await loadMapChunk(mapBboxUrl(bx0, by0, bx1, by1, pxW, pxH, L.layer, tier), ctx.signal)
+      const { bmp } = await loadMapChunk(mapBboxUrl(bx0, by0, bx1, by1, pxW, pxH, L.layer, tier), ctx.signal)
       done++
       ctx.report(done / total, `mapa ${done}/${total}`)
       return { c, r, bmp, pxW, pxH }
@@ -178,7 +216,7 @@ export async function fetchOrthoTexture(minX: number, minY: number, maxX: number
     const pxW = bx[c + 1] - bx[c], pxH = by[r + 1] - by[r]
     const x0 = minX + spanX * bx[c] / W, x1 = minX + spanX * bx[c + 1] / W
     const yTop = maxY - spanY * by[r] / H, yBot = maxY - spanY * by[r + 1] / H
-    const bmp = await loadMapChunk(mapBboxUrl(x0, yBot, x1, yTop, pxW, pxH, 'ortofoto', 'ZTM250'), signal)
+    const { bmp } = await loadMapChunk(mapBboxUrl(x0, yBot, x1, yTop, pxW, pxH, 'ortofoto', 'ZTM250'), signal)
     ctx.drawImage(bmp, bx[c], by[r], pxW, pxH); bmp.close?.()
     report(`stahuji ortofoto ${++done}/${total}…`)
   }

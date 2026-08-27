@@ -214,7 +214,8 @@ export async function exportMapTiles(
         // sever je horní okraj obrázku → Y se počítá odshora dolů
         const bx0 = b.x0 + (b.x1 - b.x0) * px0 / side, bx1 = b.x0 + (b.x1 - b.x0) * px1 / side
         const by1 = b.y1 - (b.y1 - b.y0) * py0 / side, by0 = b.y1 - (b.y1 - b.y0) * py1 / side
-        const bmp = await loadMapChunk(mapBboxUrl(bx0, by0, bx1, by1, px1 - px0, py1 - py0, o.layer, tier), ctx.signal)
+        // stejně jako u GeoTIFFu: prázdný blok u hranic je mimo pokrytí, ne výpadek
+        const { bmp } = await loadMapChunk(mapBboxUrl(bx0, by0, bx1, by1, px1 - px0, py1 - py0, o.layer, tier), ctx.signal, true)
         g.drawImage(bmp, px0, py0)
         bmp.close?.()
       }
