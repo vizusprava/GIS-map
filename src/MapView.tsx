@@ -348,6 +348,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // dlaždicový 2D export: zvolené rozlišení drží bez ohledu na velikost území
   const [mapRes, setMapRes] = useState<MapRes>(0.2)
   const [mapLayer, setMapLayer] = useState<MapLayer>('ortofoto')
+  // PNG do Photoshopu a AE (menší, georeference vedle jako .pgw), GeoTIFF když ji chceš uvnitř
+  const [mapFormat, setMapFormat] = useState<'png' | 'tiff'>('png')
   const [tileCount, setTileCount] = useState(0)
   const [tileBusy, setTileBusy] = useState(false)
   const [tileProgress, setTileProgress] = useState('')
@@ -1850,7 +1852,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       exportGeoTiffCore(bbox, {
         res: mapRes, layer: mapLayer, clip,
         toDisk: plan.bytes > 500e6 && hasPicker,
-        name: `mapa_${mapLayer}_${String(mapRes).replace('.', '_')}m.tif`,
+        format: mapFormat,
+        name: `mapa_${mapLayer}_${String(mapRes).replace('.', '_')}m.${mapFormat === 'png' ? 'png' : 'tif'}`,
       }, ctx))
   }
 
@@ -4680,7 +4683,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                   <Grid3x3 size={13} /> Export 2D po dlaždicích
                 </button>
                 <button onClick={exportTilesGeoTiff} title="Jeden spojený obrázek přes obálku výběru, s georeferencí. Otevře ho Photoshop i After Effects." className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-2 py-1.5 text-xs text-white hover:bg-emerald-500">
-                  <Image size={13} /> Spojený GeoTIFF
+                  <Image size={13} /> Spojený {mapFormat === 'png' ? 'PNG' : 'GeoTIFF'}
                 </button>
                 {!LOCAL_TILES && (
                   <button onClick={loadLocal2DMap} title="Napéct ortofoto vybrané oblasti do localu jako dlaždicovou pyramidu (nativní rozlišení, kvalita se nezhoršuje s velikostí, jde zoomovat hloub). Jednorázové stahování z ČÚZK (u větší oblasti to chvíli trvá), pak lokální/offline a uložené natrvalo. Nenapečené oblasti jedou dál z ČÚZK." className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs text-white hover:bg-indigo-500">
@@ -4746,8 +4749,19 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                     {/* Jeden spojený soubor pro Photoshop / AE. Nejde přes canvas, takže na rozdíl
                         od „Spojené mapy" ho neomezuje jeho strop 16 384 px. */}
                     <button onClick={exportRegionGeoTiff} title="Jeden spojený obrázek oříznutý na obrys území, s georeferencí. Otevře ho Photoshop i After Effects." className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-2 py-1.5 text-xs text-white hover:bg-emerald-500">
-                      <Image size={13} /> Spojený GeoTIFF ({mapRes < 1 ? `${mapRes * 100} cm` : `${mapRes} m`}/px)
+                      <Image size={13} /> Spojený {mapFormat === 'png' ? 'PNG' : 'GeoTIFF'} ({mapRes < 1 ? `${mapRes * 100} cm` : `${mapRes} m`}/px)
                     </button>
+                    <div className="flex items-center gap-1">
+                      <span className="w-11 shrink-0 text-[10px] text-gray-500">Formát</span>
+                      {([['png', 'PNG + .pgw'], ['tiff', 'GeoTIFF']] as const).map(([v, lbl]) => (
+                        <button
+                          key={v}
+                          onClick={() => setMapFormat(v)}
+                          title={v === 'png' ? 'Menší soubor, georeference vedle jako world file (.pgw) — jako u vlastního ortofota' : 'Georeference uvnitř souboru (EPSG:5514), ale nekomprimovaně, takže větší'}
+                          className={`rounded px-1.5 py-0.5 text-[11px] ${mapFormat === v ? 'bg-emerald-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+                        >{lbl}</button>
+                      ))}
+                    </div>
                     {(() => {
                       const a = regionActiveRef.current
                       if (!a) return null

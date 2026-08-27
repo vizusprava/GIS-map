@@ -17,6 +17,7 @@ import { type MapLayer, pickTopoTier, mapBboxUrl, concatBytes } from '../tiles'
 import { download } from '../exportUtils'
 import { type ExportCtx, throwIfAborted } from './ctx'
 import { loadMapChunk } from './maps'
+import { openPng, worldFile } from './pngStream'
 
 /** Strop ČÚZK REST na jeden požadavek. */
 const CHUNK_PX = 4096
@@ -124,15 +125,19 @@ type SaveFilePicker = (o: { suggestedName?: string; types?: { description: strin
 
 export async function exportGeoTiff(
   b: { x0: number; y0: number; x1: number; y1: number },
-  o: { res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][]; name: string },
+  o: { res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][]; name: string; format: 'tiff' | 'png' },
   ctx: ExportCtx,
 ): Promise<string> {
   const plan = planGeoTiff(b.x1 - b.x0, b.y1 - b.y0, o.res, !!o.clip)
-  if (!plan.tiffOk) throw new Error(`Vyšlo by ${(plan.bytes / 1e9).toFixed(1)} GB, klasický TIFF má strop 4 GB. Zvol hrubší detail.`)
+  const png = o.format === 'png'
+  // Strop 4 GB je vlastnost klasického TIFFu (32bitové offsety), PNG ho nemá.
+  if (!png && !plan.tiffOk) throw new Error(`Vyšlo by ${(plan.bytes / 1e9).toFixed(1)} GB, klasický TIFF má strop 4 GB. Zvol hrubší detail nebo PNG.`)
   const { W, H, samples } = plan
 
   const rowsPerStrip = Math.max(1, Math.min(H, Math.floor(STRIP_BUDGET / (W * samples))))
-  const { head, nStrips } = buildHeader(plan, o.res, b.x0, b.y1, rowsPerStrip)
+  const pngOut = png ? openPng(W, H, samples) : null
+  const nStrips = Math.ceil(H / rowsPerStrip)
+  const head = pngOut ? pngOut.head : buildHeader(plan, o.res, b.x0, b.y1, rowsPerStrip).head
 
   const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker
   const chunks: Uint8Array[] = []
@@ -140,7 +145,12 @@ export async function exportGeoTiff(
   let finish: () => Promise<void>
   let where: string
   if (o.toDisk && picker) {
-    const h = await picker({ suggestedName: o.name, types: [{ description: 'GeoTIFF', accept: { 'image/tiff': ['.tif'] } }] })
+    const h = await picker({
+      suggestedName: o.name,
+      types: png
+        ? [{ description: 'PNG', accept: { 'image/png': ['.png'] } }]
+        : [{ description: 'GeoTIFF', accept: { 'image/tiff': ['.tif'] } }],
+    })
     const w = await h.createWritable()
     write = d => w.write(d); finish = () => w.close(); where = 'na disk'
   } else {
@@ -148,7 +158,7 @@ export async function exportGeoTiff(
     // se stihne dřív (čeká se na něj), tady by se ale do pole uložil odkaz a všechny pruhy by
     // nakonec nesly obsah toho posledního.
     write = async d => { chunks.push(new Uint8Array(d)) }
-    finish = async () => { download(concatBytes(chunks), o.name, 'image/tiff') }
+    finish = async () => { download(concatBytes(chunks), o.name, png ? 'image/png' : 'image/tiff') }
     where = 'ke stažení'
   }
 
@@ -156,7 +166,10 @@ export async function exportGeoTiff(
 
   // Pruh se skládá po vodorovných blocích: ČÚZK víc než CHUNK_PX nedá a canvas by stejně neunesl
   // šířku přes 16 384. Do souboru jde až složený pruh, takže na rozměr obrázku žádný strop není.
-  const strip = new Uint8Array(W * samples * rowsPerStrip)
+  // PNG chce před každým řádkem bajt s číslem filtru; TIFF ne. Odtud ten rozdílný krok řádku.
+  const rowPad = o.format === 'png' ? 1 : 0
+  const rowStride = W * samples + rowPad
+  const strip = new Uint8Array(rowStride * rowsPerStrip)
   const cv = document.createElement('canvas')
   const g = cv.getContext('2d', { willReadFrequently: true })
   if (!g) throw new Error('Canvas 2D kontext se nepodařilo získat')
@@ -204,7 +217,7 @@ export async function exportGeoTiff(
       const px = g.getImageData(0, 0, cw, rows).data
       for (let y = 0; y < rows; y++) {
         let src = y * cw * 4
-        let dst = (y * W + x0) * samples
+        let dst = y * rowStride + rowPad + x0 * samples
         for (let x = 0; x < cw; x++) {
           strip[dst] = px[src]; strip[dst + 1] = px[src + 1]; strip[dst + 2] = px[src + 2]
           if (samples === 4) strip[dst + 3] = px[src + 3]
@@ -213,11 +226,22 @@ export async function exportGeoTiff(
       }
     }
 
-    await write(rows === rowsPerStrip ? strip : strip.subarray(0, W * samples * rows))
+    const body = rows === rowsPerStrip ? strip : strip.subarray(0, rowStride * rows)
+    if (pngOut) { for (const c of pngOut.stream.push(body)) await write(c) }
+    else await write(body)
     ctx.report((s + 1) / nStrips, `${s + 1}/${nStrips} pruhů`)
   }
 
+  if (pngOut) for (const c of pngOut.stream.end()) await write(c)
   await finish()
+
+  // Georeference u PNG nejde dovnitř (na rozdíl od GeoTIFFu) → jde vedle jako world file. Je to
+  // tentýž formát, jaký appka čte u vlastního ortofota, jen s příponou podle obrázku.
+  if (png) {
+    const wf = o.name.replace(/\.png$/i, '') + '.pgw'
+    download(new TextEncoder().encode(worldFile(o.res, b.x0, b.y1)), wf, 'text/plain')
+  }
+
   const note = blanks ? ` · ${blanks} bloků mimo pokrytí ČÚZK (bílá plocha)` : ''
-  return `Hotovo: ${W}×${H} px ${where}${note}`
+  return `Hotovo: ${W}×${H} px ${where}${note}${png ? ' · world file .pgw stažen zvlášť' : ''}`
 }
