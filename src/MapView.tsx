@@ -7,7 +7,7 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { zipSync } from 'three/examples/jsm/libs/fflate.module.js'
 import {
   TILE_SIZES, MESH_STEPS, MESH_STEP_DEFAULT, TEX_SIZES, type TileSize, type MeshStep, type TexSize,
-  type Tile, tileKey, tileAt, tileRingLL, wgsOf, sjtskOf, pool, gridSize, estimateObjBytes,
+  type MapLayer, type Tile, tileKey, tileAt, tileRingLL, wgsOf, sjtskOf, pool, gridSize, estimateObjBytes,
 } from './tiles'
 import { cacheStats, cacheClear, bakedGet, bakedPut, bakedAllKeys, bakedClear } from './cache'
 import { fetchOrthoUrl, orthoExport4326Url } from './orthoTiles'
@@ -57,6 +57,7 @@ import { fetchKatastrPolylines } from './export/katastrDxf'
 import { stitchMapsCore } from './export/maps'
 import type { ExportCtx } from './export/ctx'
 import { exportTilesObj as exportTilesObjCore } from './export/tilesObj'
+import { exportMapTiles as exportMapTilesCore, estimateMapTiles, fmtBytes, MAP_RES, type MapRes } from './export/mapTiles'
 import { exportCutout as exportCutoutCore } from './export/cutout'
 import { exportGoogleMesh as exportGoogleMeshCore, type GoogleTile } from './export/googleMesh'
 import { NumRow, ProjSwitch, Section, ToggleBtn, type CamProj } from './ui'
@@ -342,6 +343,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [meshStep, setMeshStep] = useState<MeshStep>(MESH_STEP_DEFAULT)
   // strop delší strany spojené 2D mapy (px). 16384 ≈ hranice canvasu prohlížeče (~1 GB paměti).
   const [stitchMax, setStitchMax] = useState(8192)
+  // dlaždicový 2D export: zvolené rozlišení drží bez ohledu na velikost území
+  const [mapRes, setMapRes] = useState<MapRes>(0.2)
+  const [mapLayer, setMapLayer] = useState<MapLayer>('ortofoto')
   const [tileCount, setTileCount] = useState(0)
   const [tileBusy, setTileBusy] = useState(false)
   const [tileProgress, setTileProgress] = useState('')
@@ -1818,6 +1822,27 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     if (!tiles.length) return
     await runExport(tileUi, 'Export dlaždic selhal', ctx =>
       exportTilesObjCore(tiles, { tileSize, meshStep, texSize, buildings: exportBuildings, katastr: exportKatastr }, ctx))
+  }
+
+  /**
+   * 2D mapa vybraných dlaždic ve ZVOLENÉM rozlišení (na rozdíl od „Spojené mapy", která u velkého
+   * území tiše zmenší měřítko, protože se musí vejít do jednoho canvasu).
+   *
+   * Cíl se volí podle odhadu: velký výstup jde rovnou na disk, protože v paměti by ho prohlížeč
+   * neunesl. Kdo zápis na disk nemá (Firefox, Safari), dostane aspoň varování před pádem.
+   */
+  async function exportMapTiles2D() {
+    const tiles = [...tilesRef.current.values()]
+    if (!tiles.length) { toast.info('Nejsou vybrané žádné dlaždice'); return }
+    const est = estimateMapTiles(tiles.length, tileSize, mapRes)
+    const hasPicker = 'showSaveFilePicker' in window
+    const big = est.bytes > 500e6
+    if (big && !hasPicker && !confirm(
+      `Odhad ${fmtBytes(est.bytes)} v ${tiles.length} dlaždicích.\n\n` +
+      'Tenhle prohlížeč neumí zapisovat rovnou na disk, takže se zip poskládá v paměti a u téhle ' +
+      'velikosti může spadnout. Doporučuju hrubší rozlišení, nebo Chrome/Edge.\n\nPokračovat?')) return
+    await runExport(tileUi, 'Export mapy selhal', ctx =>
+      exportMapTilesCore(tiles, { tileSize, res: mapRes, layer: mapLayer, toDisk: big && hasPicker }, ctx))
   }
 
 
@@ -4568,6 +4593,42 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                 </button>
                 <button onClick={exportStitchedMaps} title="Spojená 2D mapa přes výběr — ortofoto i topografická mapa jako jeden georeferencovaný obrázek (world file)" className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-2 py-1.5 text-xs text-white hover:bg-teal-500">
                   <Image size={13} /> Spojená mapa (2D)
+                </button>
+
+                {/* Dlaždicový 2D export. Na rozdíl od „Spojené mapy" drží zvolené rozlišení
+                    i u velkého území — místo jednoho zmenšeného obrázku vyjde sada dlaždic. */}
+                <div className="mt-0.5 border-t border-gray-700 px-0.5 pt-1.5 text-[10px] uppercase tracking-wide text-gray-500">
+                  2D mapa po dlaždicích
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-11 shrink-0 text-[10px] text-gray-500">Vrstva</span>
+                  {([['ortofoto', 'ortofoto'], ['topo', 'topo']] as const).map(([v, lbl]) => (
+                    <button key={v} onClick={() => setMapLayer(v)} className={`rounded px-1.5 py-0.5 text-[11px] ${mapLayer === v ? 'bg-teal-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>{lbl}</button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-11 shrink-0 text-[10px] text-gray-500" title="Metry na pixel. Ortofoto ČÚZK má nativně 20 cm.">Detail</span>
+                  {MAP_RES.map(r => (
+                    <button
+                      key={r}
+                      onClick={() => setMapRes(r)}
+                      title={r === 0.2 ? 'Nativní rozlišení ČÚZK — nejostřejší, co existuje' : `${(r / 0.2).toFixed(0)}× hrubší než zdroj, ${(r / 0.2) ** 2}× menší soubor`}
+                      className={`rounded px-1.5 py-0.5 text-[11px] ${mapRes === r ? 'bg-teal-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+                    >{r < 1 ? `${r * 100}cm` : `${r}m`}</button>
+                  ))}
+                </div>
+                {(() => {
+                  const e = estimateMapTiles(tileCount, tileSize, mapRes)
+                  const disk = e.bytes > 500e6
+                  return (
+                    <div className={`max-w-[190px] px-1 text-[10px] leading-snug ${disk ? 'text-amber-400' : 'text-gray-500'}`}>
+                      {tileCount}× {e.side}×{e.side} px · {(e.px / 1e9).toFixed(1)} Gpx · ~{fmtBytes(e.bytes)}
+                      {disk && <><br />Velké — zapíše se rovnou na disk (zeptá se kam). Chrome/Edge.</>}
+                    </div>
+                  )
+                })()}
+                <button onClick={exportMapTiles2D} title="Každá dlaždice jako georeferencovaný JPEG + world file. Rozlišení se drží i u velkého území." className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-2 py-1.5 text-xs text-white hover:bg-teal-500">
+                  <Grid3x3 size={13} /> Export 2D po dlaždicích
                 </button>
                 {!LOCAL_TILES && (
                   <button onClick={loadLocal2DMap} title="Napéct ortofoto vybrané oblasti do localu jako dlaždicovou pyramidu (nativní rozlišení, kvalita se nezhoršuje s velikostí, jde zoomovat hloub). Jednorázové stahování z ČÚZK (u větší oblasti to chvíli trvá), pak lokální/offline a uložené natrvalo. Nenapečené oblasti jedou dál z ČÚZK." className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs text-white hover:bg-indigo-500">
