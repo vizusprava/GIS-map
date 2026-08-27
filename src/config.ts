@@ -49,9 +49,11 @@ export const ZOOM_SENS = 0.0013              // log jednotek na pixel kolečka (
 export const ZOOM_TAU = 0.22                 // měkkost pružiny v s — vyšší = delší, měkčí doklouznutí
 export const ZOOM_MAX = 1.5                  // strop nedojetého zoomu (~4,5×), ať rychlé rolování neodletí
 
-// Pojistka proti překliku: oblast nakreslená přes půl republiky by při 250m dlaždicích znamenala
-// tisíce polygonů ve scéně (a stejně tolik stažení při exportu). Radši řekneme, ať se to zmenší.
-export const AREA_TILES_MAX = 400
+// Hromadný výběr dlaždic (oblastí nebo územím). Vykreslování je dávkové, takže tisíce dlaždic
+// scéna unese — strop je tu jen proti překliku a proti zamrznutí na stavbě geometrie.
+export const AREA_TILES_MAX = 20000
+// Nad tímhle se radši zeptáme: kraj po 250 m je desítky tisíc dlaždic a při exportu i stažení.
+export const AREA_TILES_CONFIRM = 2000
 
 // ── Kvalita za pohybu ───────────────────────────────────────────────────────────
 // Dokud se s mapou hýbe, nemá cenu dotahovat detail, který stejně proletí přes obraz — a přitom

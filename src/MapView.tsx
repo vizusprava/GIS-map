@@ -31,7 +31,7 @@ import {
   SHAKE_KEY, SHAKE_MAX_DEG, SHARP_KEY, SPIN_KEY, SPIN_DEFAULT_DEG_S, ZOOM_SENS, ZOOM_TAU, ZOOM_MAX,
   CR_EXTENT, LIBEREC_EXTENT, GEOID_CZ, GOOGLE_LIFT_M, MAX_GLB_YAW_DEG, OSM_LIFT_M, MODEL_GLOW, EMPTY_NAMESET,
   VIEW_THUMB_W, VIEW_THUMB_H, VIEW_THUMB_Q, VIEW_DIRTY_M, VIEW_DIRTY_DEG,
-  GOOGLE_SSE_STILL, GOOGLE_SSE_MOVING, MOVE_SETTLE_MS, AREA_TILES_MAX,
+  GOOGLE_SSE_STILL, GOOGLE_SSE_MOVING, MOVE_SETTLE_MS, AREA_TILES_MAX, AREA_TILES_CONFIRM,
 } from './config'
 import type {
   Base, Placement, CamLook, CamView, Parcel, Anchor, ModelEntry, SceneObj, DrawLayer, DrawingEntry,
@@ -347,7 +347,13 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [tileProgress, setTileProgress] = useState('')
   const [tilePct, setTilePct] = useState(-1) // 0..1 = určitý průběh (stahování), -1 = neurčitý (skládání apod.)
   const abortRef = useRef<AbortController | null>(null) // pro zrušení běžícího exportu
-  const tilesRef = useRef<Map<string, { tile: Tile; ent: Cesium.Entity }>>(new Map())
+  // Dlaždice drží jen data. Vykreslují se dávkově do dvou primitivů (viz rebuildTileGfx) — dřív
+  // to byly dvě Cesium entity NA DLAŽDICI, což při výběru celého okresu znamená tisíce entit
+  // a appka se zadrhne. Primitiva zvládnou tentýž počet v jednom vykreslovacím volání.
+  const tilesRef = useRef<Map<string, Tile>>(new Map())
+  const tileFillRef = useRef<Cesium.GroundPrimitive | null>(null)
+  const tileEdgeRef = useRef<Cesium.GroundPolylinePrimitive | null>(null)
+  const tileGfxTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   // mřížka dlaždic přes viditelnou oblast (jako kladení listů na ČÚZK) — zap/vyp overlay s názvy
   const [gridOn, setGridOn] = useState(false)
   const [gridNote, setGridNote] = useState('')
@@ -1305,33 +1311,65 @@ export function MapView({ scene }: { scene: ScenePersist }) {
    * Bere se dlaždice, jejíž STŘED padne dovnitř. Okrajové, ze kterých oblast ukrajuje jen roh,
    * tak vypadnou — jinak by výběr přetekl přes nakreslenou hranici na všechny strany.
    */
-  function finalizeAreaTiles() {
-    const ll = areaPolyLL()
-    if (!ll) return
-    const poly = ll.map(([lon, lat]) => sjtskOf(lon, lat) as number[])
-    const xs = poly.map(p => p[0]), ys = poly.map(p => p[1])
-    const size = tileSize
-    const ix0 = Math.floor(Math.min(...xs) / size), ix1 = Math.floor(Math.max(...xs) / size)
-    const iy0 = Math.floor(Math.min(...ys) / size), iy1 = Math.floor(Math.max(...ys) / size)
-
+  /**
+   * Dlaždice, jejichž STŘED padne do některého z prstenců (S-JTSK). Sdílené jádro pro obrys
+   * nakreslený rukou i pro hranici správního území.
+   *
+   * Okrajové dlaždice, ze kterých tvar ukrajuje jen roh, vypadnou — jinak by výběr přetekl přes
+   * hranici na všechny strany a člověk by dostal víc, než ukázal.
+   */
+  function tilesInRings(rings: number[][][], size: number): Tile[] | 'too-many' {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const r of rings) for (const [x, y] of r) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x
+      if (y < minY) minY = y; if (y > maxY) maxY = y
+    }
+    if (!isFinite(minX)) return []
+    const ix0 = Math.floor(minX / size), ix1 = Math.floor(maxX / size)
+    const iy0 = Math.floor(minY / size), iy1 = Math.floor(maxY / size)
     const hits: Tile[] = []
     for (let ix = ix0; ix <= ix1; ix++) {
       for (let iy = iy0; iy <= iy1; iy++) {
-        if (pointInRing((ix + 0.5) * size, (iy + 0.5) * size, poly)) hits.push({ ix, iy, size })
+        const cx = (ix + 0.5) * size, cy = (iy + 0.5) * size
+        if (rings.some(r => pointInRing(cx, cy, r))) hits.push({ ix, iy, size })
       }
-      if (hits.length > AREA_TILES_MAX) break // nemá cenu dopočítávat, stejně to odmítneme
+      if (hits.length > AREA_TILES_MAX) return 'too-many' // dopočítávat nemá cenu, stejně odmítneme
     }
-    if (hits.length > AREA_TILES_MAX) {
-      toast.error(`Oblast pokrývá přes ${AREA_TILES_MAX} dlaždic. Zmenši ji, nebo přepni na větší dlaždici.`)
+    return hits
+  }
+
+  /** Společné dokončení hromadného výběru — ptaní se u velkých počtů, zapnutí režimu, hláška. */
+  function applyBulkTiles(res: Tile[] | 'too-many', what: string, keepExisting: boolean): void {
+    if (res === 'too-many') {
+      toast.error(`${what} pokrývá přes ${AREA_TILES_MAX} dlaždic. Přepni na větší dlaždici.`)
       return
     }
-    if (!hits.length) { toast.info('Uvnitř oblasti nepadl střed žádné dlaždice — zkus ji zvětšit.'); return }
+    if (!res.length) { toast.info(`Uvnitř (${what.toLowerCase()}) nepadl střed žádné dlaždice — zkus větší tvar nebo menší dlaždici.`); return }
+    if (res.length > AREA_TILES_CONFIRM && !confirm(`${what} pokrývá ${res.length} dlaždic. Přidat je všechny?`)) return
 
-    claimMapClick('tile')     // pozor: tohle zahodí i nakreslenou oblast, `poly` už ale máme
-    exclusiveSelect('tile')   // dlaždice jsou nový zdroj výběru → parcely a území pryč
-    for (const t of hits) setTileSelected(t, true)
+    claimMapClick('tile')
+    if (!keepExisting) exclusiveSelect('tile') // nový zdroj výběru → parcely pryč
+    for (const t of res) setTileSelected(t, true)
     setTileMode(true)
-    toast.success(`Vybráno ${hits.length} dlaždic`)
+    toast.success(`Přidáno ${res.length} dlaždic (celkem ${tilesRef.current.size})`)
+  }
+
+  function finalizeAreaTiles() {
+    const ll = areaPolyLL()
+    if (!ll) return
+    // pozor na pořadí: `claimMapClick` uvnitř applyBulkTiles obrys zahodí, tady už ho máme spočítaný
+    const poly = ll.map(([lon, lat]) => sjtskOf(lon, lat) as number[])
+    applyBulkTiles(tilesInRings([poly], tileSize), 'Oblast', false)
+  }
+
+  /**
+   * Vyplní dlaždicemi právě zvýrazněné správní území. Víc území se SČÍTÁ — proto `keepExisting`
+   * a proto `exclusiveSelect('region')` níž dlaždice neruší: kraj se do nich zrovna převádí.
+   */
+  function addRegionTiles() {
+    const a = regionActiveRef.current
+    if (!a) { toast.info('Nejdřív vyber území ve vyhledávání nahoře'); return }
+    applyBulkTiles(tilesInRings(a.sjtskRings, tileSize), `Území ${a.name}`, true)
   }
 
   async function finalizeArea() {
@@ -1580,41 +1618,64 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     }
   }, [tileMode, tileSize])
 
-  /** Zapne/vypne dlaždici. Idempotentní — malování tahem po ní jezdí opakovaně. */
-  function setTileSelected(tile: Tile, on: boolean) {
+  /**
+   * Překreslí VŠECHNY vybrané dlaždice jako dvě dávková primitiva (výplň + obrys).
+   *
+   * Odloženě: malování tahem sype změny po jedné a překreslovat na každou z nich by bylo trhané.
+   * U velkých výběrů se navíc hrany nezhušťují (`per`) — zakřivení Křováku ve WGS84 je na dlaždici
+   * setinový pixel, ale těch bodů jsou při tisících dlaždic statisíce.
+   */
+  function scheduleTileGfx() {
+    clearTimeout(tileGfxTimer.current)
+    tileGfxTimer.current = setTimeout(() => rebuildTileGfx(), 80)
+  }
+
+  function rebuildTileGfx() {
     const v = viewerRef.current
     if (!v || v.isDestroyed()) return
-    const key = tileKey(tile)
-    const hit = tilesRef.current.get(key)
-    if (on === (hit !== undefined)) return
-    if (hit) {
-      v.entities.remove(hit.ent)
-      tilesRef.current.delete(key)
-    } else {
-      const positions = Cesium.Cartesian3.fromDegreesArray(tileRingLL(tile))
-      const ent = v.entities.add({
-        polygon: {
-          hierarchy: new Cesium.PolygonHierarchy(positions),
-          material: MODEL_GLOW.withAlpha(0.12),
-          classificationType: Cesium.ClassificationType.BOTH,
-        },
-        polyline: {
-          positions: [...positions, positions[0]],
-          width: 2,
-          material: new Cesium.PolylineGlowMaterialProperty({ color: MODEL_GLOW, glowPower: 0.25 }),
-          clampToGround: true,
-        },
-      })
-      tilesRef.current.set(key, { tile, ent })
+    if (tileFillRef.current) { v.scene.primitives.remove(tileFillRef.current); tileFillRef.current = null }
+    if (tileEdgeRef.current) { v.scene.primitives.remove(tileEdgeRef.current); tileEdgeRef.current = null }
+
+    const tiles = [...tilesRef.current.values()]
+    if (!tiles.length) return
+    const per = tiles.length > 400 ? 2 : 8
+    const fill = MODEL_GLOW.withAlpha(0.12)
+    const fills: Cesium.GeometryInstance[] = []
+    const edges: Cesium.GeometryInstance[] = []
+    for (const t of tiles) {
+      const ring = Cesium.Cartesian3.fromDegreesArray(tileRingLL(t, per))
+      fills.push(new Cesium.GeometryInstance({
+        geometry: new Cesium.PolygonGeometry({ polygonHierarchy: new Cesium.PolygonHierarchy(ring) }),
+        attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(fill) },
+      }))
+      edges.push(new Cesium.GeometryInstance({
+        geometry: new Cesium.GroundPolylineGeometry({ positions: [...ring, ring[0]], width: 2 }),
+        attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(MODEL_GLOW) },
+      }))
     }
+    tileFillRef.current = v.scene.primitives.add(new Cesium.GroundPrimitive({
+      geometryInstances: fills,
+      appearance: new Cesium.PerInstanceColorAppearance({ flat: true }),
+    })) as Cesium.GroundPrimitive
+    tileEdgeRef.current = v.scene.primitives.add(new Cesium.GroundPolylinePrimitive({
+      geometryInstances: edges,
+      appearance: new Cesium.PolylineColorAppearance(),
+    })) as Cesium.GroundPolylinePrimitive
+  }
+
+  /** Zapne/vypne dlaždici. Idempotentní — malování tahem po ní jezdí opakovaně. */
+  function setTileSelected(tile: Tile, on: boolean) {
+    const key = tileKey(tile)
+    if (on === tilesRef.current.has(key)) return
+    if (on) tilesRef.current.set(key, tile); else tilesRef.current.delete(key)
     setTileCount(tilesRef.current.size)
+    scheduleTileGfx()
   }
 
   function clearTiles() {
-    const v = viewerRef.current
-    if (v && !v.isDestroyed()) for (const t of tilesRef.current.values()) v.entities.remove(t.ent)
     tilesRef.current.clear()
     setTileCount(0)
+    scheduleTileGfx()
   }
 
   function toggleTileMode() {
@@ -1753,7 +1814,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   }
 
   async function exportTilesObj() {
-    const tiles = [...tilesRef.current.values()].map(t => t.tile)
+    const tiles = [...tilesRef.current.values()]
     if (!tiles.length) return
     await runExport(tileUi, 'Export dlaždic selhal', ctx =>
       exportTilesObjCore(tiles, { tileSize, meshStep, texSize, buildings: exportBuildings, katastr: exportKatastr }, ctx))
@@ -2010,7 +2071,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
 
   // lokální mapa z VÝBĚRU DLAŽDIC (obálka S-JTSK dlaždic → lon/lat)
   async function loadLocal2DMap() {
-    const tiles = [...tilesRef.current.values()].map(t => t.tile)
+    const tiles = [...tilesRef.current.values()]
     if (!tiles.length || tileBusy) return
     let ix0 = Infinity, ix1 = -Infinity, iy0 = Infinity, iy1 = -Infinity
     for (const t of tiles) { ix0 = Math.min(ix0, t.ix); ix1 = Math.max(ix1, t.ix); iy0 = Math.min(iy0, t.iy); iy1 = Math.max(iy1, t.iy) }
@@ -2137,7 +2198,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   }
 
   async function exportStitchedMaps() {
-    const tiles = [...tilesRef.current.values()].map(t => t.tile)
+    const tiles = [...tilesRef.current.values()]
     if (!tiles.length) return
     // S-JTSK obálka výběru (dlaždice jsou souvislé čtverce)
     let ix0 = Infinity, ix1 = -Infinity, iy0 = Infinity, iy1 = -Infinity
@@ -2657,7 +2718,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   /** Jen JEDEN zdroj výběru naráz — maže DATA. Režimy klikání řeší `claimMapClick`. */
   function exclusiveSelect(keep: 'parcel' | 'tile' | 'region') {
     if (keep !== 'parcel') { clearAllParcels(); clearArea() }
-    if (keep !== 'tile') clearTiles()
+    // Území dlaždice NERUŠÍ: kraj se do nich právě převádí (addRegionTiles) a víc krajů se má
+    // sečíst do jednoho výběru. Ostatní zdroje si dlaždice pořád vylučují.
+    if (keep !== 'tile' && keep !== 'region') clearTiles()
     if (keep !== 'region') clearRegion()
   }
 
@@ -4470,7 +4533,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                 {tileCount > 0 && (() => {
                   // odhad rozlišení spojené mapy pro aktuální výběr (nativní 20 cm/px, zastropováno)
                   let ix0 = Infinity, ix1 = -Infinity, iy0 = Infinity, iy1 = -Infinity
-                  for (const t of tilesRef.current.values()) { ix0 = Math.min(ix0, t.tile.ix); ix1 = Math.max(ix1, t.tile.ix); iy0 = Math.min(iy0, t.tile.iy); iy1 = Math.max(iy1, t.tile.iy) }
+                  for (const t of tilesRef.current.values()) { ix0 = Math.min(ix0, t.ix); ix1 = Math.max(ix1, t.ix); iy0 = Math.min(iy0, t.iy); iy1 = Math.max(iy1, t.iy) }
                   const spanX = (ix1 - ix0 + 1) * tileSize, spanY = (iy1 - iy0 + 1) * tileSize
                   const nW = spanX / 0.2, nH = spanY / 0.2
                   let sc = Math.min(1, stitchMax / Math.max(nW, nH))
@@ -4526,6 +4589,15 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                   <span className="min-w-0 flex-1 truncate text-sm text-gray-200">Zvýrazněno: <span className="font-medium">{regionName}</span></span>
                   <button onClick={clearRegion} title="Zrušit zvýraznění území" className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-800 hover:text-red-300"><RotateCcw size={14} /></button>
                 </div>
+                {/* Území → dlaždice. Výběr se SČÍTÁ, takže jde poskládat víc krajů za sebou:
+                    najdi území, přidej, najdi další, přidej. Dlaždice se přitom neruší. */}
+                <button
+                  onClick={addRegionTiles}
+                  title={`Vyplní hranici území dlaždicemi ${tileSize} m a přidá je k už vybraným`}
+                  className="flex items-center gap-1.5 rounded-lg bg-cyan-600 px-2 py-1.5 text-xs text-white transition-colors hover:bg-cyan-500"
+                >
+                  <Grid3x3 size={13} /> Přidat jako dlaždice ({tileSize} m)
+                </button>
                 <label className="flex items-center gap-1.5" title="Viditelnost okolí — 0 % = tmavé, 100 % = plně vidět">
                   <span className="w-14 shrink-0 text-[11px] text-gray-400">Okolí</span>
                   <input type="range" min={0} max={1} step={0.05} value={regionDim} onChange={e => setRegionDim(parseFloat(e.target.value))} className="min-w-0 flex-1 accent-emerald-500" />
