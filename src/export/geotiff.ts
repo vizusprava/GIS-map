@@ -123,12 +123,87 @@ export function buildHeader(p: TiffPlan, res: number, originX: number, originY: 
 type SaveFilePicker = (o: { suggestedName?: string; types?: { description: string; accept: Record<string, string[]> }[] })
   => Promise<{ createWritable: () => Promise<{ write: (d: Uint8Array) => Promise<void>; close: () => Promise<void> }> }>
 
-export async function exportGeoTiff(
+/** Největší rozměr plátna v prohlížeči. JPEG přes canvas jinak nejde zakódovat. */
+const CANVAS_MAX = 16384
+
+/**
+ * Jeden spojený JPEG.
+ *
+ * Na rozdíl od PNG a TIFFu se NEDÁ streamovat: JPEG umí zakódovat jen `canvas.toBlob`, a ten
+ * potřebuje celý obrázek na plátně naráz. Platí tedy strop plátna 16 384 px — na velké území je
+ * potřeba PNG (bez ztráty, streamovaně) nebo export po dlaždicích.
+ *
+ * Průhlednost JPEG neumí, takže při ořezu na území se okolí vyplní bílou. Kdo chce mapu ve tvaru
+ * kraje, potřebuje PNG nebo dlaždice — tam okrajové dlaždice nesou alfu.
+ */
+async function exportOneJpeg(
   b: { x0: number; y0: number; x1: number; y1: number },
-  o: { res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][]; name: string; format: 'tiff' | 'png' },
+  o: { res: number; layer: MapLayer; clip?: number[][][]; name: string },
+  plan: TiffPlan,
   ctx: ExportCtx,
 ): Promise<string> {
-  const plan = planGeoTiff(b.x1 - b.x0, b.y1 - b.y0, o.res, !!o.clip)
+  const { W, H } = plan
+  if (W > CANVAS_MAX || H > CANVAS_MAX) {
+    throw new Error(`${W}×${H} px se do JPEGu nevejde (plátno prohlížeče končí na ${CANVAS_MAX} px). Zvol hrubší detail, PNG, nebo export po dlaždicích.`)
+  }
+  const cv = document.createElement('canvas')
+  cv.width = W; cv.height = H
+  const g = cv.getContext('2d')
+  if (!g) throw new Error('Canvas 2D kontext se nepodařilo získat')
+  g.fillStyle = '#fff'
+  g.fillRect(0, 0, W, H) // podklad — mimo výkroj zůstane bílá, alfu JPEG nemá
+
+  if (o.clip) {
+    const path = new Path2D()
+    for (const r of o.clip) {
+      r.forEach(([x, y], i) => {
+        const px = (x - b.x0) / (b.x1 - b.x0) * W
+        const py = (b.y1 - y) / (b.y1 - b.y0) * H
+        if (i === 0) path.moveTo(px, py); else path.lineTo(px, py)
+      })
+      path.closePath()
+    }
+    g.save(); g.clip(path, 'evenodd')
+  }
+
+  const tier = pickTopoTier(Math.max(b.x1 - b.x0, b.y1 - b.y0))
+  const nCols = Math.ceil(W / CHUNK_PX), nRows = Math.ceil(H / CHUNK_PX)
+  const edge = (len: number, n: number, i: number) => Math.round(i * len / n)
+  let done = 0, blanks = 0
+  for (let r = 0; r < nRows; r++) {
+    for (let c = 0; c < nCols; c++) {
+      throwIfAborted(ctx.signal)
+      const x0 = edge(W, nCols, c), x1 = edge(W, nCols, c + 1)
+      const y0 = edge(H, nRows, r), y1 = edge(H, nRows, r + 1)
+      const bx0 = b.x0 + (b.x1 - b.x0) * x0 / W, bx1 = b.x0 + (b.x1 - b.x0) * x1 / W
+      const by1 = b.y1 - (b.y1 - b.y0) * y0 / H, by0 = b.y1 - (b.y1 - b.y0) * y1 / H
+      const { bmp, blank } = await loadMapChunk(mapBboxUrl(bx0, by0, bx1, by1, x1 - x0, y1 - y0, o.layer, tier), ctx.signal, true)
+      if (blank) blanks++
+      g.drawImage(bmp, x0, y0)
+      bmp.close?.()
+      done++
+      ctx.report(done / (nCols * nRows), `${done}/${nCols * nRows} bloků`)
+    }
+  }
+  if (o.clip) g.restore()
+
+  ctx.report(-1, 'kóduji JPEG…')
+  const blob = await new Promise<Blob | null>(res => cv.toBlob(res, 'image/jpeg', 0.9))
+  if (!blob) throw new Error('Zakódování JPEGu selhalo (nejspíš málo paměti)')
+  download(new Uint8Array(await blob.arrayBuffer()), o.name, 'image/jpeg')
+  download(new TextEncoder().encode(worldFile(o.res, b.x0, b.y1)), o.name.replace(/\.jpg$/i, '') + '.jgw', 'text/plain')
+
+  const note = blanks ? ` · ${blanks} bloků mimo pokrytí ČÚZK` : ''
+  return `Hotovo: ${W}×${H} px, ${(blob.size / 1e6).toFixed(0)} MB${note} · world file .jgw stažen zvlášť`
+}
+
+export async function exportGeoTiff(
+  b: { x0: number; y0: number; x1: number; y1: number },
+  o: { res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][]; name: string; format: 'tiff' | 'png' | 'jpeg' },
+  ctx: ExportCtx,
+): Promise<string> {
+  const plan = planGeoTiff(b.x1 - b.x0, b.y1 - b.y0, o.res, o.format !== 'jpeg' && !!o.clip)
+  if (o.format === 'jpeg') return exportOneJpeg(b, o, plan, ctx)
   const png = o.format === 'png'
   // Strop 4 GB je vlastnost klasického TIFFu (32bitové offsety), PNG ho nemá.
   if (!png && !plan.tiffOk) throw new Error(`Vyšlo by ${(plan.bytes / 1e9).toFixed(1)} GB, klasický TIFF má strop 4 GB. Zvol hrubší detail nebo PNG.`)

@@ -349,7 +349,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [mapRes, setMapRes] = useState<MapRes>(0.2)
   const [mapLayer, setMapLayer] = useState<MapLayer>('ortofoto')
   // PNG do Photoshopu a AE (menší, georeference vedle jako .pgw), GeoTIFF když ji chceš uvnitř
-  const [mapFormat, setMapFormat] = useState<'png' | 'tiff'>('png')
+  const [mapFormat, setMapFormat] = useState<'png' | 'tiff' | 'jpeg'>('png')
   const [tileCount, setTileCount] = useState(0)
   const [tileBusy, setTileBusy] = useState(false)
   const [tileProgress, setTileProgress] = useState('')
@@ -1841,7 +1841,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
    */
   async function exportOneGeoTiff(bbox: { x0: number; y0: number; x1: number; y1: number }, clip: number[][][] | undefined, label: string) {
     const plan = planGeoTiff(bbox.x1 - bbox.x0, bbox.y1 - bbox.y0, mapRes, !!clip)
-    if (!plan.tiffOk) { toast.error(`${plan.W}×${plan.H} px = ${fmtBytes(plan.bytes)}. Klasický TIFF má strop 4 GB — zvol hrubší detail.`); return }
+    // Strop 4 GB je vlastnost klasického TIFFu; PNG ani JPEG ho nemají.
+    if (mapFormat === 'tiff' && !plan.tiffOk) { toast.error(`${plan.W}×${plan.H} px = ${fmtBytes(plan.bytes)}. Klasický TIFF má strop 4 GB — zvol hrubší detail nebo PNG.`); return }
     const hasPicker = 'showSaveFilePicker' in window
     const warn = [
       !plan.afterEffectsOk && 'After Effects zvládne kompozici do 30 000 px — tohle je nad to',
@@ -1853,7 +1854,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
         res: mapRes, layer: mapLayer, clip,
         toDisk: plan.bytes > 500e6 && hasPicker,
         format: mapFormat,
-        name: `mapa_${mapLayer}_${String(mapRes).replace('.', '_')}m.${mapFormat === 'png' ? 'png' : 'tif'}`,
+        // Název podle ÚZEMÍ, ne obecné „mapa": cílem bývá složka s víc kraji vedle sebe a
+        // stejnojmenné soubory by se přepisovaly. Diakritika a mezery ven, ať to snese každý disk.
+        name: `${label.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '_').replace(/^_|_$/g, '').toLowerCase()}_${mapLayer}_${String(mapRes).replace('.', '_')}m.${mapFormat === 'png' ? 'png' : mapFormat === 'jpeg' ? 'jpg' : 'tif'}`,
       }, ctx))
   }
 
@@ -4683,7 +4686,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                   <Grid3x3 size={13} /> Export 2D po dlaždicích
                 </button>
                 <button onClick={exportTilesGeoTiff} title="Jeden spojený obrázek přes obálku výběru, s georeferencí. Otevře ho Photoshop i After Effects." className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-2 py-1.5 text-xs text-white hover:bg-emerald-500">
-                  <Image size={13} /> Spojený {mapFormat === 'png' ? 'PNG' : 'GeoTIFF'}
+                  <Image size={13} /> Spojený {mapFormat === 'png' ? 'PNG' : mapFormat === 'jpeg' ? 'JPEG' : 'GeoTIFF'}
                 </button>
                 {!LOCAL_TILES && (
                   <button onClick={loadLocal2DMap} title="Napéct ortofoto vybrané oblasti do localu jako dlaždicovou pyramidu (nativní rozlišení, kvalita se nezhoršuje s velikostí, jde zoomovat hloub). Jednorázové stahování z ČÚZK (u větší oblasti to chvíli trvá), pak lokální/offline a uložené natrvalo. Nenapečené oblasti jedou dál z ČÚZK." className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs text-white hover:bg-indigo-500">
@@ -4749,11 +4752,11 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                     {/* Jeden spojený soubor pro Photoshop / AE. Nejde přes canvas, takže na rozdíl
                         od „Spojené mapy" ho neomezuje jeho strop 16 384 px. */}
                     <button onClick={exportRegionGeoTiff} title="Jeden spojený obrázek oříznutý na obrys území, s georeferencí. Otevře ho Photoshop i After Effects." className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-2 py-1.5 text-xs text-white hover:bg-emerald-500">
-                      <Image size={13} /> Spojený {mapFormat === 'png' ? 'PNG' : 'GeoTIFF'} ({mapRes < 1 ? `${mapRes * 100} cm` : `${mapRes} m`}/px)
+                      <Image size={13} /> Spojený {mapFormat === 'png' ? 'PNG' : mapFormat === 'jpeg' ? 'JPEG' : 'GeoTIFF'} ({mapRes < 1 ? `${mapRes * 100} cm` : `${mapRes} m`}/px)
                     </button>
                     <div className="flex items-center gap-1">
                       <span className="w-11 shrink-0 text-[10px] text-gray-500">Formát</span>
-                      {([['png', 'PNG + .pgw'], ['tiff', 'GeoTIFF']] as const).map(([v, lbl]) => (
+                      {([['png', 'PNG'], ['jpeg', 'JPEG'], ['tiff', 'GeoTIFF']] as const).map(([v, lbl]) => (
                         <button
                           key={v}
                           onClick={() => setMapFormat(v)}
