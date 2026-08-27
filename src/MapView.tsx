@@ -8,6 +8,7 @@ import { zipSync } from 'three/examples/jsm/libs/fflate.module.js'
 import {
   TILE_SIZES, MESH_STEPS, MESH_STEP_DEFAULT, TEX_SIZES, type TileSize, type MeshStep, type TexSize,
   type MapLayer, type Tile, tileKey, tileAt, tileRingLL, wgsOf, sjtskOf, pool, gridSize, estimateObjBytes,
+  tilesBounds,
 } from './tiles'
 import { cacheStats, cacheClear, bakedGet, bakedPut, bakedAllKeys, bakedClear } from './cache'
 import { fetchOrthoUrl, orthoExport4326Url } from './orthoTiles'
@@ -58,6 +59,7 @@ import { stitchMapsCore } from './export/maps'
 import type { ExportCtx } from './export/ctx'
 import { exportTilesObj as exportTilesObjCore } from './export/tilesObj'
 import { exportMapTiles as exportMapTilesCore, estimateMapTiles, tilesInShape, fmtBytes, MAP_RES, type MapRes } from './export/mapTiles'
+import { exportGeoTiff as exportGeoTiffCore, planGeoTiff } from './export/geotiff'
 import { exportCutout as exportCutoutCore } from './export/cutout'
 import { exportGoogleMesh as exportGoogleMeshCore, type GoogleTile } from './export/googleMesh'
 import { NumRow, ProjSwitch, Section, ToggleBtn, type CamProj } from './ui'
@@ -1826,6 +1828,50 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       'velikosti může spadnout. Doporučuju hrubší rozlišení, nebo Chrome/Edge.\n\nPokračovat?')) return
     await runExport(tileUi, 'Export mapy selhal', ctx =>
       exportMapTilesCore(tiles, { tileSize, res: mapRes, layer: mapLayer, toDisk: big && hasPicker }, ctx))
+  }
+
+  /**
+   * Jeden spojený GeoTIFF — pro Photoshop a After Effects, kde se s dlaždicemi pracovat nedá.
+   *
+   * Nepočítá se přes canvas, takže neplatí jeho strop 16 384 px: zapisuje se po pruzích rovnou
+   * do souboru. Limitem je až samotný cíl — kompozice v AE končí na 30 000 px, Photoshop na
+   * 300 000, klasický TIFF na 4 GB. Co z toho projde, ukazuje odhad v panelu.
+   */
+  async function exportOneGeoTiff(bbox: { x0: number; y0: number; x1: number; y1: number }, clip: number[][][] | undefined, label: string) {
+    const plan = planGeoTiff(bbox.x1 - bbox.x0, bbox.y1 - bbox.y0, mapRes, !!clip)
+    if (!plan.tiffOk) { toast.error(`${plan.W}×${plan.H} px = ${fmtBytes(plan.bytes)}. Klasický TIFF má strop 4 GB — zvol hrubší detail.`); return }
+    const hasPicker = 'showSaveFilePicker' in window
+    const warn = [
+      !plan.afterEffectsOk && 'After Effects zvládne kompozici do 30 000 px — tohle je nad to',
+      !plan.photoshopOk && 'Photoshop zvládne do 300 000 px na stranu — tohle je nad to',
+    ].filter(Boolean).join('\n')
+    if (!confirm(`${label}\n${plan.W}×${plan.H} px · ${fmtBytes(plan.bytes)}${warn ? `\n\n${warn}` : ''}\n\nExportovat?`)) return
+    await runExport(cutoutUi, 'Export mapy selhal', ctx =>
+      exportGeoTiffCore(bbox, {
+        res: mapRes, layer: mapLayer, clip,
+        toDisk: plan.bytes > 500e6 && hasPicker,
+        name: `mapa_${mapLayer}_${String(mapRes).replace('.', '_')}m.tif`,
+      }, ctx))
+  }
+
+  /** Spojený GeoTIFF zvýrazněného území, oříznutý na jeho obrys. */
+  function exportRegionGeoTiff() {
+    const a = regionActiveRef.current
+    if (!a) { toast.info('Nejdřív vyber území ve vyhledávání nahoře'); return }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+    for (const r of a.sjtskRings) for (const [x, y] of r) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y
+    }
+    if (!isFinite(x0)) { toast.error('Území nemá geometrii'); return }
+    void exportOneGeoTiff({ x0, y0, x1, y1 }, a.sjtskRings, a.name)
+  }
+
+  /** Spojený GeoTIFF obálky vybraných dlaždic (bez ořezu — dlaždice tvoří obdélník). */
+  function exportTilesGeoTiff() {
+    const tiles = [...tilesRef.current.values()]
+    if (!tiles.length) { toast.info('Nejsou vybrané žádné dlaždice'); return }
+    const b = tilesBounds(tiles)
+    void exportOneGeoTiff({ x0: b.minX, y0: b.minY, x1: b.maxX, y1: b.maxY }, undefined, `${tiles.length} dlaždic`)
   }
 
   /**
@@ -4633,6 +4679,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                 <button onClick={exportMapTiles2D} title="Každá dlaždice jako georeferencovaný JPEG + world file. Rozlišení se drží i u velkého území." className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-2 py-1.5 text-xs text-white hover:bg-teal-500">
                   <Grid3x3 size={13} /> Export 2D po dlaždicích
                 </button>
+                <button onClick={exportTilesGeoTiff} title="Jeden spojený obrázek přes obálku výběru, s georeferencí. Otevře ho Photoshop i After Effects." className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-2 py-1.5 text-xs text-white hover:bg-emerald-500">
+                  <Image size={13} /> Spojený GeoTIFF
+                </button>
                 {!LOCAL_TILES && (
                   <button onClick={loadLocal2DMap} title="Napéct ortofoto vybrané oblasti do localu jako dlaždicovou pyramidu (nativní rozlišení, kvalita se nezhoršuje s velikostí, jde zoomovat hloub). Jednorázové stahování z ČÚZK (u větší oblasti to chvíli trvá), pak lokální/offline a uložené natrvalo. Nenapečené oblasti jedou dál z ČÚZK." className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs text-white hover:bg-indigo-500">
                     <ArrowDownToLine size={13} /> Načíst 2D lokálně
@@ -4694,6 +4743,29 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                     <button onClick={exportRegionMapTiles} title="2D mapa po dlaždicích, oříznutá na skutečný obrys území. Na rozdíl od spojené mapy drží zvolený detail i u kraje." className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-2 py-1.5 text-xs text-white hover:bg-teal-500">
                       <Grid3x3 size={13} /> Mapa po dlaždicích ({mapRes < 1 ? `${mapRes * 100} cm` : `${mapRes} m`}/px)
                     </button>
+                    {/* Jeden spojený soubor pro Photoshop / AE. Nejde přes canvas, takže na rozdíl
+                        od „Spojené mapy" ho neomezuje jeho strop 16 384 px. */}
+                    <button onClick={exportRegionGeoTiff} title="Jeden spojený obrázek oříznutý na obrys území, s georeferencí. Otevře ho Photoshop i After Effects." className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-2 py-1.5 text-xs text-white hover:bg-emerald-500">
+                      <Image size={13} /> Spojený GeoTIFF ({mapRes < 1 ? `${mapRes * 100} cm` : `${mapRes} m`}/px)
+                    </button>
+                    {(() => {
+                      const a = regionActiveRef.current
+                      if (!a) return null
+                      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+                      for (const r of a.sjtskRings) for (const [x, y] of r) {
+                        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y
+                      }
+                      if (!isFinite(x0)) return null
+                      const p = planGeoTiff(x1 - x0, y1 - y0, mapRes, true)
+                      return (
+                        <div className={`max-w-[190px] px-1 text-[10px] leading-snug ${p.tiffOk ? 'text-gray-500' : 'text-amber-400'}`}>
+                          {p.W}×{p.H} px · {fmtBytes(p.bytes)}<br />
+                          {p.tiffOk ? 'TIFF ok' : 'nad 4 GB — hrubší detail'}
+                          {' · '}{p.photoshopOk ? 'Photoshop ok' : 'nad Photoshop'}
+                          {' · '}{p.afterEffectsOk ? 'AE ok' : 'nad AE (30k px)'}
+                        </div>
+                      )
+                    })()}
                     <button onClick={exportRegionKatastrDxf} disabled={exporting} title="Katastr území do DXF: hranice jednotlivých parcel (hladina PARCELY) + obrys území (HRANICE_UZEMI), reálné S-JTSK + výšky DMR → lícuje s Terén (OBJ) i dlaždicemi" className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs text-white hover:bg-indigo-500 disabled:opacity-50">{exporting ? <Loader2 size={13} className="animate-spin" /> : <Layers size={13} />} Katastr (DXF)</button>
                     <button onClick={exportRegionDxf} disabled={exporting} title="Jen obrys území jako uzavřená 3D křivka (DXF R12) drapovaná na DMR — lokální ENU rámec" className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs text-white hover:bg-indigo-500 disabled:opacity-50">{exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Obrys území (DXF)</button>
                     {!LOCAL_TILES && (
