@@ -59,7 +59,8 @@ import { stitchMapsCore } from './export/maps'
 import type { ExportCtx } from './export/ctx'
 import { exportTilesObj as exportTilesObjCore } from './export/tilesObj'
 import { exportMapTiles as exportMapTilesCore, estimateMapTiles, tilesInShape, fmtBytes, MAP_RES, type MapRes } from './export/mapTiles'
-import { exportGeoTiff as exportGeoTiffCore, planGeoTiff } from './export/geotiff'
+import { exportGeoTiff as exportGeoTiffCore, planGeoTiff, type OutDir } from './export/geotiff'
+import { throwIfAborted } from './export/ctx'
 import { exportCutout as exportCutoutCore } from './export/cutout'
 import { exportGoogleMesh as exportGoogleMeshCore, type GoogleTile } from './export/googleMesh'
 import { NumRow, ProjSwitch, Section, ToggleBtn, type CamProj } from './ui'
@@ -347,7 +348,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [stitchMax, setStitchMax] = useState(8192)
   // dlaždicový 2D export: zvolené rozlišení drží bez ohledu na velikost území
   const [mapRes, setMapRes] = useState<MapRes>(0.2)
-  const [mapLayer, setMapLayer] = useState<MapLayer>('ortofoto')
+  // 'both' = ortofoto i topo přes tutéž obálku a rozlišení → vyjdou pixel na pixel a jdou
+  // v Photoshopu nebo AE položit přes sebe bez jakéhokoliv dorovnávání
+  const [mapLayer, setMapLayer] = useState<MapLayer | 'both'>('both')
   // PNG do Photoshopu a AE (menší, georeference vedle jako .pgw), GeoTIFF když ji chceš uvnitř
   const [mapFormat, setMapFormat] = useState<'png' | 'tiff' | 'jpeg'>('png')
   const [tileCount, setTileCount] = useState(0)
@@ -1828,8 +1831,13 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       `Odhad ${fmtBytes(est.bytes)} v ${tiles.length} dlaždicích.\n\n` +
       'Tenhle prohlížeč neumí zapisovat rovnou na disk, takže se zip poskládá v paměti a u téhle ' +
       'velikosti může spadnout. Doporučuju hrubší rozlišení, nebo Chrome/Edge.\n\nPokračovat?')) return
-    await runExport(tileUi, 'Export mapy selhal', ctx =>
-      exportMapTilesCore(tiles, { tileSize, res: mapRes, layer: mapLayer, toDisk: big && hasPicker }, ctx))
+    await runExport(tileUi, 'Export mapy selhal', async ctx => {
+      let last = ''
+      for (const layer of exportLayers()) {
+        last = await exportMapTilesCore(tiles, { tileSize, res: mapRes, layer, toDisk: big && hasPicker }, ctx)
+      }
+      return last
+    })
   }
 
   /**
@@ -1849,15 +1857,98 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       !plan.photoshopOk && 'Photoshop zvládne do 300 000 px na stranu — tohle je nad to',
     ].filter(Boolean).join('\n')
     if (!confirm(`${label}\n${plan.W}×${plan.H} px · ${fmtBytes(plan.bytes)}${warn ? `\n\n${warn}` : ''}\n\nExportovat?`)) return
-    await runExport(cutoutUi, 'Export mapy selhal', ctx =>
-      exportGeoTiffCore(bbox, {
-        res: mapRes, layer: mapLayer, clip,
-        toDisk: plan.bytes > 500e6 && hasPicker,
-        format: mapFormat,
-        // Název podle ÚZEMÍ, ne obecné „mapa": cílem bývá složka s víc kraji vedle sebe a
-        // stejnojmenné soubory by se přepisovaly. Diakritika a mezery ven, ať to snese každý disk.
-        name: `${label.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '_').replace(/^_|_$/g, '').toLowerCase()}_${mapLayer}_${String(mapRes).replace('.', '_')}m.${mapFormat === 'png' ? 'png' : mapFormat === 'jpeg' ? 'jpg' : 'tif'}`,
-      }, ctx))
+    // Obě vrstvy jdou přes TUTÉŽ obálku i rozlišení, takže vyjdou pixel na pixel a v Photoshopu
+    // nebo AE se dají položit přes sebe bez dorovnávání — proto se jen zopakuje tentýž export.
+    await runExport(cutoutUi, 'Export mapy selhal', async ctx => {
+      const ext = mapFormat === 'png' ? 'png' : mapFormat === 'jpeg' ? 'jpg' : 'tif'
+      let last = ''
+      for (const layer of exportLayers()) {
+        last = await exportGeoTiffCore(bbox, {
+          res: mapRes, layer, clip,
+          toDisk: plan.bytes > 500e6 && hasPicker,
+          format: mapFormat,
+          // Název podle ÚZEMÍ, ne obecné „mapa": cílem bývá složka s víc kraji vedle sebe
+          // a stejnojmenné soubory by se přepisovaly.
+          name: `${slug(label)}_${layer}_${String(mapRes).replace('.', '_')}m.${ext}`,
+        }, ctx)
+      }
+      return last
+    })
+  }
+
+  /** Které vrstvy se mají vyexportovat — „obojí" znamená totéž území dvakrát, pixel na pixel. */
+  const exportLayers = (): MapLayer[] => (mapLayer === 'both' ? ['ortofoto', 'topo'] : [mapLayer])
+
+  /** Název souboru z názvu území — bez diakritiky a mezer, ať to snese každý disk. */
+  const slug = (s: string) =>
+    s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '_').replace(/^_|_$/g, '').toLowerCase()
+
+  /**
+   * Postupné stažení VŠECH krajů do vybrané složky — každý kraj do vlastní podsložky.
+   *
+   * Složka se vybírá JEDNOU předem (`showDirectoryPicker`); jinak by se prohlížeč u čtrnácti
+   * krajů × dvou vrstev ptal osmadvacetkrát a stahování by nešlo nechat běžet bez dozoru.
+   *
+   * Kraje jdou za sebou, ne souběžně: ČÚZK při paralelní zátěži vrací prázdné dlaždice, a u
+   * několikahodinového běhu je spolehlivost přednější než rychlost.
+   */
+  async function exportAllRegions() {
+    type DirPicker = () => Promise<OutDir>
+    const picker = (window as unknown as { showDirectoryPicker?: DirPicker }).showDirectoryPicker
+    if (!picker) { toast.error('Tenhle prohlížeč neumí zápis do složky. Použij Chrome nebo Edge.'); return }
+
+    setRegionBusy(true)
+    let kraje: Array<{ kod: number; nazev: string; rings: [number, number][][] }>
+    try {
+      kraje = await ruianQuery(17, '1=1', true) // vrstva 17 = kraj, s geometrií
+    } catch (e) {
+      console.error('Načtení krajů selhalo:', e); toast.error('Načtení krajů z RÚIAN selhalo'); return
+    } finally { setRegionBusy(false) }
+    if (!kraje.length) { toast.error('RÚIAN nevrátil žádné kraje'); return }
+
+    const layers: MapLayer[] = mapLayer === 'both' ? ['ortofoto', 'topo'] : [mapLayer]
+    let px = 0
+    for (const k of kraje) {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+      for (const r of k.rings) for (const [x, y] of r) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y
+      }
+      px += planGeoTiff(x1 - x0, y1 - y0, mapRes, true).bytes
+    }
+    const each = `${mapRes < 1 ? `${mapRes * 100} cm` : `${mapRes} m`}/px`
+    if (!confirm(
+      `${kraje.length} krajů × ${layers.length} ${layers.length === 1 ? 'vrstva' : 'vrstvy'} v ${each}\n` +
+      `Odhad celkem: ${fmtBytes(px * layers.length)}\n\n` +
+      'Každý kraj dostane vlastní podsložku. Poběží to dlouho (klidně hodiny) a jde to kdykoliv ' +
+      'přerušit — hotové kraje zůstanou.\n\nVybrat složku a spustit?')) return
+
+    const root = await picker()
+    await runExport(cutoutUi, 'Dávkový export selhal', async ctx => {
+      let done = 0
+      for (const k of kraje) {
+        throwIfAborted(ctx.signal)
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+        for (const r of k.rings) for (const [x, y] of r) {
+          if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y
+        }
+        const dir = await root.getDirectoryHandle(slug(k.nazev), { create: true })
+        for (const layer of layers) {
+          throwIfAborted(ctx.signal)
+          const ext = mapFormat === 'png' ? 'png' : mapFormat === 'jpeg' ? 'jpg' : 'tif'
+          await exportGeoTiffCore({ x0, y0, x1, y1 }, {
+            res: mapRes, layer, clip: k.rings, format: mapFormat, dir, toDisk: false,
+            name: `${slug(k.nazev)}_${layer}_${String(mapRes).replace('.', '_')}m.${ext}`,
+          }, {
+            signal: ctx.signal,
+            // vlastní průběh: k pruhům uvnitř jednoho kraje přidáme, kolikátý kraj to je
+            report: (p, m) => ctx.report((done + Math.max(0, p)) / (kraje.length * layers.length),
+              `${k.nazev} · ${layer} · ${m}`),
+          })
+          done++
+        }
+      }
+      return `Hotovo: ${kraje.length} krajů ve složce`
+    })
   }
 
   /** Spojený GeoTIFF zvýrazněného území, oříznutý na jeho obrys. */
@@ -1896,8 +1987,13 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     const hasPicker = 'showSaveFilePicker' in window
     const big = est.bytes > 500e6
     if (!confirm(`${a.name}: ${res.length} dlaždic, ~${fmtBytes(est.bytes)}${big && !hasPicker ? '\n\nTenhle prohlížeč neumí zápis na disk — u téhle velikosti může spadnout.' : ''}\n\nExportovat?`)) return
-    await runExport(cutoutUi, 'Export mapy selhal', ctx =>
-      exportMapTilesCore(res, { tileSize, res: mapRes, layer: mapLayer, toDisk: big && hasPicker, clip: a.sjtskRings }, ctx))
+    await runExport(cutoutUi, 'Export mapy selhal', async ctx => {
+      let last = ''
+      for (const layer of exportLayers()) {
+        last = await exportMapTilesCore(res, { tileSize, res: mapRes, layer, toDisk: big && hasPicker, clip: a.sjtskRings }, ctx)
+      }
+      return last
+    })
   }
 
 
@@ -4657,8 +4753,13 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="w-11 shrink-0 text-[10px] text-gray-500">Vrstva</span>
-                  {([['ortofoto', 'ortofoto'], ['topo', 'topo']] as const).map(([v, lbl]) => (
-                    <button key={v} onClick={() => setMapLayer(v)} className={`rounded px-1.5 py-0.5 text-[11px] ${mapLayer === v ? 'bg-teal-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>{lbl}</button>
+                  {([['ortofoto', 'orto'], ['topo', 'topo'], ['both', 'obojí']] as const).map(([v, lbl]) => (
+                    <button
+                      key={v}
+                      onClick={() => setMapLayer(v)}
+                      title={v === 'both' ? 'Obě vrstvy přes tutéž obálku a rozlišení → vyjdou pixel na pixel a jdou položit přes sebe' : undefined}
+                      className={`rounded px-1.5 py-0.5 text-[11px] ${mapLayer === v ? 'bg-teal-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+                    >{lbl}</button>
                   ))}
                 </div>
                 <div className="flex items-center gap-1">
@@ -4737,6 +4838,17 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                     {/* Dlaždicová varianta téhož: drží zvolený detail i u kraje, protože nemusí
                         skončit v jednom canvasu. Ořez na obrys je stejný, jen po dlaždicích. */}
                     <div className="flex items-center gap-1">
+                      <span className="w-11 shrink-0 text-[10px] text-gray-500">Vrstva</span>
+                      {([['ortofoto', 'orto'], ['topo', 'topo'], ['both', 'obojí']] as const).map(([v, lbl]) => (
+                        <button
+                          key={v}
+                          onClick={() => setMapLayer(v)}
+                          title={v === 'both' ? 'Obě vrstvy přes tutéž obálku a rozlišení → dají se položit přes sebe bez dorovnávání' : undefined}
+                          className={`rounded px-1.5 py-0.5 text-[11px] ${mapLayer === v ? 'bg-teal-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+                        >{lbl}</button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-1">
                       <span className="w-11 shrink-0 text-[10px] text-gray-500" title="Metry na pixel. Ortofoto ČÚZK má nativně 20 cm.">Detail</span>
                       {MAP_RES.map(r => (
                         <button
@@ -4783,6 +4895,18 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                         </div>
                       )
                     })()}
+
+                    {/* Dávka přes všechny kraje. Nesouvisí s právě vybraným územím — hranice si
+                        vytáhne z RÚIAN sama; stojí tu proto, že sem se člověk dívá, když řeší
+                        export území. Zapisuje do složky, takže se prohlížeč ptá jen jednou. */}
+                    <button
+                      onClick={exportAllRegions}
+                      title="Stáhne postupně všech 14 krajů, každý do vlastní podsložky. Vybereš složku jednou, pak to běží samo a jde to přerušit."
+                      className="mt-0.5 flex items-center gap-1.5 rounded-lg border border-emerald-700 px-2 py-1.5 text-xs text-emerald-300 transition-colors hover:bg-emerald-900/40"
+                    >
+                      <Download size={13} /> Všechny kraje ČR do složky
+                    </button>
+
                     <button onClick={exportRegionKatastrDxf} disabled={exporting} title="Katastr území do DXF: hranice jednotlivých parcel (hladina PARCELY) + obrys území (HRANICE_UZEMI), reálné S-JTSK + výšky DMR → lícuje s Terén (OBJ) i dlaždicemi" className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs text-white hover:bg-indigo-500 disabled:opacity-50">{exporting ? <Loader2 size={13} className="animate-spin" /> : <Layers size={13} />} Katastr (DXF)</button>
                     <button onClick={exportRegionDxf} disabled={exporting} title="Jen obrys území jako uzavřená 3D křivka (DXF R12) drapovaná na DMR — lokální ENU rámec" className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs text-white hover:bg-indigo-500 disabled:opacity-50">{exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Obrys území (DXF)</button>
                     {!LOCAL_TILES && (

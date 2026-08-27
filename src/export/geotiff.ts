@@ -120,8 +120,27 @@ export function buildHeader(p: TiffPlan, res: number, originX: number, originY: 
   return { head, rowsPerStrip, nStrips }
 }
 
+export type Writable = { write: (d: Uint8Array) => Promise<void>; close: () => Promise<void> }
 type SaveFilePicker = (o: { suggestedName?: string; types?: { description: string; accept: Record<string, string[]> }[] })
-  => Promise<{ createWritable: () => Promise<{ write: (d: Uint8Array) => Promise<void>; close: () => Promise<void> }> }>
+  => Promise<{ createWritable: () => Promise<Writable> }>
+
+/**
+ * Složka na disku. Dávkový export do ní zapisuje přímo — jinak by se prohlížeč u čtrnácti krajů
+ * ptal čtrnáctkrát, kam soubor uložit, a stahování by nešlo nechat běžet bez dozoru.
+ */
+export type OutDir = {
+  getDirectoryHandle: (name: string, o?: { create?: boolean }) => Promise<OutDir>
+  getFileHandle: (name: string, o?: { create?: boolean }) => Promise<{ createWritable: () => Promise<Writable> }>
+}
+
+/** Uloží drobný textový soubor (world file) — do složky, když je, jinak jako stažení. */
+async function putText(dir: OutDir | undefined, name: string, text: string): Promise<void> {
+  const bytes = new TextEncoder().encode(text)
+  if (!dir) { download(bytes, name, 'text/plain'); return }
+  const w = await (await dir.getFileHandle(name, { create: true })).createWritable()
+  await w.write(bytes)
+  await w.close()
+}
 
 /** Největší rozměr plátna v prohlížeči. JPEG přes canvas jinak nejde zakódovat. */
 const CANVAS_MAX = 16384
@@ -138,7 +157,7 @@ const CANVAS_MAX = 16384
  */
 async function exportOneJpeg(
   b: { x0: number; y0: number; x1: number; y1: number },
-  o: { res: number; layer: MapLayer; clip?: number[][][]; name: string },
+  o: { res: number; layer: MapLayer; clip?: number[][][]; name: string; dir?: OutDir },
   plan: TiffPlan,
   ctx: ExportCtx,
 ): Promise<string> {
@@ -190,8 +209,14 @@ async function exportOneJpeg(
   ctx.report(-1, 'kóduji JPEG…')
   const blob = await new Promise<Blob | null>(res => cv.toBlob(res, 'image/jpeg', 0.9))
   if (!blob) throw new Error('Zakódování JPEGu selhalo (nejspíš málo paměti)')
-  download(new Uint8Array(await blob.arrayBuffer()), o.name, 'image/jpeg')
-  download(new TextEncoder().encode(worldFile(o.res, b.x0, b.y1)), o.name.replace(/\.jpg$/i, '') + '.jgw', 'text/plain')
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  if (o.dir) {
+    const w = await (await o.dir.getFileHandle(o.name, { create: true })).createWritable()
+    await w.write(bytes); await w.close()
+  } else {
+    download(bytes, o.name, 'image/jpeg')
+  }
+  await putText(o.dir, o.name.replace(/\.jpg$/i, '') + '.jgw', worldFile(o.res, b.x0, b.y1))
 
   const note = blanks ? ` · ${blanks} bloků mimo pokrytí ČÚZK` : ''
   return `Hotovo: ${W}×${H} px, ${(blob.size / 1e6).toFixed(0)} MB${note} · world file .jgw stažen zvlášť`
@@ -199,7 +224,7 @@ async function exportOneJpeg(
 
 export async function exportGeoTiff(
   b: { x0: number; y0: number; x1: number; y1: number },
-  o: { res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][]; name: string; format: 'tiff' | 'png' | 'jpeg' },
+  o: { res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][]; name: string; format: 'tiff' | 'png' | 'jpeg'; dir?: OutDir },
   ctx: ExportCtx,
 ): Promise<string> {
   const plan = planGeoTiff(b.x1 - b.x0, b.y1 - b.y0, o.res, o.format !== 'jpeg' && !!o.clip)
@@ -219,7 +244,11 @@ export async function exportGeoTiff(
   let write: (d: Uint8Array) => Promise<void>
   let finish: () => Promise<void>
   let where: string
-  if (o.toDisk && picker) {
+  if (o.dir) {
+    // dávkový režim: složka je vybraná jednou předem, tady se jen zakládá soubor
+    const w = await (await o.dir.getFileHandle(o.name, { create: true })).createWritable()
+    write = d => w.write(d); finish = () => w.close(); where = 'do složky'
+  } else if (o.toDisk && picker) {
     const h = await picker({
       suggestedName: o.name,
       types: png
@@ -312,10 +341,7 @@ export async function exportGeoTiff(
 
   // Georeference u PNG nejde dovnitř (na rozdíl od GeoTIFFu) → jde vedle jako world file. Je to
   // tentýž formát, jaký appka čte u vlastního ortofota, jen s příponou podle obrázku.
-  if (png) {
-    const wf = o.name.replace(/\.png$/i, '') + '.pgw'
-    download(new TextEncoder().encode(worldFile(o.res, b.x0, b.y1)), wf, 'text/plain')
-  }
+  if (png) await putText(o.dir, o.name.replace(/\.png$/i, '') + '.pgw', worldFile(o.res, b.x0, b.y1))
 
   const note = blanks ? ` · ${blanks} bloků mimo pokrytí ČÚZK (bílá plocha)` : ''
   return `Hotovo: ${W}×${H} px ${where}${note}${png ? ' · world file .pgw stažen zvlášť' : ''}`
