@@ -31,7 +31,7 @@ import {
   SHAKE_KEY, SHAKE_MAX_DEG, SHARP_KEY, SPIN_KEY, SPIN_DEFAULT_DEG_S, ZOOM_SENS, ZOOM_TAU, ZOOM_MAX,
   CR_EXTENT, LIBEREC_EXTENT, GEOID_CZ, GOOGLE_LIFT_M, MAX_GLB_YAW_DEG, OSM_LIFT_M, MODEL_GLOW, EMPTY_NAMESET,
   VIEW_THUMB_W, VIEW_THUMB_H, VIEW_THUMB_Q, VIEW_DIRTY_M, VIEW_DIRTY_DEG,
-  GOOGLE_SSE_STILL, GOOGLE_SSE_MOVING, MOVE_SETTLE_MS,
+  GOOGLE_SSE_STILL, GOOGLE_SSE_MOVING, MOVE_SETTLE_MS, AREA_TILES_MAX,
 } from './config'
 import type {
   Base, Placement, CamLook, CamView, Parcel, Anchor, ModelEntry, SceneObj, DrawLayer, DrawingEntry,
@@ -1285,6 +1285,55 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   }
 
   // potvrdí oblast: stáhne parcely v bboxu a vybere ty, jejichž těžiště leží uvnitř nakresleného polygonu
+  /** Obrys nakreslené oblasti jako lon/lat dvojice. */
+  function areaPolyLL(): number[][] | null {
+    const pts = areaPtsRef.current
+    if (pts.length < 3) return null
+    return pts.map(c => {
+      const cc = Cesium.Cartographic.fromCartesian(c)
+      return [Cesium.Math.toDegrees(cc.longitude), Cesium.Math.toDegrees(cc.latitude)]
+    })
+  }
+
+  /**
+   * Dlaždice uvnitř nakreslené oblasti — druhé využití téhož obrysu, kterým se berou parcely.
+   *
+   * Celý test běží v S-JTSK, ne ve WGS84: mřížka dlaždic je na Křovák zarovnaná, takže tam jsou
+   * dlaždice skutečné čtverce a stačí spočítat rozsah indexů. Reprojektuje se jen obrys oblasti
+   * (pár bodů) místo každé dlaždice zvlášť — u stovek dlaždic je to znát.
+   *
+   * Bere se dlaždice, jejíž STŘED padne dovnitř. Okrajové, ze kterých oblast ukrajuje jen roh,
+   * tak vypadnou — jinak by výběr přetekl přes nakreslenou hranici na všechny strany.
+   */
+  function finalizeAreaTiles() {
+    const ll = areaPolyLL()
+    if (!ll) return
+    const poly = ll.map(([lon, lat]) => sjtskOf(lon, lat) as number[])
+    const xs = poly.map(p => p[0]), ys = poly.map(p => p[1])
+    const size = tileSize
+    const ix0 = Math.floor(Math.min(...xs) / size), ix1 = Math.floor(Math.max(...xs) / size)
+    const iy0 = Math.floor(Math.min(...ys) / size), iy1 = Math.floor(Math.max(...ys) / size)
+
+    const hits: Tile[] = []
+    for (let ix = ix0; ix <= ix1; ix++) {
+      for (let iy = iy0; iy <= iy1; iy++) {
+        if (pointInRing((ix + 0.5) * size, (iy + 0.5) * size, poly)) hits.push({ ix, iy, size })
+      }
+      if (hits.length > AREA_TILES_MAX) break // nemá cenu dopočítávat, stejně to odmítneme
+    }
+    if (hits.length > AREA_TILES_MAX) {
+      toast.error(`Oblast pokrývá přes ${AREA_TILES_MAX} dlaždic. Zmenši ji, nebo přepni na větší dlaždici.`)
+      return
+    }
+    if (!hits.length) { toast.info('Uvnitř oblasti nepadl střed žádné dlaždice — zkus ji zvětšit.'); return }
+
+    claimMapClick('tile')     // pozor: tohle zahodí i nakreslenou oblast, `poly` už ale máme
+    exclusiveSelect('tile')   // dlaždice jsou nový zdroj výběru → parcely a území pryč
+    for (const t of hits) setTileSelected(t, true)
+    setTileMode(true)
+    toast.success(`Vybráno ${hits.length} dlaždic`)
+  }
+
   async function finalizeArea() {
     const pts = areaPtsRef.current
     if (pts.length < 3) return
@@ -4141,9 +4190,15 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             <ToggleBtn active={parcelMode} onClick={toggleParcel} icon={parcelLoading ? <Loader2 size={15} className="animate-spin" /> : <MapPin size={15} />} label={parcelMode ? 'Klikni na parcelu' : 'Vybrat parcelu'} />
             <ToggleBtn active={areaMode} onClick={toggleAreaMode} icon={areaLoading ? <Loader2 size={15} className="animate-spin" /> : <Hexagon size={15} />} label={areaMode ? `Klikej body (${areaPtCount})` : 'Vybrat oblast'} />
             {areaMode && areaPtCount >= 3 && (
-              <button onClick={finalizeArea} disabled={areaLoading} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-orange-600 hover:bg-orange-500 text-white transition-colors disabled:opacity-50">
-                <Check size={15} /> Vybrat parcely uvnitř
-              </button>
+              // Tentýž nakreslený obrys umí dvě věci; co z něj vznikne, se rozhoduje až tady.
+              <div className="flex flex-col gap-1">
+                <button onClick={finalizeArea} disabled={areaLoading} className="flex items-center gap-2 rounded-lg bg-orange-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-orange-500 disabled:opacity-50">
+                  {areaLoading ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Parcely uvnitř
+                </button>
+                <button onClick={finalizeAreaTiles} disabled={areaLoading} title={`Vybere dlaždice ${tileSize} m, jejichž střed padne dovnitř oblasti`} className="flex items-center gap-2 rounded-lg bg-cyan-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-cyan-500 disabled:opacity-50">
+                  <Grid3x3 size={15} /> Dlaždice uvnitř ({tileSize} m)
+                </button>
+              </div>
             )}
             <ToggleBtn active={tileMode} onClick={toggleTileMode} icon={<Grid3x3 size={15} />} label={tileMode ? `Klikej / táhni (${tileCount})` : 'Vybrat dlaždice'} />
             <ToggleBtn active={regionMode} onClick={toggleRegionMode} icon={regionBusy ? <Loader2 size={15} className="animate-spin" /> : <Landmark size={15} />} label={regionMode ? 'Klikni na mapu (kraj/obec)' : 'Vybrat území'} />
@@ -4158,6 +4213,15 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                   Tažením maluješ přes víc dlaždic; tah, co začne na vybrané, naopak odebírá.
                   <span className="text-gray-400"> Mapu tady posouváš pravým tlačítkem, zoom kolečkem.</span>
                 </div>
+                {/* Zkratka na kreslení oblasti — kdo maluje dlaždice, hledá to tady, ne o dva
+                    přepínače výš u parcel. Je to tentýž režim, jen se pak zvolí „Dlaždice uvnitř". */}
+                <button
+                  onClick={toggleAreaMode}
+                  title="Místo malování obtáhni oblast a vyber dlaždice uvnitř"
+                  className="flex items-center gap-2 rounded-lg bg-gray-800 px-2 py-1 text-xs text-gray-300 transition-colors hover:bg-gray-700"
+                >
+                  <Hexagon size={13} /> Vybrat oblastí
+                </button>
                 <button
                   onClick={() => setGridOn(g => !g)}
                   className={`flex items-center gap-2 px-2 py-1 rounded-lg text-xs transition-colors ${gridOn ? 'bg-cyan-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}

@@ -49,6 +49,10 @@ export const ZOOM_SENS = 0.0013              // log jednotek na pixel kolečka (
 export const ZOOM_TAU = 0.22                 // měkkost pružiny v s — vyšší = delší, měkčí doklouznutí
 export const ZOOM_MAX = 1.5                  // strop nedojetého zoomu (~4,5×), ať rychlé rolování neodletí
 
+// Pojistka proti překliku: oblast nakreslená přes půl republiky by při 250m dlaždicích znamenala
+// tisíce polygonů ve scéně (a stejně tolik stažení při exportu). Radši řekneme, ať se to zmenší.
+export const AREA_TILES_MAX = 400
+
 // ── Kvalita za pohybu ───────────────────────────────────────────────────────────
 // Dokud se s mapou hýbe, nemá cenu dotahovat detail, který stejně proletí přes obraz — a přitom
 // se kvůli němu stahují a dekódují dlaždice, tedy to, na co appka čeká nejvíc. V klidu se detail
