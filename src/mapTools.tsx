@@ -11,7 +11,7 @@
  * Posun modelu se ukáže jen když je model vybraný; jinak by to bylo tlačítko, které nic nedělá.
  */
 import { useEffect, useState } from 'react'
-import { Check, Hexagon, Move, Ruler, X } from 'lucide-react'
+import { Check, Crosshair, Hexagon, Move, Ruler, X } from 'lucide-react'
 
 type Props = {
   rulerMode: boolean
@@ -20,6 +20,8 @@ type Props = {
   rulerDrafting: boolean
   onRuler: (kind: 'line' | 'area') => void
   onFinishRuler: () => void
+  coordsMode: boolean
+  onCoords: () => void
   moveMode: boolean
   onMove: () => void
   /** je vybraný model, který jde posouvat? */
@@ -88,6 +90,16 @@ export function MapTools(p: Props) {
             )}
           </div>
         )}
+
+        <button
+          onClick={p.onCoords}
+          title="Odečíst souřadnice bodu z mapy (S-JTSK + výška Bpv)"
+          className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
+            p.coordsMode ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-800'
+          }`}
+        >
+          <Crosshair size={15} /> Souřadnice
+        </button>
 
         {p.canMove && (
           <button

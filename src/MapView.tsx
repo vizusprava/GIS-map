@@ -43,6 +43,7 @@ import {
   type GeoRaster, type CrsId,
 } from './worldRaster'
 import { CamViews } from './camViews'
+import { CoordsPanel } from './coords'
 import { MapTools } from './mapTools'
 import { MapSearch, type PlaceHit } from './mapSearch'
 import { makeDmrTerrain } from './terrain'
@@ -65,7 +66,7 @@ import { exportCutout as exportCutoutCore } from './export/cutout'
 import { exportGoogleMesh as exportGoogleMeshCore, type GoogleTile } from './export/googleMesh'
 import { NumRow, ProjSwitch, Section, ToggleBtn, type CamProj } from './ui'
 import type { ScenePersist } from './lib/scenePersist'
-import type { AssetConfig, SavedParcel } from './lib/types'
+import type { AssetConfig, CoordPoint, SavedParcel } from './lib/types'
 import { fetchAssetFile, fetchAssetSidecar } from './lib/assets'
 
 /**
@@ -138,6 +139,11 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [activeViewId, setActiveViewId] = useState<string | null>(null)   // pohled, ve kterém právě jsme
   const [callouts, setCallouts] = useState<Callout[]>(() => scene.initial.callouts ?? [])
   const [calloutMode, setCalloutMode] = useState(false)                   // klik do mapy položí popisek
+  // odečet souřadnic pro přenos do Maxu / SynthEyes (viz coords.tsx)
+  const [coordsMode, setCoordsMode] = useState(false)
+  const [coordPts, setCoordPts] = useState<CoordPoint[]>(() => scene.initial.coords?.pts ?? [])
+  const [coordShift, setCoordShift] = useState<[number, number, number]>(() => scene.initial.coords?.shift ?? [0, 0, 0])
+  const coordEntsRef = useRef<Map<string, Cesium.Entity>>(new Map())
   const [calloutSel, setCalloutSel] = useState<string | null>(null)
   const [viewerReady, setViewerReady] = useState(false)
   // Sbalení sekcí levého panelu. Klíč chybí = použij výchozí hodnotu sekce, takže nové sekce
@@ -2868,7 +2874,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
    * DATA se tím nemažou. Od toho je `exclusiveSelect`, který hlídá jinou věc: aby výběr
    * (parcely × dlaždice × území) měl vždycky jen jeden zdroj.
    */
-  function claimMapClick(owner: 'parcel' | 'area' | 'tile' | 'region' | 'ruler' | 'callout' | 'move' | 'none') {
+  function claimMapClick(owner: 'parcel' | 'area' | 'tile' | 'region' | 'ruler' | 'callout' | 'move' | 'coords' | 'none') {
+    if (owner !== 'coords') setCoordsMode(false)
     if (owner !== 'parcel') setParcelMode(false)
     if (owner !== 'area' && areaMode) { clearArea(); setAreaMode(false) }
     if (owner !== 'tile') { setTileMode(false); setGridOn(false) } // ať mřížka nezůstane viset bez tlačítka
@@ -2891,6 +2898,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // dvakrát a vedlejší účinky uvnitř ní by proběhly taky dvakrát.
   function toggleMove() { const nv = !moveMode; if (nv) claimMapClick('move'); setMoveMode(nv) }
   function toggleCallout() { const nv = !calloutMode; if (nv) claimMapClick('callout'); setCalloutMode(nv) }
+  function toggleCoords() { const nv = !coordsMode; if (nv) claimMapClick('coords'); setCoordsMode(nv) }
   function toggleRegionMode() { const nv = !regionMode; if (nv) claimMapClick('region'); setRegionMode(nv) }
   function toggleParcel() { const nv = !parcelMode; if (nv) { claimMapClick('parcel'); exclusiveSelect('parcel') } setParcelMode(nv) }
 
@@ -3501,6 +3509,73 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   }
 
   /**
+   * Odečet bodu z mapy → S-JTSK + Bpv, tedy soustava exportovaného terénu.
+   *
+   * Výška se NEBERE z kliknutí, ale dotahuje se přes `sampleTerrainMostDetailed`. Kliknutí vrací
+   * výšku z právě vykreslené úrovně terénu, která je při oddáleném pohledu hrubá — bod odečtený
+   * z výšky letadla by pak seděl o metry jinde než tentýž bod v exportovaném modelu.
+   *
+   * Od dotažené výšky se odečítá GEOID_CZ: Cesium počítá nad elipsoidem, kdežto model i české
+   * výškopisné podklady jsou v Bpv (viz makeDmrTerrain, které to při načtení naopak přičítá).
+   */
+  async function addCoordPoint(lon: number, lat: number) {
+    const v = viewerRef.current
+    if (!v || v.isDestroyed()) return
+    let ell = 0
+    try {
+      const [c] = await Cesium.sampleTerrainMostDetailed(v.terrainProvider, [Cesium.Cartographic.fromDegrees(lon, lat)])
+      ell = c.height ?? 0
+    } catch (e) {
+      console.error('Dotažení výšky selhalo:', e)
+      toast.error('Výšku se nepodařilo dotáhnout z DMR')
+      return
+    }
+    const [x, y] = sjtskOf(lon, lat)
+    const pt: CoordPoint = { id: `c${Date.now()}`, x, y, z: ell - GEOID_CZ, lon, lat }
+    persistCoords([...coordPts, pt], coordShift)
+    toast.success(`Bod: ${x.toFixed(2)} ${y.toFixed(2)} ${(ell - GEOID_CZ).toFixed(2)}`)
+  }
+
+  function persistCoords(pts: CoordPoint[], shift: [number, number, number]) {
+    setCoordPts(pts); setCoordShift(shift)
+    sceneRef.current.patchState({ coords: { pts, shift } })
+  }
+
+  // klik do mapy v režimu odečtu
+  useEffect(() => {
+    const v = viewerRef.current
+    if (!v || v.isDestroyed() || !coordsMode) return
+    const handler = new Cesium.ScreenSpaceEventHandler(v.scene.canvas)
+    handler.setInputAction((evt: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
+      const g = pickGround(v, evt.position)
+      if (g) void addCoordPoint(g.lon, g.lat)
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
+    return () => handler.destroy()
+  }, [coordsMode, coordPts, coordShift])
+
+  // značky odečtených bodů — překreslí se, kdykoliv se seznam změní
+  useEffect(() => {
+    const v = viewerRef.current
+    if (!v || v.isDestroyed()) return
+    for (const [id, ent] of coordEntsRef.current) {
+      if (!coordPts.some(p => p.id === id)) { v.entities.remove(ent); coordEntsRef.current.delete(id) }
+    }
+    coordPts.forEach((p, i) => {
+      if (coordEntsRef.current.has(p.id)) return
+      const ent = v.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.z + GEOID_CZ), // zpátky na elipsoid
+        point: { pixelSize: 9, color: MODEL_GLOW, outlineColor: Cesium.Color.BLACK, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+        label: {
+          text: String(i + 1), font: '11px sans-serif', fillColor: Cesium.Color.WHITE,
+          outlineColor: Cesium.Color.BLACK, outlineWidth: 2, style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cesium.Cartesian2(0, -14), disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      })
+      coordEntsRef.current.set(p.id, ent)
+    })
+  }, [coordPts, viewerReady])
+
+  /**
    * Esc = o krok zpátky k výchozímu stavu.
    *
    * Schválně DVOUSTUPŇOVĚ, ne všechno naráz: první Esc vypne jen nástroj, teprve druhý zahodí
@@ -3513,7 +3588,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   function handleEscape() {
     if (searchOpen) { setSearchOpen(false); return }
 
-    if (parcelMode || areaMode || tileMode || regionMode || rulerMode || calloutMode || moveMode) {
+    if (parcelMode || areaMode || tileMode || regionMode || rulerMode || calloutMode || moveMode || coordsMode) {
       claimMapClick('none')
       toast.info('Nástroj vypnut · Esc znovu zruší výběr')
       return
@@ -4272,6 +4347,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           rulerDrafting={!!rulerDraftId}
           onRuler={startRuler}
           onFinishRuler={finishRuler}
+          coordsMode={coordsMode}
+          onCoords={toggleCoords}
           moveMode={moveMode}
           onMove={toggleMove}
           canMove={!!placement}
@@ -4525,6 +4602,30 @@ export function MapView({ scene }: { scene: ScenePersist }) {
               </div>
             )}
           </Section>
+          {/* Souřadnice pro přenos do Maxu / SynthEyes. Vlastní sekce, protože je to jiná práce
+              než měření: tam jde o vzdálenosti, tady o absolutní polohu bodu. */}
+          <Section id="souradnice" title="Souřadnice" dflt={false} badge={coordPts.length} open={openSec} onToggle={toggleSec}>
+            <CoordsPanel
+              pts={coordPts}
+              shift={coordShift}
+              onShift={s => persistCoords(coordPts, s)}
+              onDelete={id => persistCoords(coordPts.filter(p => p.id !== id), coordShift)}
+              onClear={() => persistCoords([], coordShift)}
+              onGoto={p => {
+                const v = viewerRef.current
+                if (v && !v.isDestroyed()) v.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.z + GEOID_CZ + 500) })
+              }}
+              tileCenter={(() => {
+                const ts = [...tilesRef.current.values()]
+                if (!ts.length) return null
+                const b = tilesBounds(ts)
+                return [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2] as [number, number]
+              })()}
+              picking={coordsMode}
+              onTogglePicking={toggleCoords}
+            />
+          </Section>
+
           <Section id="mereni" title="Měření" dflt={false} badge={rulers.length} open={openSec} onToggle={toggleSec}>
             {/* Spouštění měření je v liště dole nad mapou (mapTools.tsx) — je to nástroj, u kterého
                 se pak kliká do mapy, takže patří k mapě. Tady zůstávají jen výsledky. */}

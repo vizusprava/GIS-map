@@ -103,4 +103,21 @@ export type SceneState = {
   bgCustom?: string
   camera?: SavedCamera
   splat?: { on: boolean; placement?: Placement }
+  /** Odečtené body a posun terénu (viz „Souřadnice" v panelu) — přežijí zavření scény. */
+  coords?: { pts: CoordPoint[]; shift?: [number, number, number] }
+}
+
+/**
+ * Bod odečtený z mapy. Ukládá se v S-JTSK a Bpv, tedy PŘESNĚ v té soustavě, ve které vychází
+ * exportovaný terén — jinak by se čísla z panelu a z modelu v Maxu nedala porovnat.
+ */
+export type CoordPoint = {
+  id: string
+  /** Křovák EPSG:5514 */
+  x: number
+  y: number
+  /** výška Bpv (ne nad elipsoidem — ta je o GEOID_CZ vyšší) */
+  z: number
+  lon: number
+  lat: number
 }
