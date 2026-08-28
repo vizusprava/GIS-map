@@ -43,7 +43,7 @@ import {
   type GeoRaster, type CrsId,
 } from './worldRaster'
 import { CamViews } from './camViews'
-import { CoordsPanel } from './coords'
+import { CoordsPanel, ShiftEditor } from './coords'
 import { MapTools } from './mapTools'
 import { MapSearch, type PlaceHit } from './mapSearch'
 import { makeDmrTerrain } from './terrain'
@@ -4961,14 +4961,21 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                   )
                 })()}
                 <div className="mt-0.5 border-t border-gray-700 px-0.5 pt-1.5 text-[10px] uppercase tracking-wide text-gray-500">Export výběru</div>
-                {/* Posunutý export je zásadní změna výstupu — nesmí se stát potichu. Bere se
-                    z panelu Souřadnice, aby model i odečtené body seděly ve stejné soustavě. */}
-                {(coordShift[0] || coordShift[1] || coordShift[2] || coordPts.length > 0) && (
+                {/* Tentýž posun, jaký je v sekci Souřadnice — jedna hodnota, dvě místa. Kdo
+                    exportuje terén, nastavuje ho tady a nemusí tušit, že sídlí i jinde. */}
+                <ShiftEditor
+                  shift={coordShift}
+                  onShift={s => persistCoords(coordPts, s)}
+                  tileCenter={(() => {
+                    const ts = [...tilesRef.current.values()]
+                    if (!ts.length) return null
+                    const b = tilesBounds(ts)
+                    return [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2] as [number, number]
+                  })()}
+                />
+                {coordPts.length > 0 && (
                   <div className="max-w-[190px] px-1 text-[10px] leading-snug text-cyan-300/80">
-                    {(coordShift[0] || coordShift[1] || coordShift[2]) ? (
-                      <>Export bude <span className="font-medium">posunutý</span> o {coordShift.map(n => Math.round(n)).join(' ')} (ze sekce Souřadnice).</>
-                    ) : null}
-                    {coordPts.length > 0 && <> Přibalí se {coordPts.length} {coordPts.length === 1 ? 'bod' : 'bodů'} jako helpery.</>}
+                    Přibalí se {coordPts.length} {coordPts.length === 1 ? 'odečtený bod' : 'odečtených bodů'} jako helpery (body.ms).
                   </div>
                 )}
                 <button onClick={exportTilesObj} title="Čistý terén DMR 5G s ortofoto texturou → zip s OBJ + MTL + JPEG pro 3ds Max" className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-2 py-1.5 text-xs text-white hover:bg-sky-500">

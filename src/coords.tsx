@@ -51,43 +51,7 @@ export function CoordsPanel(p: Props) {
         v jaké vychází exportovaný terén.
       </div>
 
-      {/* ── posun terénu ── */}
-      <div className="flex flex-col gap-1 rounded-lg bg-gray-800/50 p-1.5">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] uppercase tracking-wide text-gray-500">Posun terénu</span>
-          {p.tileCenter && (
-            <button
-              onClick={() => p.onShift([-p.tileCenter![0], -p.tileCenter![1], 0])}
-              title="Posun, který dá střed vybraných dlaždic do počátku — to se v Maxu dělá nejčastěji"
-              className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-cyan-300 hover:bg-gray-700"
-            >
-              <Target size={11} /> ze středu dlaždic
-            </button>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          {(['X', 'Y', 'Z'] as const).map((lbl, i) => (
-            <label key={lbl} className="flex min-w-0 flex-1 items-center gap-1">
-              <span className="w-2.5 shrink-0 text-[10px] text-gray-500">{lbl}</span>
-              <input
-                type="number"
-                value={p.shift[i]}
-                onChange={e => {
-                  const next: [number, number, number] = [...p.shift]
-                  next[i] = Number(e.target.value) || 0
-                  p.onShift(next)
-                }}
-                className="min-w-0 flex-1 rounded bg-gray-900 px-1 py-0.5 text-[11px] tabular-nums text-gray-100 outline-none"
-              />
-            </label>
-          ))}
-        </div>
-        {(sx || sy || sz) ? (
-          <button onClick={() => p.onShift([0, 0, 0])} className="self-start px-0.5 text-[10px] text-gray-500 hover:text-red-300">vynulovat posun</button>
-        ) : (
-          <div className="px-0.5 text-[10px] leading-snug text-gray-600">Nula = skutečné souřadnice.</div>
-        )}
-      </div>
+      <ShiftEditor shift={p.shift} onShift={p.onShift} tileCenter={p.tileCenter} />
 
       {p.pts.map((c, i) => {
         const [mx, my, mz] = shifted(c)
@@ -116,6 +80,57 @@ export function CoordsPanel(p: Props) {
           (DMR 5G), ze stejného zdroje, ze kterého se počítá export. Hotový bod jde chytit
           a přetáhnout jinam.
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Nastavení posunu terénu. Je schválně SDÍLENÉ mezi sekcí Souřadnice a exportem dlaždic —
+ * jedna hodnota, dvě místa. Kdo řeší odečet bodů, hledá ji u bodů; kdo exportuje terén, hledá
+ * ji u exportu, a nemá důvod tušit, že sídlí někde jinde v panelu.
+ */
+export function ShiftEditor({ shift, onShift, tileCenter }: {
+  shift: [number, number, number]
+  onShift: (s: [number, number, number]) => void
+  tileCenter: [number, number] | null
+}) {
+  const [sx, sy, sz] = shift
+  return (
+    <div className="flex flex-col gap-1 rounded-lg bg-gray-800/50 p-1.5">
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] uppercase tracking-wide text-gray-500">Posun terénu</span>
+        {tileCenter && (
+          <button
+            onClick={() => onShift([-tileCenter[0], -tileCenter[1], 0])}
+            title="Posun, který dá střed vybraných dlaždic do počátku — to se v Maxu dělá nejčastěji"
+            className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-cyan-300 hover:bg-gray-700"
+          >
+            <Target size={11} /> ze středu dlaždic
+          </button>
+        )}
+      </div>
+      <div className="flex items-center gap-1">
+        {(['X', 'Y', 'Z'] as const).map((lbl, i) => (
+          <label key={lbl} className="flex min-w-0 flex-1 items-center gap-1">
+            <span className="w-2.5 shrink-0 text-[10px] text-gray-500">{lbl}</span>
+            <input
+              type="number"
+              value={shift[i]}
+              onChange={e => {
+                const next: [number, number, number] = [...shift]
+                next[i] = Number(e.target.value) || 0
+                onShift(next)
+              }}
+              className="min-w-0 flex-1 rounded bg-gray-900 px-1 py-0.5 text-[11px] tabular-nums text-gray-100 outline-none"
+            />
+          </label>
+        ))}
+      </div>
+      {(sx || sy || sz) ? (
+        <button onClick={() => onShift([0, 0, 0])} className="self-start px-0.5 text-[10px] text-gray-500 hover:text-red-300">vynulovat posun</button>
+      ) : (
+        <div className="px-0.5 text-[10px] leading-snug text-gray-600">Nula = export ve skutečných souřadnicích.</div>
       )}
     </div>
   )
