@@ -36,6 +36,8 @@ export type TerracedOpts = {
   zScale: number
   /** posun modelu, stejný jako u ostatních exportů */
   shift: [number, number, number]
+  /** OBJ do Maxu, nebo STL rovnou do sliceru */
+  format: 'obj' | 'stl'
 }
 
 /** Nad tímhle už OBJ neúnosně roste a prohlížeč to skládá minuty. */
@@ -68,7 +70,7 @@ export type TerracedMesh = {
  * Pod hladinou souseda je materiál na obou stranách, takže tam plocha nemá co dělat — kdyby se
  * generovala, ležela by uvnitř tělesa a hrana by byla použitá čtyřikrát místo dvakrát.
  */
-export function buildTerracedObj(m: TerracedMesh): string[] {
+export function buildTerracedQuads(m: TerracedMesh): number[] {
   const { q, inside, nx, ny, minQ, dx, dy, shift } = m
   const [sx, sy, sz] = shift
   const bottom = minQ - m.baseDepth + sz
@@ -76,12 +78,9 @@ export function buildTerracedObj(m: TerracedMesh): string[] {
   const ex = (i: number) => m.x0 + i * dx + sx
   const ey = (j: number) => m.y0 + j * dy + sy
 
-  const out: string[] = ['# Vrstevnicovy model terenu (GIS Map)', 'o teren_terasy']
-  let v = 1
+  const out: number[] = [] // ploše po 12 číslech = jeden čtyřúhelník
   const quad = (a: number[], bq: number[], c: number[], d: number[]) => {
-    for (const p of [a, bq, c, d]) out.push(`v ${p[0].toFixed(3)} ${p[1].toFixed(3)} ${p[2].toFixed(3)}`)
-    out.push(`f ${v} ${v + 1} ${v + 2} ${v + 3}`)
-    v += 4
+    out.push(a[0], a[1], a[2], bq[0], bq[1], bq[2], c[0], c[1], c[2], d[0], d[1], d[2])
   }
 
   for (let j = 0; j < ny; j++) {
@@ -108,6 +107,67 @@ export function buildTerracedObj(m: TerracedMesh): string[] {
     }
   }
   return out
+}
+
+/**
+ * Čtyřúhelníky → OBJ se SDÍLENÝMI vrcholy.
+ *
+ * Bez sdílení má každý čtyřúhelník vlastní čtyři vrcholy, takže model o 356 tisících stěnách
+ * nese 1,42 milionu vrcholů, z toho jen 0,36 milionu různých. Importér ve 3ds Maxu pak soubor
+ * rychle přečte a teprve potom začne duplicity SVAŘOVAT — a právě to je ten zásek po dojetí
+ * importu. Se sdílenými vrcholy nemá co svařovat.
+ */
+export function quadsToObj(q: number[]): string {
+  const idx = new Map<string, number>()
+  const verts: string[] = []
+  const faces: string[] = []
+  const at = (o: number) => {
+    const key = `${q[o].toFixed(3)} ${q[o + 1].toFixed(3)} ${q[o + 2].toFixed(3)}`
+    let i = idx.get(key)
+    if (i === undefined) { verts.push(`v ${key}`); i = verts.length; idx.set(key, i) }
+    return i
+  }
+  for (let o = 0; o < q.length; o += 12) {
+    faces.push(`f ${at(o)} ${at(o + 3)} ${at(o + 6)} ${at(o + 9)}`)
+  }
+  return ['# Vrstevnicovy model terenu (GIS Map)', 'o teren_terasy', ...verts, ...faces].join('\n') + '\n'
+}
+
+/**
+ * Čtyřúhelníky → binární STL. Formát, který chtějí slicery — do Maxu se pro tisk chodit nemusí.
+ *
+ * STL drží souřadnice ve float32, což má jen ~7 platných číslic. Na reálných S-JTSK souřadnicích
+ * (statisíce metrů) by z toho vyšla přesnost kolem 6 cm. Model se proto POSOUVÁ k počátku —
+ * u makety je absolutní poloha stejně bezvýznamná a přesnost tím spadne na setiny milimetru.
+ */
+export function quadsToStl(q: number[]): Uint8Array {
+  let mnx = Infinity, mny = Infinity, mnz = Infinity
+  for (let o = 0; o < q.length; o += 3) {
+    if (q[o] < mnx) mnx = q[o]
+    if (q[o + 1] < mny) mny = q[o + 1]
+    if (q[o + 2] < mnz) mnz = q[o + 2]
+  }
+  const tris = (q.length / 12) * 2
+  const dv = new DataView(new ArrayBuffer(84 + tris * 50))
+  dv.setUint32(80, tris, true)
+  let p = 84
+  const tri = (o0: number, o1: number, o2: number) => {
+    const ax = q[o0] - mnx, ay = q[o0 + 1] - mny, az = q[o0 + 2] - mnz
+    const bx = q[o1] - mnx, by = q[o1 + 1] - mny, bz = q[o1 + 2] - mnz
+    const cx = q[o2] - mnx, cy = q[o2 + 1] - mny, cz = q[o2 + 2] - mnz
+    const ux = bx - ax, uy = by - ay, uz = bz - az
+    const vx = cx - ax, vy = cy - ay, vz = cz - az
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
+    const l = Math.hypot(nx, ny, nz) || 1
+    nx /= l; ny /= l; nz /= l
+    for (const v of [nx, ny, nz, ax, ay, az, bx, by, bz, cx, cy, cz]) { dv.setFloat32(p, v, true); p += 4 }
+    dv.setUint16(p, 0, true); p += 2
+  }
+  for (let o = 0; o < q.length; o += 12) {
+    tri(o, o + 3, o + 6)
+    tri(o, o + 6, o + 9)
+  }
+  return new Uint8Array(dv.buffer)
 }
 
 export async function exportTerraced(tiles: Tile[], o: TerracedOpts, ctx: ExportCtx): Promise<string> {
@@ -147,22 +207,34 @@ export async function exportTerraced(tiles: Tile[], o: TerracedOpts, ctx: Export
   }
   if (!isFinite(minQ)) throw new Error('Pro výběr nejsou výšková data')
 
-  const out = buildTerracedObj({
+  ctx.report(-1, 'stavím těleso…')
+  const quads = buildTerracedQuads({
     q, inside, nx, ny, minQ,
     x0: b.minX, y0: b.minY, dx: (b.maxX - b.minX) / nx, dy: (b.maxY - b.minY) / ny,
     baseDepth: o.baseDepth, zScale: o.zScale, shift: o.shift,
   })
+  const nQuads = quads.length / 12
 
   ctx.report(-1, 'balím…')
   const chunks: Uint8Array[] = []
   let zipErr: unknown = null
   const zip = new Zip((err, dat) => { if (err) zipErr = err; else if (dat) chunks.push(dat) })
-  const add = (name: string, text: string) => {
+  const addBytes = (name: string, bytes: Uint8Array) => {
     const d = new ZipDeflate(name, { level: 6 })
-    zip.add(d); d.push(strToU8(text), true)
+    zip.add(d); d.push(bytes, true)
     if (zipErr) throw zipErr instanceof Error ? zipErr : new Error(String(zipErr))
   }
-  add('teren_terasy.obj', out.join('\n') + '\n')
+  const add = (name: string, text: string) => addBytes(name, strToU8(text))
+
+  let objVerts = 0
+  if (o.format === 'stl') {
+    addBytes('teren_terasy.stl', quadsToStl(quads))
+  } else {
+    const obj = quadsToObj(quads)
+    objVerts = (obj.match(/^v /gm) ?? []).length
+    add('teren_terasy.obj', obj)
+  }
+
   add('info.txt', [
     'Vrstevnicovy model terenu k 3D tisku (DMR 5G, CUZK)',
     '',
@@ -170,12 +242,20 @@ export async function exportTerraced(tiles: Tile[], o: TerracedOpts, ctx: Export
     `Bunka: ${o.cell} m  (${nx} x ${ny})`,
     `Prevyseni: ${o.zScale}x`,
     `Masiv pod nejnizsi terasou: ${o.baseDepth} m`,
-    (o.shift[0] || o.shift[1] || o.shift[2])
-      ? `Posunuto o ${o.shift.join(' ')}`
-      : 'Bez posunu — realne S-JTSK souradnice (statisice metru od pocatku).',
+    `Sten: ${nQuads}` + (objVerts ? `, vrcholu: ${objVerts} (sdilene)` : ''),
     '',
-    'Souradnice: S-JTSK (EPSG:5514), vysky Bpv, jednotky METRY.',
-    'Ve sliceru model zmensi na pozadovanou velikost — 1 m = 1 mm dela',
+    o.format === 'stl'
+      ? 'Format STL (binarni) -- posunuto k pocatku. STL drzi souradnice ve float32,\n'
+        + 'takze na realnych S-JTSK cislech (statisice metru) by presnost byla ~6 cm.\n'
+        + 'U makety je absolutni poloha bezvyznamna, takze se model posune k nule.'
+      : [
+        'Souradnice: S-JTSK (EPSG:5514), vysky Bpv, jednotky METRY.',
+        (o.shift[0] || o.shift[1] || o.shift[2])
+          ? `Posunuto o ${o.shift.join(' ')}`
+          : 'Bez posunu -- realne souradnice (statisice metru od pocatku).',
+      ].join('\n'),
+    '',
+    'Ve sliceru model zmensi na pozadovanou velikost -- 1 m = 1 mm dela',
     `z tohohle vyberu zhruba ${Math.round((b.maxX - b.minX))} x ${Math.round((b.maxY - b.minY))} mm.`,
     '',
     'Model je uzavrene teleso: terasy + svisle stupne + bocni steny + dno.',
@@ -185,6 +265,6 @@ export async function exportTerraced(tiles: Tile[], o: TerracedOpts, ctx: Export
   zip.end()
   if (zipErr) throw zipErr instanceof Error ? zipErr : new Error(String(zipErr))
 
-  download(concatBytes(chunks), `teren_terasy_${o.step}m.zip`, 'application/zip')
-  return `Hotovo: ${nx}×${ny} buněk, terasa ${o.step} m`
+  download(concatBytes(chunks), `teren_terasy_${o.step}m_${o.format}.zip`, 'application/zip')
+  return `Hotovo: ${nQuads.toLocaleString('cs')} stěn, terasa ${o.step} m (${o.format.toUpperCase()})`
 }

@@ -364,6 +364,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [terraceCell, setTerraceCell] = useState(5)   // hrana buňky [m]
   const [terraceBase, setTerraceBase] = useState(10)  // masiv pod nejnižší terasou [m]
   const [terraceZ, setTerraceZ] = useState(1)         // převýšení
+  // STL je pro tisk přímočařejší — do Maxu se kvůli sliceru chodit nemusí
+  const [terraceFormat, setTerraceFormat] = useState<'obj' | 'stl'>('stl')
   const [tileCount, setTileCount] = useState(0)
   const [tileBusy, setTileBusy] = useState(false)
   const [tileProgress, setTileProgress] = useState('')
@@ -1821,7 +1823,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     if (!plan.ok) { toast.error(`${plan.cells.toLocaleString('cs')} buněk je moc — zvětši hranu buňky.`); return }
     await runExport(tileUi, 'Export makety selhal', ctx =>
       exportTerracedCore(tiles, {
-        cell: terraceCell, step: terraceStep, baseDepth: terraceBase, zScale: terraceZ, shift: coordShift,
+        cell: terraceCell, step: terraceStep, baseDepth: terraceBase, zScale: terraceZ,
+        shift: coordShift, format: terraceFormat,
       }, ctx))
   }
 
@@ -5029,8 +5032,19 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                     </div>
                   )
                 })()}
-                <button onClick={exportTerracedModel} title="Schodovitý vrstevnicový model jako uzavřené těleso — rovnou do sliceru, bez oprav" className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-2 py-1.5 text-xs text-white hover:bg-purple-500">
-                  <Layers size={13} /> Vrstevnicová maketa (OBJ)
+                <div className="flex items-center gap-1">
+                  <span className="w-11 shrink-0 text-[10px] text-gray-500">Formát</span>
+                  {([['stl', 'STL'], ['obj', 'OBJ']] as const).map(([v, lbl]) => (
+                    <button
+                      key={v}
+                      onClick={() => setTerraceFormat(v)}
+                      title={v === 'stl' ? 'Rovnou do sliceru — posune se k počátku, do Maxu chodit nemusíš' : 'Do 3ds Maxu; vrcholy jsou sdílené, takže import nemá co svařovat'}
+                      className={`rounded px-1.5 py-0.5 text-[11px] ${terraceFormat === v ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+                    >{lbl}</button>
+                  ))}
+                </div>
+                <button onClick={exportTerracedModel} title="Schodovitý vrstevnicový model jako uzavřené těleso" className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-2 py-1.5 text-xs text-white hover:bg-purple-500">
+                  <Layers size={13} /> Vrstevnicová maketa ({terraceFormat.toUpperCase()})
                 </button>
 
                 <button onClick={exportTilesObj} title="Čistý terén DMR 5G s ortofoto texturou → zip s OBJ + MTL + JPEG pro 3ds Max" className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-2 py-1.5 text-xs text-white hover:bg-sky-500">
