@@ -70,20 +70,20 @@ export type TerracedMesh = {
  * Pod hladinou souseda je materiál na obou stranách, takže tam plocha nemá co dělat — kdyby se
  * generovala, ležela by uvnitř tělesa a hrana by byla použitá čtyřikrát místo dvakrát.
  */
-export function buildTerracedQuads(m: TerracedMesh): number[] {
-  const { q, inside, nx, ny, minQ, dx, dy, shift } = m
+export function buildTerracedQuads(m: TerracedMesh, jFrom = 0, jTo = m.ny, out: number[] = []): number[] {
+  const { q, inside, nx, minQ, dx, dy, shift } = m
+  const ny = m.ny
   const [sx, sy, sz] = shift
   const bottom = minQ - m.baseDepth + sz
   const topOf = (k: number) => minQ + (q[k] - minQ) * m.zScale + sz // převýšení jen na reliéfu
   const ex = (i: number) => m.x0 + i * dx + sx
   const ey = (j: number) => m.y0 + j * dy + sy
 
-  const out: number[] = [] // ploše po 12 číslech = jeden čtyřúhelník
   const quad = (a: number[], bq: number[], c: number[], d: number[]) => {
     out.push(a[0], a[1], a[2], bq[0], bq[1], bq[2], c[0], c[1], c[2], d[0], d[1], d[2])
   }
 
-  for (let j = 0; j < ny; j++) {
+  for (let j = jFrom; j < jTo; j++) {
     for (let i = 0; i < nx; i++) {
       const k = j * nx + i
       if (!inside[k]) continue
@@ -118,11 +118,12 @@ export function buildTerracedQuads(m: TerracedMesh): number[] {
  * importu. Se sdílenými vrcholy nemá co svařovat.
  */
 export function quadsToObj(q: number[]): string {
+  const [ox, oy, oz] = originOf(q)
   const idx = new Map<string, number>()
   const verts: string[] = []
   const faces: string[] = []
   const at = (o: number) => {
-    const key = `${q[o].toFixed(3)} ${q[o + 1].toFixed(3)} ${q[o + 2].toFixed(3)}`
+    const key = `${(q[o] - ox).toFixed(3)} ${(q[o + 1] - oy).toFixed(3)} ${(q[o + 2] - oz).toFixed(3)}`
     let i = idx.get(key)
     if (i === undefined) { verts.push(`v ${key}`); i = verts.length; idx.set(key, i) }
     return i
@@ -134,19 +135,28 @@ export function quadsToObj(q: number[]): string {
 }
 
 /**
- * Čtyřúhelníky → binární STL. Formát, který chtějí slicery — do Maxu se pro tisk chodit nemusí.
+ * Levý dolní roh modelu. Maketa se od něj posouvá k počátku — je to fyzický objekt, ne podklad
+ * do GIS, takže absolutní poloha nemá význam. Zato škodí:
  *
- * STL drží souřadnice ve float32, což má jen ~7 platných číslic. Na reálných S-JTSK souřadnicích
- * (statisíce metrů) by z toho vyšla přesnost kolem 6 cm. Model se proto POSOUVÁ k počátku —
- * u makety je absolutní poloha stejně bezvýznamná a přesnost tím spadne na setiny milimetru.
+ *  - 3ds Max si vnitřně drží vrcholy v jednoduché přesnosti a na souřadnicích kolem 700 000
+ *    (S-JTSK má počátek u Helsinek) se mu rozjede stavba scény i práce ve výřezu,
+ *  - STL má float32 napevno, takže by přesnost spadla na ~6 cm.
+ *
+ * U počátku je přesnost setiny milimetru a oba problémy mizí.
  */
-export function quadsToStl(q: number[]): Uint8Array {
+function originOf(q: number[]): [number, number, number] {
   let mnx = Infinity, mny = Infinity, mnz = Infinity
   for (let o = 0; o < q.length; o += 3) {
     if (q[o] < mnx) mnx = q[o]
     if (q[o + 1] < mny) mny = q[o + 1]
     if (q[o + 2] < mnz) mnz = q[o + 2]
   }
+  return [mnx, mny, mnz]
+}
+
+/** Čtyřúhelníky → binární STL. Formát, který chtějí slicery — do Maxu se pro tisk chodit nemusí. */
+export function quadsToStl(q: number[]): Uint8Array {
+  const [mnx, mny, mnz] = originOf(q)
   const tris = (q.length / 12) * 2
   const dv = new DataView(new ArrayBuffer(84 + tris * 50))
   dv.setUint32(80, tris, true)
@@ -207,12 +217,23 @@ export async function exportTerraced(tiles: Tile[], o: TerracedOpts, ctx: Export
   }
   if (!isFinite(minQ)) throw new Error('Pro výběr nejsou výšková data')
 
-  ctx.report(-1, 'stavím těleso…')
-  const quads = buildTerracedQuads({
+  // Po pásech, ať se mezi nimi stihne překreslit UI. Při refaktoru do čisté funkce se tohle
+  // ztratilo a celá stavba běžela v jednom bloku — appka pak u velkého výběru na desítky sekund
+  // ztuhla a vypadalo to jako zásek.
+  ctx.report(0, 'stavím těleso…')
+  const mesh = {
     q, inside, nx, ny, minQ,
     x0: b.minX, y0: b.minY, dx: (b.maxX - b.minX) / nx, dy: (b.maxY - b.minY) / ny,
     baseDepth: o.baseDepth, zScale: o.zScale, shift: o.shift,
-  })
+  }
+  const quads: number[] = []
+  const band = Math.max(1, Math.ceil(20000 / nx)) // ~20 tisíc buněk na dávku
+  for (let j0 = 0; j0 < ny; j0 += band) {
+    throwIfAborted(ctx.signal)
+    buildTerracedQuads(mesh, j0, Math.min(ny, j0 + band), quads)
+    ctx.report(j0 / ny, `stavím těleso… ${Math.round(j0 / ny * 100)} %`)
+    await new Promise(r => setTimeout(r, 0))
+  }
   const nQuads = quads.length / 12
 
   ctx.report(-1, 'balím…')
@@ -244,16 +265,12 @@ export async function exportTerraced(tiles: Tile[], o: TerracedOpts, ctx: Export
     `Masiv pod nejnizsi terasou: ${o.baseDepth} m`,
     `Sten: ${nQuads}` + (objVerts ? `, vrcholu: ${objVerts} (sdilene)` : ''),
     '',
-    o.format === 'stl'
-      ? 'Format STL (binarni) -- posunuto k pocatku. STL drzi souradnice ve float32,\n'
-        + 'takze na realnych S-JTSK cislech (statisice metru) by presnost byla ~6 cm.\n'
-        + 'U makety je absolutni poloha bezvyznamna, takze se model posune k nule.'
-      : [
-        'Souradnice: S-JTSK (EPSG:5514), vysky Bpv, jednotky METRY.',
-        (o.shift[0] || o.shift[1] || o.shift[2])
-          ? `Posunuto o ${o.shift.join(' ')}`
-          : 'Bez posunu -- realne souradnice (statisice metru od pocatku).',
-      ].join('\n'),
+    'MODEL JE POSUNUTY K POCATKU (levy dolni roh v nule), jednotky METRY.',
+    'Je to fyzicky objekt, ne podklad do GIS -- absolutni poloha nema vyznam.',
+    'Realne S-JTSK souradnice (statisice metru) skodi: 3ds Max si vrcholy drzi',
+    'v jednoduche presnosti a stavba sceny se mu na nich zadrhava, STL by melo',
+    'presnost jen ~6 cm. U pocatku jsou to setiny milimetru.',
+    'Kdyz potrebujes model na skutecnem miste, pouzij export Teren + ortofoto.',
     '',
     'Ve sliceru model zmensi na pozadovanou velikost -- 1 m = 1 mm dela',
     `z tohohle vyberu zhruba ${Math.round((b.maxX - b.minX))} x ${Math.round((b.maxY - b.minY))} mm.`,
