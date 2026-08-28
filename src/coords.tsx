@@ -112,8 +112,9 @@ export function CoordsPanel(p: Props) {
       )}
       {!p.pts.length && (
         <div className="px-1 text-[10px] leading-snug text-gray-600">
-          Zatím žádné. Zapni „Odečíst bod" a klikni do mapy — výška se dotáhne z DMR v nejjemnější
-          dostupné úrovni, ne z toho, co je zrovna vykreslené.
+          Zatím žádné. Zapni „Odečíst bod" a klikni do mapy — výška se dotáhne přímo z ČÚZK
+          (DMR 5G), ze stejného zdroje, ze kterého se počítá export. Hotový bod jde chytit
+          a přetáhnout jinam.
         </div>
       )}
     </div>
