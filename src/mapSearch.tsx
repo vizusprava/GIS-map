@@ -68,6 +68,9 @@ export function MapSearch(p: Props) {
             value={p.query}
             onChange={e => p.onQuery(e.target.value)}
             onFocus={() => { if (hasResults) p.onOpen() }}
+            // Esc v poli si musí poradit sám: globální posluchač vstupní pole přeskakuje,
+            // aby nebral Escape rozepsanému textu jinde v appce.
+            onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); p.onClose() } }}
             placeholder="Najít obec, kraj, k.ú. nebo místo…"
             className="min-w-0 flex-1 bg-transparent text-sm text-gray-100 placeholder-gray-500 outline-none"
           />

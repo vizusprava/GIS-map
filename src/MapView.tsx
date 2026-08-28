@@ -3513,6 +3513,51 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     gotoCamView(camViews[next])
   }
 
+  /**
+   * Esc = o krok zpátky k výchozímu stavu.
+   *
+   * Schválně DVOUSTUPŇOVĚ, ne všechno naráz: první Esc vypne jen nástroj, teprve druhý zahodí
+   * výběr. Kdo naklikal tři tisíce dlaždic, nemá o ně přijít jedním omylem — a kdo chce obojí,
+   * zmáčkne Esc dvakrát, což je pořád rychlejší než hledat tlačítko.
+   *
+   * Pořadí odpovídá tomu, co je „nejvíc navrchu": rozbalená nabídka hledání, pak aktivní nástroj,
+   * pak výběr. Rozdělaná oblast nebo měření zmizí s nástrojem, protože bez něj nemají smysl.
+   */
+  function handleEscape() {
+    if (searchOpen) { setSearchOpen(false); return }
+
+    if (parcelMode || areaMode || tileMode || regionMode || rulerMode || calloutMode || moveMode) {
+      claimMapClick('none')
+      toast.info('Nástroj vypnut · Esc znovu zruší výběr')
+      return
+    }
+
+    const sel: string[] = []
+    if (parcelCount) sel.push(`parcely (${parcelCount})`)
+    if (tileCount) sel.push(`dlaždice (${tileCount})`)
+    if (regionName) sel.push('území')
+    if (selectedId) sel.push('model')
+    if (!sel.length) return
+
+    clearAllParcels(); clearArea(); clearTiles(); clearRegion()
+    setSelectedId(null); setCalloutSel(null); setRulerSel(null)
+    toast.info(`Výběr zrušen: ${sel.join(', ')}`)
+  }
+
+  const escRef = useRef(handleEscape)
+  useEffect(() => { escRef.current = handleEscape })
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      // v poli Esc patří rozepsanému textu (přejmenování pohledu, popisek…)
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      escRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // Šipkami se dá projít scénář bez klikání do seznamu. Posluchač se registruje jednou a sahá
   // na aktuální `stepCamView` přes ref — jinak by se musel přepisovat při každé změně pohledů.
   const stepRef = useRef(stepCamView)
@@ -4426,6 +4471,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           </Section>
           )}
           <Section id="vyber" title="Výběr v mapě" dflt={true} open={openSec} onToggle={toggleSec}>
+            <div className="px-1 text-[10px] leading-snug text-gray-600">
+              <kbd className="rounded bg-gray-800 px-1 text-gray-400">Esc</kbd> vypne nástroj, podruhé zruší výběr.
+            </div>
             <ToggleBtn active={parcelMode} onClick={toggleParcel} icon={parcelLoading ? <Loader2 size={15} className="animate-spin" /> : <MapPin size={15} />} label={parcelMode ? 'Klikni na parcelu' : 'Vybrat parcelu'} />
             <ToggleBtn active={areaMode} onClick={toggleAreaMode} icon={areaLoading ? <Loader2 size={15} className="animate-spin" /> : <Hexagon size={15} />} label={areaMode ? `Klikej body (${areaPtCount})` : 'Vybrat oblast'} />
             {areaMode && areaPtCount >= 3 && (
