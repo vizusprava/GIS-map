@@ -61,6 +61,7 @@ import type { ExportCtx } from './export/ctx'
 import { exportTilesObj as exportTilesObjCore } from './export/tilesObj'
 import { exportMapTiles as exportMapTilesCore, estimateMapTiles, tilesInShape, fmtBytes, MAP_RES, type MapRes } from './export/mapTiles'
 import { exportGeoTiff as exportGeoTiffCore, planGeoTiff, type OutDir } from './export/geotiff'
+import { exportTerraced as exportTerracedCore, planTerraced } from './export/terraced'
 import { throwIfAborted } from './export/ctx'
 import { exportCutout as exportCutoutCore } from './export/cutout'
 import { exportGoogleMesh as exportGoogleMeshCore, type GoogleTile } from './export/googleMesh'
@@ -358,6 +359,11 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [mapLayer, setMapLayer] = useState<MapLayer | 'both'>('both')
   // PNG do Photoshopu a AE (menší, georeference vedle jako .pgw), GeoTIFF když ji chceš uvnitř
   const [mapFormat, setMapFormat] = useState<'png' | 'tiff' | 'jpeg'>('png')
+  // vrstevnicová maketa k 3D tisku
+  const [terraceStep, setTerraceStep] = useState(5)   // výška terasy [m]
+  const [terraceCell, setTerraceCell] = useState(5)   // hrana buňky [m]
+  const [terraceBase, setTerraceBase] = useState(10)  // masiv pod nejnižší terasou [m]
+  const [terraceZ, setTerraceZ] = useState(1)         // převýšení
   const [tileCount, setTileCount] = useState(0)
   const [tileBusy, setTileBusy] = useState(false)
   const [tileProgress, setTileProgress] = useState('')
@@ -1805,6 +1811,18 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     if (!tiles.length) return
     await runExport(tileUi, 'Export dlaždic selhal', ctx =>
       exportTilesObjCore(tiles, { tileSize, meshStep, texSize, buildings: exportBuildings, katastr: exportKatastr, shift: coordShift, points: coordPts }, ctx))
+  }
+
+  /** Vrstevnicová maketa k 3D tisku — těleso, ne plocha (viz export/terraced.ts). */
+  async function exportTerracedModel() {
+    const tiles = [...tilesRef.current.values()]
+    if (!tiles.length) { toast.info('Nejsou vybrané žádné dlaždice'); return }
+    const plan = planTerraced(tiles, terraceCell)
+    if (!plan.ok) { toast.error(`${plan.cells.toLocaleString('cs')} buněk je moc — zvětši hranu buňky.`); return }
+    await runExport(tileUi, 'Export makety selhal', ctx =>
+      exportTerracedCore(tiles, {
+        cell: terraceCell, step: terraceStep, baseDepth: terraceBase, zScale: terraceZ, shift: coordShift,
+      }, ctx))
   }
 
   /**
@@ -4978,6 +4996,43 @@ export function MapView({ scene }: { scene: ScenePersist }) {
                     Přibalí se {coordPts.length} {coordPts.length === 1 ? 'odečtený bod' : 'odečtených bodů'} jako helpery (body.ms).
                   </div>
                 )}
+                {/* Vrstevnicová maketa — jiná úloha než ostatní exporty: těleso k tisku,
+                    ne plocha do 3D scény. Proto vlastní parametry i vlastní tlačítko. */}
+                <div className="mt-0.5 border-t border-gray-700 px-0.5 pt-1.5 text-[10px] uppercase tracking-wide text-gray-500">
+                  Maketa k 3D tisku
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-11 shrink-0 text-[10px] text-gray-500" title="Výška jedné terasy">Terasa</span>
+                  {[1, 2, 5, 10, 20].map(s => (
+                    <button key={s} onClick={() => setTerraceStep(s)} className={`rounded px-1.5 py-0.5 text-[11px] ${terraceStep === s ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>{s}m</button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-11 shrink-0 text-[10px] text-gray-500" title="Hrana buňky — jemnější dá ostřejší obrys teras, ale větší soubor">Buňka</span>
+                  {[2, 5, 10, 20].map(s => (
+                    <button key={s} onClick={() => setTerraceCell(s)} className={`rounded px-1.5 py-0.5 text-[11px] ${terraceCell === s ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>{s}m</button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-11 shrink-0 text-[10px] text-gray-500" title="Krajina bývá na maketě placatá — převýšení ji zvýrazní">Převýš.</span>
+                  {[1, 1.5, 2, 3].map(s => (
+                    <button key={s} onClick={() => setTerraceZ(s)} className={`rounded px-1.5 py-0.5 text-[11px] ${terraceZ === s ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>{s}×</button>
+                  ))}
+                  <span className="ml-1 shrink-0 text-[10px] text-gray-500" title="Masiv pod nejnižší terasou">podstavec</span>
+                  <input type="number" value={terraceBase} onChange={e => setTerraceBase(Math.max(0, Number(e.target.value) || 0))} className="w-11 shrink-0 rounded bg-gray-800 px-1 py-0.5 text-[11px] tabular-nums text-gray-100 outline-none" />
+                </div>
+                {tileCount > 0 && (() => {
+                  const p = planTerraced([...tilesRef.current.values()], terraceCell)
+                  return (
+                    <div className={`max-w-[190px] px-1 text-[10px] leading-snug ${p.ok ? 'text-gray-500' : 'text-amber-400'}`}>
+                      {p.nx}×{p.ny} buněk{p.ok ? '' : ' — moc, zvětši buňku'}
+                    </div>
+                  )
+                })()}
+                <button onClick={exportTerracedModel} title="Schodovitý vrstevnicový model jako uzavřené těleso — rovnou do sliceru, bez oprav" className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-2 py-1.5 text-xs text-white hover:bg-purple-500">
+                  <Layers size={13} /> Vrstevnicová maketa (OBJ)
+                </button>
+
                 <button onClick={exportTilesObj} title="Čistý terén DMR 5G s ortofoto texturou → zip s OBJ + MTL + JPEG pro 3ds Max" className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-2 py-1.5 text-xs text-white hover:bg-sky-500">
                   <Download size={13} /> Terén + ortofoto (OBJ)
                 </button>
