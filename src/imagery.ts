@@ -88,8 +88,23 @@ export function ztmProvider() {
   return new Cesium.UrlTemplateImageryProvider({
     url: 'https://ags.cuzk.gov.cz/arcgis1/rest/services/ZTM_WM/MapServer/tile/{z}/{y}/{x}',
     tilingScheme: new Cesium.WebMercatorTilingScheme(),
-    tileWidth: 256,
-    tileHeight: 256,
+    /**
+     * Dlaždice jsou ve skutečnosti 256 px. Že tu stojí 128, je ZÁMĚR, ne překlep.
+     *
+     * Cesium si podle `tileWidth` počítá, jaká úroveň pyramidy odpovídá rozlišení obrazovky.
+     * Pyramida má ale pevné úrovně po dvojnásobcích, takže při zoomu „mezi" úrovněmi se dlaždice
+     * zvětšuje až dvakrát — a právě z toho byla mapa měkká. WMS tenhle problém neměl, protože
+     * vykreslil přesně tu velikost, o kterou se řeklo.
+     *
+     * Poloviční údaj přiměje Cesium sáhnout o úroveň hloub, takže se 256px dlaždice na obrazovku
+     * ZMENŠUJE místo zvětšování. Text i čáry jsou ostré a jako vedlejší efekt se rozmělní i
+     * artefakty JPEGu (cache je ukládá jako JPEG, byť ve vysoké kvalitě).
+     *
+     * Platí se za to čtyřnásobkem dlaždic — při 8–47 kB a ~0,1 s na kus je to pořád nesrovnatelně
+     * rychlejší než WMS, který se na každý dotaz renderoval.
+     */
+    tileWidth: 128,
+    tileHeight: 128,
     // 19 je poslední úroveň, kterou služba má — 20 už vrací 404 (ověřeno)
     maximumLevel: 19,
     rectangle: CR_EXTENT,
