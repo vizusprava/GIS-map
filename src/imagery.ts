@@ -105,7 +105,9 @@ export function ztmProvider() {
      */
     tileWidth: 128,
     tileHeight: 128,
-    // 19 je poslední úroveň, kterou služba má — 20 už vrací 404 (ověřeno)
+    // Rozsah cache je 6–19, ověřeno dotazem na službu. Mimo něj vrací 404, a bez `minimumLevel`
+    // po nich Cesium sáhne hned při startu (staví strom dlaždic od nuly) → plná konzole chyb.
+    minimumLevel: 6,
     maximumLevel: 19,
     rectangle: CR_EXTENT,
     credit: 'ČÚZK',

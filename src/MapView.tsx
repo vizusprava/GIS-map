@@ -47,7 +47,7 @@ import { CoordsPanel } from './coords'
 import { MapTools } from './mapTools'
 import { MapSearch, type PlaceHit } from './mapSearch'
 import { makeDmrTerrain } from './terrain'
-import { fetchElevSampler } from './elevation'
+import { fetchElevSampler, fetchElevSamplerSJTSK } from './elevation'
 import { simplifyRingCapped, pointInRing, ringCentroid } from './rings'
 import { MEASURE_MAX_EDGES, MEASURE_MIN_EDGE, measureRing, fmtArea, type ParcelMeasure } from './measure'
 import { ruianQuery, fetchAdminUnits, fetchAdminParts, fetchAdminGeom, fetchParcelAt, fetchParcelsInBbox, type AdminUnit } from './katastr'
@@ -3511,29 +3511,33 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   /**
    * Odečet bodu z mapy → S-JTSK + Bpv, tedy soustava exportovaného terénu.
    *
-   * Výška se NEBERE z kliknutí, ale dotahuje se přes `sampleTerrainMostDetailed`. Kliknutí vrací
-   * výšku z právě vykreslené úrovně terénu, která je při oddáleném pohledu hrubá — bod odečtený
-   * z výšky letadla by pak seděl o metry jinde než tentýž bod v exportovaném modelu.
+   * Výška se čte PŘÍMO z ČÚZK DMR 5G, ne z terénu v Cesiu. Dva důvody, oba podstatné:
    *
-   * Od dotažené výšky se odečítá GEOID_CZ: Cesium počítá nad elipsoidem, kdežto model i české
-   * výškopisné podklady jsou v Bpv (viz makeDmrTerrain, které to při načtení naopak přičítá).
+   *  - Cesium to u našeho vlastního terénního provideru ani neumí: `sampleTerrainMostDetailed`
+   *    sahá na `terrainProvider.availability`, které `makeDmrTerrain` nemá, a spadne na
+   *    „Cannot read properties of undefined (reading 'computeMaximumLevelAtPosition')".
+   *  - I kdyby fungovalo, vracelo by výšku z právě vykreslené úrovně terénu, tedy při oddáleném
+   *    pohledu hrubou.
+   *
+   * ČÚZK vrátí přesnou hodnotu, a hlavně TU SAMOU, ze které se počítá export — čísla z panelu
+   * pak sedí s modelem v Maxu. Vrací syrové Bpv bez geoidu, takže se nic nepřepočítává; geoid
+   * se přičítá jen u značky v mapě, protože Cesium kreslí nad elipsoidem.
    */
   async function addCoordPoint(lon: number, lat: number) {
-    const v = viewerRef.current
-    if (!v || v.isDestroyed()) return
-    let ell = 0
+    const [x, y] = sjtskOf(lon, lat)
+    let z: number | null = null
     try {
-      const [c] = await Cesium.sampleTerrainMostDetailed(v.terrainProvider, [Cesium.Cartographic.fromDegrees(lon, lat)])
-      ell = c.height ?? 0
+      // malý výřez kolem bodu — DMR 5G má body po ~5 m, 20m okno na 8 px bohatě stačí
+      const sample = await fetchElevSamplerSJTSK('dmr5g', x - 10, y - 10, x + 10, y + 10, 8, 8)
+      z = sample(x, y)
     } catch (e) {
-      console.error('Dotažení výšky selhalo:', e)
-      toast.error('Výšku se nepodařilo dotáhnout z DMR')
+      console.error('Dotažení výšky z ČÚZK selhalo:', e)
+      toast.error('Výšku se nepodařilo dotáhnout z ČÚZK')
       return
     }
-    const [x, y] = sjtskOf(lon, lat)
-    const pt: CoordPoint = { id: `c${Date.now()}`, x, y, z: ell - GEOID_CZ, lon, lat }
-    persistCoords([...coordPts, pt], coordShift)
-    toast.success(`Bod: ${x.toFixed(2)} ${y.toFixed(2)} ${(ell - GEOID_CZ).toFixed(2)}`)
+    if (z == null) { toast.error('ČÚZK pro to místo nemá výšku (mimo pokrytí?)'); return }
+    persistCoords([...coordPts, { id: `c${Date.now()}`, x, y, z, lon, lat }], coordShift)
+    toast.success(`Bod: ${x.toFixed(2)} ${y.toFixed(2)} ${z.toFixed(2)}`)
   }
 
   function persistCoords(pts: CoordPoint[], shift: [number, number, number]) {
