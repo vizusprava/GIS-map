@@ -1,12 +1,14 @@
 /**
  * Rastrové podklady z ČÚZK: ortofoto, základní topografická mapa (ZTM) a katastrální překryv.
  *
- * Zobrazení jede vždycky přes WMS — lokální pyramida („napečené" dlaždice v IndexedDB) se do něj
- * jen vlepuje, aby se mapa nemohla rozbít, když cache chybí nebo je poloprázdná.
+ * Topografická mapa jede z DLAŽDICOVÉ CACHE ČÚZK (rychlé, hotové dlaždice), ortofoto a katastr
+ * pořád přes WMS. U ortofota je to zatím schválně: lokální pyramida („napečené" dlaždice
+ * v IndexedDB) je klíčovaná podle GEOGRAFICKÉ mřížky WMS, takže přechod na mercatorovou cache
+ * `ORTOFOTO_WM` by ji celou zneplatnil. Zrychlilo by to i ortofoto, ale je to samostatná úloha.
  */
 import * as Cesium from 'cesium'
 import { bakedGet } from './cache'
-import { LIBEREC_EXTENT } from './config'
+import { CR_EXTENT, LIBEREC_EXTENT } from './config'
 
 // ── ČÚZK WMS služby (ověřeno přes GetCapabilities — všechny podporují EPSG:3857) ──
 
@@ -67,29 +69,32 @@ export function ortofotoProvider() {
   })
 }
 
-// Základní topografická mapa ČR (ZTM) — stylovaná rastrová kartografie.
-// Stylizovaná podle měřítka, takže podle výšky kamery přepínáme tier.
-export const ZTM_TIERS = [
-  { code: 'ZTM250', minH: 150_000 },
-  { code: 'ZTM100', minH: 60_000 },
-  { code: 'ZTM50',  minH: 25_000 },
-  { code: 'ZTM25',  minH: 8_000 },
-  { code: 'ZTM10',  minH: 0 },
-] as const
-
-export function ztmProvider(code: string) {
-  return new Cesium.WebMapServiceImageryProvider({
-    url: `https://ags.cuzk.gov.cz/arcgis1/services/ZTM/${code}/MapServer/WMSServer`,
-    layers: '0',
-    tileWidth: WMS_TILE,
-    tileHeight: WMS_TILE,
-    parameters: { format: 'image/png', transparent: true },
+/**
+ * Topografická mapa jako HOTOVÉ DLAŽDICE, ne WMS.
+ *
+ * ČÚZK publikuje ZTM dvakrát. Služba `ZTM/<tier>` je WMS, který obrázek renderuje na každý dotaz —
+ * proto se mapa v appce plazila. Vedle toho je `ZTM_WM`: předpřipravená pyramida
+ * (`singleFusedMapCache: true`), kde je dlaždice hotová a jen se pošle. Změřeno na Liberci:
+ * ~0,1 s a 8–47 kB na dlaždici napříč úrovněmi. Tohle používá i web ČÚZK, proto jim to lítá.
+ *
+ * Klíčové je to „_WM" — Web Mercator. Necachovaná `ZTM` má mřížku v S-JTSK (wkid 102067) a tu
+ * Cesium neumí, protože v Křováku nejsou dlaždice v zeměpisných souřadnicích obdélníky. Proto
+ * se dřív muselo přes WMS, který reprojekci udělá na serveru.
+ *
+ * Odpadá tím i přepínání pěti vrstev podle měřítka: pyramida má kartografii zapečenou pro každou
+ * úroveň sama, takže stačí JEDNA vrstva.
+ */
+export function ztmProvider() {
+  return new Cesium.UrlTemplateImageryProvider({
+    url: 'https://ags.cuzk.gov.cz/arcgis1/rest/services/ZTM_WM/MapServer/tile/{z}/{y}/{x}',
+    tilingScheme: new Cesium.WebMercatorTilingScheme(),
+    tileWidth: 256,
+    tileHeight: 256,
+    // 19 je poslední úroveň, kterou služba má — 20 už vrací 404 (ověřeno)
+    maximumLevel: 19,
+    rectangle: CR_EXTENT,
+    credit: 'ČÚZK',
   })
-}
-
-export function pickZtmTier(height: number): string {
-  for (const t of ZTM_TIERS) if (height >= t.minH) return t.code
-  return 'ZTM10'
 }
 
 export function katastrProvider() {

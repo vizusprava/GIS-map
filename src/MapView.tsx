@@ -37,7 +37,7 @@ import {
 import type {
   Base, Placement, CamLook, CamView, Parcel, Anchor, ModelEntry, SceneObj, DrawLayer, DrawingEntry,
 } from './types'
-import { CachedWmsOrtho, WMS_TILE, LOCAL_TILES, bakedKeys, ortofotoProvider, ZTM_TIERS, ztmProvider, pickZtmTier, katastrProvider } from './imagery'
+import { CachedWmsOrtho, WMS_TILE, LOCAL_TILES, bakedKeys, ortofotoProvider, ztmProvider, katastrProvider } from './imagery'
 import {
   pairRasterFiles, loadGeoRaster, makeRasterView, disposeRasterSrc, CRS_IDS, CRS_LABELS,
   type GeoRaster, type CrsId,
@@ -100,7 +100,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<Cesium.Viewer | null>(null)
   const ortoRef = useRef<Cesium.ImageryLayer | null>(null)
-  const ztmRefs = useRef<Record<string, Cesium.ImageryLayer>>({})
+  const ztmRef = useRef<Cesium.ImageryLayer | null>(null)
   const katastrRef = useRef<Cesium.ImageryLayer | null>(null)
   // vlastní georeferencované rastry (.jgw + snímek): dekódované pixely, vrstva a obálka pro přelet
   const rastersRef = useRef<Map<string, { raster: GeoRaster; layer: Cesium.ImageryLayer; rect: Cesium.Rectangle }>>(new Map())
@@ -233,7 +233,6 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const dwgRef = useRef<HTMLInputElement>(null)
 
   const [base, setBase] = useState<Base>(() => scene.initial.base ?? 'ortofoto')
-  const [ztmTier, setZtmTier] = useState<string>('ZTM250')
   const [katastrOn, setKatastrOn] = useState(false)
   // ořez podle vybraných parcel: 'hide' = skryj parcelu, 'only' = nech jen parcelu (inverse)
   // 'g3d' = topo/ortofoto všude + Google 3D realita JEN uvnitř vybraných parcel (inverzní ořez)
@@ -474,25 +473,17 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     // pořadí přidání = pořadí vykreslení zdola nahoru: podklady → katastr
     const orto = viewer.imageryLayers.addImageryProvider(ortofotoProvider())
     ortoRef.current = orto
-    for (const t of ZTM_TIERS) {
-      const layer = viewer.imageryLayers.addImageryProvider(ztmProvider(t.code))
-      layer.show = false
-      ztmRefs.current[t.code] = layer
-    }
+    // Jediná ZTM vrstva: dlaždicová pyramida ČÚZK má kartografii zapečenou pro každou úroveň,
+    // takže se nemusí přepínat pět vrstev podle výšky kamery jako u WMS.
+    const ztm = viewer.imageryLayers.addImageryProvider(ztmProvider())
+    ztm.show = false
+    ztmRef.current = ztm
     const katastr = viewer.imageryLayers.addImageryProvider(katastrProvider())
     katastrRef.current = katastr
     if (scene.initial.splat?.on) void loadSplat(false) // splat byl zapnutý → načti sám (bez přeletu)
 
     // terén celé mapy = ČÚZK DMR 5G (ortofoto/ZTM se drapují na přesný terén)
     viewer.terrainProvider = makeDmrTerrain()
-
-    // přepínání ZTM tieru podle výšky kamery
-    viewer.camera.percentageChanged = 0.2
-    const onCamChange = () => {
-      const h = viewer.camera.positionCartographic?.height
-      if (h != null) setZtmTier(pickZtmTier(h))
-    }
-    viewer.camera.changed.addEventListener(onCamChange)
 
     // glóbus (ČÚZK podklad) renderuje jen výřez ČR — mimo ni se nic nekreslí
     viewer.scene.globe.cartographicLimitRectangle = CR_EXTENT
@@ -502,8 +493,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     // ── plynulejší načítání rastrových dlaždic ČÚZK (ortofoto/topo) + terénu DMR ──
     // Větší cache dlaždic → míň „reload" bliknutí při návratu na místo (default 100). Terén i imagery
     // se cachují společně. `preloadSiblings` = natáhni i sousední dlaždice → při posunu jsou hotové dřív.
-    // Pozn.: ZTM ČÚZK je při paralelní zátěži FLAKY (bílé dlaždice) → víc požadavků = větší riziko;
-    // kdyby topo bílalo, `preloadSiblings` je první podezřelý na vypnutí.
+    // Pozn.: platilo pro WMS ZTM, které při paralelní zátěži vracelo bílé dlaždice. Topo teď jede
+    // z hotové dlaždicové cache, kde se nic nerenderuje, takže tenhle risk odpadl. U ortofota
+    // (pořád WMS) zůstává — kdyby bílalo, `preloadSiblings` je první podezřelý na vypnutí.
     viewer.scene.globe.tileCacheSize = 1000
     viewer.scene.globe.preloadSiblings = true
 
@@ -517,10 +509,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     } else {
       viewer.camera.setView({ destination: LIBEREC_EXTENT })
     }
-    onCamChange()
 
     return () => {
-      viewer.camera.changed.removeEventListener(onCamChange)
       // Kam se scéna kouká, se ukládá až tady: při každém pohybu kamery by to byl vodopád
       // zápisů. Odložené uložení běží mimo komponentu, takže se dopíše i po odmountování.
       if (!viewer.isDestroyed()) {
@@ -1018,10 +1008,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     const showOrto = google ? googleUnder === 'ortofoto' : base === 'ortofoto'
     const showZtm = google ? googleUnder === 'zm' : base === 'zm'
     if (ortoRef.current) ortoRef.current.show = showOrto
-    for (const t of ZTM_TIERS) {
-      const layer = ztmRefs.current[t.code]
-      if (layer) layer.show = showZtm && t.code === ztmTier
-    }
+    if (ztmRef.current) ztmRef.current.show = showZtm
     if (katastrRef.current) katastrRef.current.show = katastrOn
     v.scene.globe.show = google ? googleUnder !== 'none' : true // 'none' = čistě 3D, glóbus schovat
 
@@ -1054,7 +1041,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     }
 
     return () => { alive = false }
-  }, [base, ztmTier, katastrOn, googleUnder, parcelClip])
+  }, [base, katastrOn, googleUnder, parcelClip])
 
   // pozadí scény: hvězdy / přechod / plná barva. Řeší i barvu glóbu MIMO dostupná data
   // (ČÚZK končí na hranicích ČR) — jinak by kolem republiky svítil obdélník.
@@ -4346,7 +4333,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           <Section id="podklad" title="Podklad a překryvy" dflt={true} open={openSec} onToggle={toggleSec}>
             <div className="text-[10px] uppercase tracking-wide text-gray-500 px-1">Podklad</div>
             <ToggleBtn active={base === 'ortofoto'} onClick={() => setBase('ortofoto')} icon={<Image size={15} />} label="Ortofoto ČR" />
-            <ToggleBtn active={base === 'zm'} onClick={() => setBase('zm')} icon={<MapIcon size={15} />} label={base === 'zm' ? `Topografická mapa (${ztmTier})` : 'Topografická mapa ČR'} />
+            <ToggleBtn active={base === 'zm'} onClick={() => setBase('zm')} icon={<MapIcon size={15} />} label="Topografická mapa ČR" />
             {ENABLE_GOOGLE_3D && (
               <ToggleBtn active={base === 'google'} onClick={() => setBase('google')} icon={googleLoading ? <Loader2 size={15} className="animate-spin" /> : <Building2 size={15} />} label="3D realita (Google)" />
             )}
