@@ -48,11 +48,27 @@ const CACHE_MIN_LEVEL = 6
  *     128 px … úroveň 18, 1,9 fyz. px na pixel ortofota, 147 dlaždic /  5,1 MB,  5,8 s
  *      64 px … úroveň 19, 1,0 fyz. px na pixel ortofota, 522 dlaždic / 16,9 MB, 11,7 s
  *
- * 128 je kompromis: viditelně ostřejší za stejný čas načtení. 64 by přidalo už jen trochu ostrosti
- * za trojnásobek dat a dvojnásobný čas. Úsporný profil nepředstahuje okolní dlaždice, takže tam
- * vyjde 84 dlaždic / 2,8 MB (proti 43 / 1,7 MB).
+ * 128 je výchozí kompromis: viditelně ostřejší za stejný čas načtení. 64 přidá ještě úroveň za
+ * trojnásobek dat a dvojnásobný čas — proto jen na přání, volbou „Detail ortofota: maximální"
+ * v panelu Podklad (předvolba počítače, jako profil výkonu). Úsporný profil nepředstahuje okolní
+ * dlaždice, takže tam vyjde 84 dlaždic / 2,8 MB (proti 43 / 1,7 MB).
  */
-const ORTO_TILE_PX = 128
+export type OrtoDetail = 'standard' | 'max'
+const ORTO_TILE_PX: Record<OrtoDetail, number> = { standard: 128, max: 64 }
+/**
+ * Podíl cache dlaždic glóbu (profil výkonu) podle detailu ortofota. Při maximálním nese každá
+ * dlaždice glóbu čtyřikrát víc textur ortofota, takže se cache úměrně zmenší a paměť grafiky
+ * zůstane, kde byla. Co z ní vypadne, se vezme z cache prohlížeče (viz perfProfile.ts).
+ */
+export const ORTO_CACHE_SHARE: Record<OrtoDetail, number> = { standard: 1, max: 0.25 }
+
+const ORTO_DETAIL_KEY = 'geo.ortoDetail'
+export function readOrtoDetail(): OrtoDetail {
+  try { return localStorage.getItem(ORTO_DETAIL_KEY) === 'max' ? 'max' : 'standard' } catch { return 'standard' }
+}
+export function saveOrtoDetail(d: OrtoDetail): void {
+  try { localStorage.setItem(ORTO_DETAIL_KEY, d) } catch { /* privátní režim */ }
+}
 
 /** URL jedné dlaždice ortofota z cache — pro zobrazení i napečení lokální mapy. */
 export function orthoTileUrl(level: number, x: number, y: number): string {
@@ -128,15 +144,16 @@ class CuzkTileCache extends Cesium.UrlTemplateImageryProvider {
   }
 }
 
-export function ortofotoProvider(): Cesium.ImageryProvider {
+export function ortofotoProvider(detail: OrtoDetail = 'standard'): Cesium.ImageryProvider {
+  const px = ORTO_TILE_PX[detail]
   if (LOCAL_TILES) {
     return new Cesium.UrlTemplateImageryProvider({
       url: `${LOCAL_TILES.replace(/\/$/, '')}/orto/{z}/{x}/{y}.jpg`,
       rectangle: LIBEREC_EXTENT,
       minimumLevel: 10,
       maximumLevel: 19,
-      tileWidth: ORTO_TILE_PX,
-      tileHeight: ORTO_TILE_PX,
+      tileWidth: px,
+      tileHeight: px,
     })
   }
   // Formát cache je „MIXED": dlaždice celé uvnitř ČR jsou JPEG, ty na hranici PNG s průhledností,
@@ -144,8 +161,8 @@ export function ortofotoProvider(): Cesium.ImageryProvider {
   return new CuzkTileCache({
     url: `${ORTO_CACHE}/{z}/{y}/{x}`,
     tilingScheme: new Cesium.WebMercatorTilingScheme(),
-    tileWidth: ORTO_TILE_PX,
-    tileHeight: ORTO_TILE_PX,
+    tileWidth: px,
+    tileHeight: px,
     minimumLevel: CACHE_MIN_LEVEL,
     maximumLevel: ORTO_MAX_LEVEL,
     rectangle: CR_EXTENT,

@@ -6,11 +6,12 @@ import { Building2, Image, Layers, Loader2, Map as MapIcon, Sparkles } from 'luc
 import { ENABLE_GOOGLE_3D, ENABLE_LIBEREC_DISTRICTS, ENABLE_OSM_BUILDINGS } from '../config'
 import { BG_MODES } from '../background'
 import { detectPerf, type PerfChoice, type PerfLevel } from '../perfProfile'
+import type { OrtoDetail } from '../imagery'
 import { ToggleBtn } from '../ui'
 import type { MapLayers } from '../useMapLayers'
 import type { DistrictsTool } from '../useDistricts'
 
-export function BasePanel({ layers, districts, perfChoice, setPerfChoice, perfLevel, sharpness, setSharpness, viewerReady, viewerRef }: {
+export function BasePanel({ layers, districts, perfChoice, setPerfChoice, perfLevel, sharpness, setSharpness, ortoDetail, setOrtoDetail, viewerReady, viewerRef }: {
   layers: MapLayers
   districts: DistrictsTool
   perfChoice: PerfChoice
@@ -18,6 +19,8 @@ export function BasePanel({ layers, districts, perfChoice, setPerfChoice, perfLe
   perfLevel: PerfLevel
   sharpness: number
   setSharpness: (s: number) => void
+  ortoDetail: OrtoDetail
+  setOrtoDetail: (d: OrtoDetail) => void
   viewerReady: boolean
   viewerRef: React.RefObject<Cesium.Viewer | null>
 }) {
@@ -107,11 +110,35 @@ export function BasePanel({ layers, districts, perfChoice, setPerfChoice, perfLe
             : perfLevel === 'usporny' ? 'Šetří grafiku i paměť, obraz je o něco měkčí.' : 'Nejvyšší kvalita, nejvíc zatěžuje grafiku.'}
         </div>
       </div>
-      {/* Ostrost obrazu — supersampling nad základní rozlišení (kvalitní profil: pixely displeje,
-          úsporný: CSS pixely). */}
+      {/* Detail ortofota — jak hluboko sahat do pyramidy ČÚZK (imagery.ts). Tohle je to, co dělá
+          ortofoto ostřejší; převzorkování níž jen vyhlazuje hrany. */}
       <div className="flex flex-col gap-1 border-t border-gray-700 pt-2">
         <div className="flex items-center gap-1.5 text-xs">
-          <span className="shrink-0 text-gray-400">Ostrost obrazu</span>
+          <span className="shrink-0 text-gray-400">Detail ortofota</span>
+          <div className="ml-auto flex gap-1">
+            {([
+              ['standard', 'Standardní', 'Ostré ortofoto za běžnou cenu — výchozí'],
+              ['max', 'Maximální', 'O úroveň jemnější (až nativních ~20 cm na pixel). Asi 3× víc stahování a načítání trvá déle.'],
+            ] as const).map(([id, label, title]) => (
+              <button
+                key={id}
+                onClick={() => setOrtoDetail(id)}
+                title={title}
+                className={`rounded px-1.5 py-0.5 text-[11px] ${ortoDetail === id ? 'bg-teal-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+        {ortoDetail === 'max' && (
+          <div className="px-1 text-[10px] leading-snug text-gray-600">Jemnější ortofoto za asi 3× víc stahování; mapa se dotahuje déle.</div>
+        )}
+      </div>
+      {/* Vyhlazení hran — převzorkování nad základní rozlišení (kvalitní profil: pixely displeje,
+          úsporný: CSS pixely). Dřív se jmenovalo „Ostrost obrazu", jenže ortofoto neostří — jen
+          uklidní třepení jemné kresby a hran. */}
+      <div className="flex flex-col gap-1 border-t border-gray-700 pt-2">
+        <div className="flex items-center gap-1.5 text-xs">
+          <span className="shrink-0 text-gray-400" title="Převzorkování: scéna se vykreslí větší a zmenší se až na obrazovku. Ortofoto tím neostří — na to je Detail ortofota.">Vyhlazení hran</span>
           <div className="ml-auto flex gap-1">
             {[1, 1.5, 2].map(s => (
               <button

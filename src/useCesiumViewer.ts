@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import { ION_TOKEN, CR_EXTENT, LIBEREC_EXTENT, MOVE_SETTLE_MS, SHARP_KEY } from './config'
-import { ortofotoProvider, ortofotoPatchProvider, ORTO_PATCH_MIN_TERRAIN, ztmProvider, katastrProvider } from './imagery'
+import { ortofotoProvider, ortofotoPatchProvider, ORTO_CACHE_SHARE, ORTO_PATCH_MIN_TERRAIN, ztmProvider, katastrProvider, type OrtoDetail } from './imagery'
 import { makeDmrTerrain, setDmrCacheMax, setTerrainFocus } from './terrain'
 import { watchClipCollections } from './cesiumClipDebug'
 import type { PerfSettings } from './perfProfile'
@@ -23,14 +23,19 @@ export function useCesiumViewer(deps: {
   perf: PerfSettings
   /** supersampling nad rozlišení displeje (1 = bez) */
   sharpness: number
+  /** jak hluboko sahat do pyramidy ortofota (imagery.ts) — předvolba počítače */
+  ortoDetail: OrtoDetail
   /** roviny ořezu modelu (řez) — hlídá je záchranná brzda vykreslování */
   clipCollections: () => Iterable<Cesium.ClippingPlaneCollection>
   /** vykreslování spadlo — vypnout, co ho nejspíš shodilo */
   onRenderError: () => void
 }) {
-  const { containerRef, sceneRef, perf, sharpness } = deps
+  const { containerRef, sceneRef, perf, sharpness, ortoDetail } = deps
   // Čtou je cesty, které běží mimo render (start vieweru, načtení Google dlaždic).
   const perfRef = useRef(perf); perfRef.current = perf
+  const ortoDetailRef = useRef(ortoDetail); ortoDetailRef.current = ortoDetail
+  /** s jakým detailem je postavená současná vrstva ortofota — ať se při startu nestaví dvakrát */
+  const ortoBuiltRef = useRef<OrtoDetail | null>(null)
   const clipRef = useRef(deps.clipCollections); clipRef.current = deps.clipCollections
   const renderErrRef = useRef(deps.onRenderError); renderErrRef.current = deps.onRenderError
 
@@ -131,8 +136,9 @@ export function useCesiumViewer(deps: {
       viewer.imageryLayers.add(patchLayer)
       ortoPatchRef.current = patchLayer
     }
-    const orto = viewer.imageryLayers.addImageryProvider(ortofotoProvider())
+    const orto = viewer.imageryLayers.addImageryProvider(ortofotoProvider(ortoDetailRef.current))
     ortoRef.current = orto
+    ortoBuiltRef.current = ortoDetailRef.current
     // Jediná ZTM vrstva: dlaždicová pyramida ČÚZK má kartografii zapečenou pro každou úroveň,
     // takže se nemusí přepínat pět vrstev podle výšky kamery jako u WMS.
     const ztm = viewer.imageryLayers.addImageryProvider(ztmProvider())
@@ -154,7 +160,7 @@ export function useCesiumViewer(deps: {
     viewer.scene.globe.depthTestAgainstTerrain = true
     // Větší cache dlaždic → míň „reload" bliknutí při návratu na místo (default 100).
     // Terén i imagery se cachují společně. Hodnota podle profilu výkonu (kvalitní 1000).
-    viewer.scene.globe.tileCacheSize = perfRef.current.tileCacheSize
+    viewer.scene.globe.tileCacheSize = Math.round(perfRef.current.tileCacheSize * ORTO_CACHE_SHARE[ortoDetailRef.current])
     /**
      * `preloadSiblings` = natáhni i dlaždice kousek za okrajem obrazovky.
      *
@@ -273,13 +279,36 @@ export function useCesiumViewer(deps: {
     scene.msaaSamples = perf.msaaSamples
     // Bez MSAA by hrany zubatěly; FXAA je jeden průchod přes obraz, MSAA násobí celé vykreslení.
     scene.postProcessStages.fxaa.enabled = perf.fxaa
-    scene.globe.tileCacheSize = perf.tileCacheSize
+    scene.globe.tileCacheSize = Math.round(perf.tileCacheSize * ORTO_CACHE_SHARE[ortoDetail])
     scene.globe.preloadSiblings = perf.preloadSiblings
     const g = googleRef.current
     if (g) { g.cacheBytes = perf.googleCacheBytes; g.maximumCacheOverflowBytes = perf.googleCacheOverflowBytes }
     setDmrCacheMax(perf.dmrCacheTiles)
     scene.requestRender()
-  }, [perf, viewerReady])
+  }, [perf, viewerReady, ortoDetail])
+
+  /**
+   * Vrstva ortofota znovu: po napečení lokální mapy (dlaždice v téže mřížce, viz `orthoBakedKey`)
+   * nebo po změně detailu. Cesium pak přepošle žádosti o dlaždice — napečené se vezmou z localu,
+   * jiný detail z jiné úrovně pyramidy. Zachová pozici ve stacku i viditelnost.
+   */
+  function refreshOrtoLayer() {
+    const v = viewerRef.current
+    if (!v || v.isDestroyed() || !ortoRef.current) return
+    const layers = v.scene.imageryLayers
+    const idx = layers.indexOf(ortoRef.current)
+    const show = ortoRef.current.show
+    layers.remove(ortoRef.current, true)
+    const layer = layers.addImageryProvider(ortofotoProvider(ortoDetailRef.current), idx >= 0 ? idx : undefined)
+    layer.show = show
+    ortoRef.current = layer
+    ortoBuiltRef.current = ortoDetailRef.current
+    v.scene.requestRender()
+  }
+  // změna detailu ortofota za běhu
+  useEffect(() => {
+    if (ortoBuiltRef.current && ortoBuiltRef.current !== ortoDetail) refreshOrtoLayer()
+  }, [ortoDetail, viewerReady])
 
   /**
    * Terénu se průběžně hlásí, kam se člověk dívá.
@@ -323,6 +352,7 @@ export function useCesiumViewer(deps: {
     perfRef,
     interacting,
     ortoRef,
+    refreshOrtoLayer,
     ortoPatchRef,
     ztmRef,
     katastrRef,

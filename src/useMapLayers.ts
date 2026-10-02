@@ -9,7 +9,6 @@ import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import polygonClipping from 'polygon-clipping'
 import { CR_EXTENT, GOOGLE_3D_ION_ASSET, OSM_LIFT_M } from './config'
-import { ortofotoProvider } from './imagery'
 import { applyBackground, BG_MODES, type BgMode } from './background'
 import { simplifyRingCapped } from './rings'
 import { sjtskOf, wgsOf } from './tiles'
@@ -347,20 +346,8 @@ export function useMapLayers(deps: {
     setObjects(list => [...list]) // překreslit panel (tlačítka masek modelů)
   }
 
-  // Po napečení lokální mapy (dlaždice v téže mřížce jako zobrazení, viz `orthoBakedKey`) znovu
-  // vytvoří ortofoto vrstvu → Cesium přepošle žádosti o dlaždice a napečené se hned vezmou z localu,
-  // bez nutnosti popojet/refreshovat. Zachová pozici ve stacku i viditelnost.
-  function refreshOrtoLayer() {
-    const v = viewerRef.current
-    if (!v || v.isDestroyed() || !ortoRef.current) return
-    const layers = v.scene.imageryLayers
-    const idx = layers.indexOf(ortoRef.current)
-    const show = ortoRef.current.show
-    layers.remove(ortoRef.current, true)
-    const layer = layers.addImageryProvider(ortofotoProvider(), idx >= 0 ? idx : undefined)
-    layer.show = show
-    ortoRef.current = layer
-  }
+  // Vrstvu ortofota staví hook vieweru (zná detail ortofota); tady jen projde dál pro napečení.
+  const refreshOrtoLayer = deps.viewer.refreshOrtoLayer
 
   // OSM budovy (Cesium ion) — líné vytvoření + zap/vyp
   async function ensureOsm(viewer: Cesium.Viewer): Promise<Cesium.Cesium3DTileset | null> {
