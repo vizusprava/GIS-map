@@ -1,0 +1,331 @@
+/**
+ * Importované 3D modely: načtení (GLB/glTF/OBJ, i s georeferencí z názvu nebo z geometrie),
+ * usazení, výběr, posun tažením po mapě a ukládání do scény.
+ */
+import { useEffect, useRef, useState } from 'react'
+import * as Cesium from 'cesium'
+import * as THREE from 'three'
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
+import { toast } from 'sonner'
+import { MAX_GLB_YAW_DEG, MODEL_GLOW } from './config'
+import { pickTerrain, viewCenterGround, buildMatrix } from './sceneUtils'
+import { computeBottomZ, georeferenceSjtskGlb } from './model3d'
+import { parseAnchor } from './exportUtils'
+import type { Anchor, MapClickOwner, ModelEntry, Placement, SceneObj } from './types'
+import type { AssetConfig } from './lib/types'
+import type { ScenePersist } from './lib/scenePersist'
+
+export type ModelsTool = ReturnType<typeof useModels>
+
+export function useModels(deps: {
+  viewerRef: React.RefObject<Cesium.Viewer | null>
+  sceneRef: React.RefObject<ScenePersist>
+  moveMode: boolean
+  setObjects: React.Dispatch<React.SetStateAction<SceneObj[]>>
+  releaseMapClick: (who: MapClickOwner) => void
+  /** maska „skrýt mapu pod modelem" se počítá v `useMapLayers` */
+  updateExcavation: () => void
+  /** model zmizel — řez si k němu drží vlastní věci a uklidí si je */
+  onModelRemoved: (id: string) => void
+}) {
+  const { viewerRef, sceneRef, moveMode, setObjects, releaseMapClick, updateExcavation, onModelRemoved } = deps
+
+  const modelsRef = useRef<Map<string, ModelEntry>>(new Map())
+  const selectedIdRef = useRef<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [placement, setPlacement] = useState<Placement | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  // Modely patřily vieweru, který zaniká spolu s komponentou: uvolnit jejich blob URL
+  // a zapomenout odkazy, ať nový viewer (StrictMode, návrat do scény) nezačíná s mrtvými.
+  useEffect(() => () => {
+    for (const e of modelsRef.current.values()) URL.revokeObjectURL(e.url)
+    modelsRef.current.clear()
+  }, [])
+
+  // promítnutí stavu umístění do matice VYBRANÉHO modelu
+  useEffect(() => {
+    const e = selectedIdRef.current ? modelsRef.current.get(selectedIdRef.current) : null
+    if (e && placement) {
+      e.placement = placement
+      e.model.modelMatrix = buildMatrix(placement, e.center, e.yawDeg)
+      saveModel(e) // odloženě → tažení sliderem nevystřelí request na každý pixel
+    }
+  }, [placement])
+
+  // režim přesunu: tažení vybraného modelu po mapě (kamera se při tahu vypne)
+  useEffect(() => {
+    const v = viewerRef.current
+    if (!v || v.isDestroyed() || !moveMode) return
+    const handler = new Cesium.ScreenSpaceEventHandler(v.scene.canvas)
+    let dragging = false
+    handler.setInputAction((evt: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
+      const e = selectedIdRef.current ? modelsRef.current.get(selectedIdRef.current) : null
+      const picked = v.scene.pick(evt.position)
+      if (picked && e && picked.primitive === e.model) {
+        dragging = true
+        v.scene.screenSpaceCameraController.enableInputs = false
+      }
+    }, Cesium.ScreenSpaceEventType.LEFT_DOWN)
+    handler.setInputAction((evt: Cesium.ScreenSpaceEventHandler.MotionEvent) => {
+      if (!dragging) return
+      const g = pickTerrain(v, evt.endPosition)
+      if (g) setPlacement(p => p ? { ...p, lon: g.lon, lat: g.lat, groundH: g.height } : p)
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE)
+    const end = () => { if (dragging) { dragging = false; v.scene.screenSpaceCameraController.enableInputs = true } }
+    handler.setInputAction(end, Cesium.ScreenSpaceEventType.LEFT_UP)
+    // `v.scene` si držíme z registrace — při zániku komponenty je viewer už zničený a getter
+    // by spadl (Viewer.isDestroyed() to nezachytí, v Cesiu vrací vždy false).
+    const ssc = v.scene.screenSpaceCameraController
+    return () => { handler.destroy(); ssc.enableInputs = true }
+  }, [moveMode])
+
+  /**
+   * Nastavení modelu tak, jak se ukládá k jeho souboru. `center` ani `footprint` se neukládají
+   * schválně — obojí se ze stejného souboru spočítá znovu a stejně, tak ať to nemůže zestárnout.
+   */
+  function modelConfig(e: ModelEntry): AssetConfig {
+    return {
+      placement: e.placement,
+      yawDeg: e.yawDeg,
+      visible: e.visible,
+      excavate: !!e.excavate,
+      outline: !!e.outline,
+    }
+  }
+
+  /** Zapamatuj si usazení a přepínače modelu (odloženě — tažení sliderem je jinak vodopád). */
+  function saveModel(e: ModelEntry | null | undefined) {
+    if (e?.assetId) sceneRef.current.patchAssetConfig(e.assetId, modelConfig(e))
+  }
+
+  /** Nahraje model do scény na pozadí a doplní mu `assetId`. */
+  async function uploadModel(entry: ModelEntry, file: File) {
+    try {
+      const asset = await sceneRef.current.uploadAsset({
+        kind: 'model', name: entry.name, file, config: modelConfig(entry),
+      })
+      entry.assetId = asset.id
+      // usazení se mohlo mezitím změnit (model jde posouvat, než upload dojede)
+      sceneRef.current.patchAssetConfig(asset.id, modelConfig(entry))
+      // ...a stejně tak jméno — přejmenovat jde i model, který se teprve nahrává
+      if (asset.name !== entry.name) void sceneRef.current.renameAsset(asset.id, entry.name).catch(err => {
+        console.error('Přejmenování modelu se neuložilo:', err)
+      })
+    } catch (e) {
+      console.error('Uložení modelu selhalo:', e)
+      toast.error(e instanceof Error ? e.message : 'Model se nepodařilo uložit do scény — po refreshi zmizí')
+    }
+  }
+
+  async function importModel(file: File, restore?: { assetId: string; name: string; config: AssetConfig }) {
+    if (!/\.(glb|gltf|obj)$/i.test(file.name)) return
+    const v = viewerRef.current
+    if (!v || v.isDestroyed()) return
+
+    const isGlb = /\.(glb|gltf)$/i.test(file.name)
+    // glb URL pro Cesium (OBJ převedeme přes three) + promise na nejnižší bod + případná geo-kotva
+    let url: string
+    let bottomPromise: Promise<number | null>
+    let anchor = parseAnchor(file.name) // kotva z názvu (geo_lon_lat_h.*) → reimport našeho exportu
+    let footprint: Cesium.Cartesian3[][] | null = null // obrys(y) půdorysu ve světě pro skrytí mapy (jen S-JTSK)
+    if (/\.obj$/i.test(file.name)) {
+      try {
+        const group = new OBJLoader().parse(await file.text())
+        group.traverse(o => {
+          const m = o as THREE.Mesh
+          if (m.isMesh && m.geometry) { m.geometry.rotateX(-Math.PI / 2); m.geometry.rotateY(-Math.PI / 2) }
+        })
+        const box = new THREE.Box3().setFromObject(group)
+        bottomPromise = Promise.resolve(Number.isFinite(box.min.y) ? box.min.y : null)
+        const glbBuf = await new Promise<ArrayBuffer>((res, rej) => new GLTFExporter().parse(group, r => res(r as ArrayBuffer), rej, { binary: true }))
+        url = URL.createObjectURL(new Blob([glbBuf], { type: 'model/gltf-binary' }))
+      } catch (e) { console.error('Import OBJ selhal:', e); return }
+    } else {
+      // glb bez kotvy v názvu: zkus rozpoznat reálné S-JTSK souřadnice v geometrii a usadit přesně
+      const geo = !anchor ? await georeferenceSjtskGlb(file).catch(e => { console.error('Georeference selhala:', e); return null }) : null
+      if (geo) {
+        url = geo.url
+        bottomPromise = Promise.resolve(geo.bottomZ)
+        anchor = geo.anchor
+        footprint = geo.footprint
+        if (!restore) toast.success('Model usazen podle S-JTSK souřadnic z geometrie')
+      } else {
+        url = URL.createObjectURL(file)
+        bottomPromise = computeBottomZ(file)
+      }
+    }
+
+    let base: Anchor
+    if (anchor) base = anchor
+    else { const c = viewCenterGround(v); base = { lon: c.lon, lat: c.lat, h: c.height } }
+    // glb (náš export i georeferencovaný) je otočený o 90° kolem svislé osy → kompenzace přes matici
+    const autoYaw = (anchor && isGlb) ? MAX_GLB_YAW_DEG : 0
+    // Uložené usazení má přednost před automatickým: model se od té doby mohl ručně posunout.
+    const p: Placement = restore?.config.placement
+      ?? { lon: base.lon, lat: base.lat, groundH: base.h, heightOffset: 0, heading: 0, pitch: 0, roll: 0, scale: 1 }
+    const yawDeg = restore?.config.yawDeg ?? autoYaw
+    if (!restore) {
+      if (anchor && parseAnchor(file.name)) toast.success('Model usazen přesně podle geo-kotvy z názvu')
+      else if (!anchor) toast.message('Soubor bez souřadnic — umístěno do středu, dolaď ručně')
+    }
+
+    try {
+      const model = await Cesium.Model.fromGltfAsync({
+        url,
+        modelMatrix: buildMatrix(p, Cesium.Cartesian3.ZERO, yawDeg),
+      })
+      if (v.isDestroyed()) { URL.revokeObjectURL(url); return }
+      v.scene.primitives.add(model)
+      model.environmentMapManager.enabled = true
+      model.environmentMapManager.atmosphereScatteringIntensity = 4.0
+      model.environmentMapManager.brightness = 1.3
+      // svítící obrys (glow) kolem modelu — výchozí VYPNUTÝ (jde zapnout v panelu modelu)
+      model.silhouetteColor = MODEL_GLOW
+      model.silhouetteSize = restore?.config.outline ? 2.0 : 0
+      model.show = restore?.config.visible ?? true
+
+      const id = crypto.randomUUID()
+      const entry: ModelEntry = {
+        id, name: restore?.name ?? file.name.replace(/\.(glb|gltf|obj)$/i, ''),
+        model, url, center: Cesium.Cartesian3.clone(Cesium.Cartesian3.ZERO), yawDeg, placement: p,
+        visible: restore?.config.visible ?? true,
+        footprint: footprint ?? undefined,
+        excavate: restore?.config.excavate ?? false,
+        outline: restore?.config.outline ?? false,
+        assetId: restore?.assetId,
+      }
+      modelsRef.current.set(id, entry)
+      setObjects(list => [...list, { id, kind: 'model', name: entry.name, visible: entry.visible }])
+      if (!restore) selectObject(id)
+
+      model.readyEvent.addEventListener(async () => {
+        if (v.isDestroyed()) return
+        if (!anchor) {
+          const inv = Cesium.Matrix4.inverse(model.modelMatrix, new Cesium.Matrix4())
+          const localCenter = Cesium.Matrix4.multiplyByPoint(inv, model.boundingSphere.center, new Cesium.Cartesian3())
+          const bottomZ = await bottomPromise
+          entry.center = new Cesium.Cartesian3(localCenter.x, localCenter.y, bottomZ ?? 0)
+          model.modelMatrix = buildMatrix(entry.placement, entry.center, entry.yawDeg)
+        }
+        if (entry.excavate) updateExcavation() // matice i obrys jsou hotové → přepočítej masku
+        // dosednutí i maska přišly asynchronně, mimo jakýkoli snímek — ukázat je
+        v.scene.requestRender()
+        // Při obnově scény se nikam nelétá: kamera se vrací na svoje uložené místo a přelet
+        // na poslední načtený model by ji z něj sundal.
+        if (!restore) v.camera.flyToBoundingSphere(model.boundingSphere, { duration: 1.0 })
+      })
+
+      if (!restore) void uploadModel(entry, file)
+    } catch {
+      URL.revokeObjectURL(url)
+      toast.error(restore ? `Model „${file.name}" se nepodařilo obnovit` : 'Import modelu selhal')
+    }
+  }
+
+  function selectObject(id: string | null) {
+    selectedIdRef.current = id
+    setSelectedId(id)
+    const e = id ? modelsRef.current.get(id) : null
+    setPlacement(e ? { ...e.placement } : null)
+    releaseMapClick('move')
+  }
+
+  function deleteModel(id: string) {
+    const v = viewerRef.current
+    const e = modelsRef.current.get(id)
+    if (!e) return
+    if (v && !v.isDestroyed()) v.scene.primitives.remove(e.model)
+    onModelRemoved(id)
+    URL.revokeObjectURL(e.url)
+    modelsRef.current.delete(id)
+    if (e.excavate) updateExcavation() // uklidit masku po smazaném modelu
+    setObjects(list => list.filter(o => o.id !== id))
+    if (selectedIdRef.current === id) selectObject(null)
+    if (e.assetId) void sceneRef.current.deleteAsset(e.assetId).catch(err => {
+      console.error('Smazání modelu z úložiště selhalo:', err)
+      toast.error('Model zmizel z mapy, ale v úložišti zůstal — zkus to znovu po refreshi')
+    })
+  }
+
+  // zapnout/vypnout skrytí mapy (ortofoto/topo + terén + Google) pod/nad vybraným modelem
+  function toggleExcavation(id: string) {
+    const e = modelsRef.current.get(id)
+    if (!e || !e.footprint) return
+    e.excavate = !e.excavate
+    updateExcavation()
+    saveModel(e)
+    setObjects(list => [...list]) // překreslit panel (stav se čte z ref)
+  }
+
+  // zapnout/vypnout svítící obrys (silhouette) kolem vybraného modelu
+  function toggleOutline(id: string) {
+    const e = modelsRef.current.get(id)
+    if (!e) return
+    e.outline = !e.outline
+    e.model.silhouetteSize = e.outline ? 2.0 : 0
+    saveModel(e)
+    setObjects(list => [...list]) // překreslit panel (stav se čte z ref)
+  }
+
+  /** Zap/vyp modelu z panelu Scéna. */
+  function setModelVisible(id: string, vis: boolean) {
+    const e = modelsRef.current.get(id)
+    if (e) { e.model.show = vis; e.visible = vis; saveModel(e) }
+  }
+
+  /**
+   * Nové jméno modelu. Bez zápisu by se po obnovení scény vrátilo původní. Model, který se
+   * ještě nahrává, `assetId` nemá — jméno mu dopíše `uploadModel`, až upload dojede.
+   */
+  function renameModel(id: string, name: string) {
+    const e = modelsRef.current.get(id)
+    if (!e || e.name === name) return
+    e.name = name
+    if (e.assetId) void sceneRef.current.renameAsset(e.assetId, name).catch(err => {
+      console.error('Přejmenování modelu se neuložilo:', err)
+      toast.error('Nové jméno se nepodařilo uložit — po obnovení scény bude původní')
+    })
+  }
+
+  function focusModel() {
+    const v = viewerRef.current
+    const e = selectedIdRef.current ? modelsRef.current.get(selectedIdRef.current) : null
+    if (v && !v.isDestroyed() && e) v.camera.flyToBoundingSphere(e.model.boundingSphere, { duration: 1.0 })
+  }
+
+  // přesné posazení vybraného modelu na povrch (terén i Google dlaždice)
+  function dropToGround() {
+    const v = viewerRef.current
+    const e = selectedIdRef.current ? modelsRef.current.get(selectedIdRef.current) : null
+    if (!v || v.isDestroyed() || !placement || !e) return
+    if (!v.scene.sampleHeightSupported) return
+    const carto = Cesium.Cartographic.fromDegrees(placement.lon, placement.lat)
+    const h = v.scene.sampleHeight(carto, [e.model])
+    if (h != null) setPlacement(pp => pp ? { ...pp, groundH: h, heightOffset: 0 } : pp)
+  }
+
+  function patch(part: Partial<Placement>) {
+    setPlacement(p => p ? { ...p, ...part } : p)
+  }
+
+  return {
+    deleteModel,
+    dropToGround,
+    fileRef,
+    focusModel,
+    importModel,
+    modelsRef,
+    patch,
+    placement,
+    renameModel,
+    selectObject,
+    selectedId,
+    selectedIdRef,
+    setModelVisible,
+    setSelectedId,
+    toggleExcavation,
+    toggleOutline,
+  }
+}

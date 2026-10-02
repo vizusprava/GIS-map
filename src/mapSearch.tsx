@@ -15,6 +15,7 @@
  */
 import { Search, Loader2, Landmark, MapPin, X, ChevronDown, Crosshair } from 'lucide-react'
 import type { AdminUnit } from './katastr'
+import { toolTheme } from './toolColors'
 
 /** Místo z geokodéru (Nominatim). `bbox` je [jih, sever, západ, východ] jako v jejich odpovědi. */
 export type PlaceHit = {
@@ -61,7 +62,7 @@ export function MapSearch(p: Props) {
       <div className="pointer-events-auto w-[min(92vw,440px)]">
         <form
           onSubmit={e => { e.preventDefault(); p.onSubmit() }}
-          className="flex items-center gap-1.5 rounded-xl border border-gray-700 bg-gray-900/95 p-1.5 shadow-lg backdrop-blur"
+          className="flex items-center gap-1.5 rounded-xl border border-gray-700 bg-gray-900/95 p-1.5 shadow-lg"
         >
           <Search size={16} className="ml-1.5 shrink-0 text-gray-500" />
           <input
@@ -89,7 +90,7 @@ export function MapSearch(p: Props) {
             onClick={p.onTogglePickMode}
             title={p.pickMode ? 'Klikni do mapy na území (znovu klikni pro vypnutí)' : 'Vybrat území klikem do mapy'}
             className={`shrink-0 rounded-lg p-1.5 transition-colors ${
-              p.pickMode ? 'bg-cyan-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+              p.pickMode ? toolTheme('region').solid : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
             }`}
           >
             <Crosshair size={15} />
@@ -105,14 +106,14 @@ export function MapSearch(p: Props) {
         </form>
 
         {p.pickMode && !p.open && (
-          <div className="mt-1.5 rounded-lg border border-cyan-700/50 bg-cyan-950/80 px-3 py-1.5 text-center text-[11px] text-cyan-200 backdrop-blur">
+          <div className={`mt-1.5 rounded-lg border bg-gray-900/90 px-3 py-1.5 text-center text-[11px] text-gray-200 ${toolTheme('region').border}`}>
             Klikni do mapy na místo, jehož území chceš vybrat
           </div>
         )}
 
         {p.activeName && !p.open && (
-          <div className="mt-1.5 flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-900/90 px-2.5 py-1.5 text-xs backdrop-blur">
-            <Landmark size={13} className="shrink-0 text-cyan-400" />
+          <div className="mt-1.5 flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-900/90 px-2.5 py-1.5 text-xs">
+            <Landmark size={13} className={`shrink-0 ${toolTheme('region').text}`} />
             <span className="min-w-0 flex-1 truncate text-gray-200">{p.activeName}</span>
             <button onClick={p.onClearActive} title="Zrušit zvýraznění území" className="shrink-0 rounded p-0.5 text-gray-400 hover:text-red-300">
               <X size={13} />
@@ -121,16 +122,16 @@ export function MapSearch(p: Props) {
         )}
 
         {p.open && hasResults && (
-          <div className="mt-1.5 max-h-[60vh] overflow-y-auto rounded-xl border border-gray-700 bg-gray-900/95 py-1 shadow-xl backdrop-blur">
+          <div className="mt-1.5 max-h-[60vh] overflow-y-auto rounded-xl border border-gray-700 bg-gray-900/95 py-1 shadow-xl">
             {p.units.length > 0 && (
               <Group title="Správní území">
                 {p.units.map((u, i) => (
-                  <Row key={`u${i}`} onClick={() => p.onPickUnit(u)} icon={<Landmark size={14} className="text-cyan-400" />} label={u.name} note={u.level} />
+                  <Row key={`u${i}`} onClick={() => p.onPickUnit(u)} icon={<Landmark size={14} className={toolTheme('region').text} />} label={u.name} note={u.level} />
                 ))}
                 {obec && (
                   <button
                     onClick={() => p.onExpandParts(obec.kod)}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-cyan-300 hover:bg-gray-800"
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-gray-800 ${toolTheme('region').text}`}
                   >
                     <ChevronDown size={13} className="shrink-0" />
                     Rozbalit katastrální území obce {obec.name}
@@ -158,7 +159,7 @@ export function MapSearch(p: Props) {
         )}
 
         {p.open && !hasResults && !p.busy && (
-          <div className="mt-1.5 rounded-lg border border-gray-700 bg-gray-900/95 px-3 py-2 text-center text-xs text-gray-400 backdrop-blur">
+          <div className="mt-1.5 rounded-lg border border-gray-700 bg-gray-900/95 px-3 py-2 text-center text-xs text-gray-400">
             Nic nenalezeno
           </div>
         )}

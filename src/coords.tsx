@@ -5,8 +5,8 @@
  * terén (`buildTileObj`: X/Y Křovák, Z Bpv). Kdyby se ukazovalo něco jiného, čísla z panelu by
  * s modelem v Maxu nešla porovnat a celé by to bylo k ničemu.
  *
- * POZOR na výšku: Cesium počítá nad elipsoidem a `makeDmrTerrain` k datům z ČÚZK přičítá GEOID_CZ.
- * Zpátky na Bpv se to musí odečíst — jinak by body seděly o 44 metrů výš.
+ * POZOR na výšku: Cesium počítá nad elipsoidem a `makeDmrTerrain` k datům z ČÚZK přičítá kvazigeoid
+ * (`geoidN`, v ČR 42,6–47,5 m). Zpátky na Bpv se to musí odečíst — jinak by body seděly o ~45 m výš.
  *
  * Posun terénu řeší druhá sada čísel. Terén se exportuje v reálných souřadnicích (statisíce metrů),
  * takže se v Maxu stejně musí posunout k počátku; tady se zadá o kolik a panel dopočítá souřadnice
@@ -14,6 +14,7 @@
  */
 import { Crosshair, Copy, Trash2, Target } from 'lucide-react'
 import type { CoordPoint } from './lib/types'
+import { toolTheme } from './toolColors'
 
 type Props = {
   pts: CoordPoint[]
@@ -40,7 +41,7 @@ export function CoordsPanel(p: Props) {
       <button
         onClick={p.onTogglePicking}
         className={`flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-colors ${
-          p.picking ? 'bg-cyan-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+          p.picking ? toolTheme('coords').solid : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
         }`}
       >
         <Crosshair size={13} /> {p.picking ? 'Klikni do mapy…' : 'Odečíst bod'}
@@ -104,7 +105,7 @@ export function ShiftEditor({ shift, onShift, tileCenter }: {
           <button
             onClick={() => onShift([-tileCenter[0], -tileCenter[1], 0])}
             title="Posun, který dá střed vybraných dlaždic do počátku — to se v Maxu dělá nejčastěji"
-            className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-cyan-300 hover:bg-gray-700"
+            className={`ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] hover:bg-gray-700 ${toolTheme('tiles').text}`}
           >
             <Target size={11} /> ze středu dlaždic
           </button>

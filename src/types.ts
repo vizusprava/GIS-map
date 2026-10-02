@@ -5,6 +5,7 @@
  * (export, měření, panel). Jsou to čistě popisy tvaru dat, žádná logika → nikdy nevznikne cyklus.
  */
 import * as Cesium from 'cesium'
+import type { DrawPrim } from './dxf'
 
 export type Base = 'ortofoto' | 'zm' | 'google'
 
@@ -40,7 +41,13 @@ export type GroundHit = { lon: number; lat: number; height: number }
 // odečtení vychází výměra pozemku větší, než má katastr — proto je vedeme zvlášť.
 // `label` = číslo parcely z KN („354“), `knArea` = výměra zapsaná v KN (0 = neznámá).
 export type Parcel = { id: string; label?: string; knArea?: number; positions: Cesium.Cartesian3[]; holes?: Cesium.Cartesian3[][] }
+// Vybraná parcela v mapě: prstence v lon/lat (`ring`, `holes`) kvůli uložení do scény a výpočtům,
+// `ents` = její zvýraznění. `hidden` = vypnutá v panelu Scéna (výběr i ořez ji dál počítají).
+export type ParcelEntry = { positions: Cesium.Cartesian3[]; ring: number[][]; holes: number[][][]; knArea: number; label: string; ents: Cesium.Entity[]; hidden?: boolean }
 export type Anchor = { lon: number; lat: number; h: number }
+
+/** Kdo smí zpracovat klik do mapy. Vždycky nejvýš jeden — proto jeden stav, ne osm. */
+export type MapClickOwner = 'none' | 'parcel' | 'area' | 'tile' | 'region' | 'ruler' | 'callout' | 'move' | 'coords'
 
 // jeden importovaný model ve scéně
 export type ModelEntry = {
@@ -71,6 +78,15 @@ export type DrawLayer = { name: string; color: number; visible: boolean; prim: C
 // + jejich základní barvy (pro živé nastavení průhlednosti celého výkresu).
 export type DrawingEntry = {
   layers: DrawLayer[]; bounds: Cesium.Rectangle | null; up: Cesium.Cartesian3
+  /**
+   * Kresba tak, jak vyšla z parseru, a převod jejích souřadnic do S-JTSK.
+   *
+   * Cesium primitivy se zpátky přečíst nedají, a export spojené 2D mapy kresbu potřebuje
+   * (viz `export/drawOverlay.ts`). Drží se tedy i po vykreslení — u velkého výkresu to je
+   * pár MB navíc, což je proti opakovanému parsování souboru lepší obchod.
+   */
+  prims: DrawPrim[]
+  toSjtsk: (x: number, y: number) => [number, number]
   textMats: Cesium.Material[]
   pointRefs: { p: Cesium.PointPrimitive; c: Cesium.Color }[]
   polyRefs: { prim: Cesium.Primitive; id: string; c: Cesium.Color }[]

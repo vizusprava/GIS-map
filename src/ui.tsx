@@ -4,8 +4,18 @@
  * Čistě prezentační: žádný vlastní stav kromě rozbalení sekce, které si drží rodič, aby šlo
  * sekci otevřít i zvenčí (např. po zapnutí funkce skočit na její nastavení).
  */
-import type React from 'react'
+import { createContext, useContext, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, Map as MapIcon, Mountain } from 'lucide-react'
+import { toolTheme, type ToolId } from './toolColors'
+
+/**
+ * Sekce, kterou si bere právě zapnutý nástroj: je rozbalená a v barvě nástroje (`toolColors.ts`),
+ * ostatní jsou sbalené. Je to jen pohled navrch — uložené rozbalení sekcí se tím nemění, takže po
+ * vypnutí nástroje je panel přesně takový, jaký byl. Sekce, na kterou uživatel mezitím sám klikl
+ * (`touched`), se řídí jeho volbou, ne nástrojem.
+ */
+export type SectionFocus = { id: string; tool: ToolId; touched: ReadonlySet<string> } | null
+export const SectionFocusContext = createContext<SectionFocus>(null)
 
 export function NumRow({ label, value, min, max, step, unit, onChange }: {
   label: string; value: number; min: number; max: number; step: number; unit: string; onChange: (v: number) => void
@@ -42,19 +52,22 @@ export function NumRow({ label, value, min, max, step, unit, onChange }: {
  */
 export function Section({ id, title, dflt, badge, open, onToggle, children }: {
   id: string; title: string; dflt: boolean; badge?: number
-  open: Record<string, boolean>; onToggle: (id: string, next: boolean) => void; children: React.ReactNode
+  open: Record<string, boolean>; onToggle: (id: string, next: boolean) => void; children: ReactNode
 }) {
-  const isOpen = open[id] ?? dflt
+  const focus = useContext(SectionFocusContext)
+  const own = open[id] ?? dflt
+  const isOpen = !focus || focus.touched.has(id) ? own : id === focus.id
+  const accent = focus?.id === id ? toolTheme(focus.tool) : null
   return (
-    <div data-sec={id} className="rounded-xl border border-gray-700/70 bg-gray-800/30">
+    <div data-sec={id} className={`rounded-xl border transition-colors ${accent ? accent.section : 'border-gray-700/70 bg-gray-800/30'}`}>
       <button
         onClick={() => onToggle(id, !isOpen)}
         className="flex w-full items-center gap-1.5 rounded-xl px-2 py-1.5 text-left hover:bg-gray-700/40"
       >
         {isOpen ? <ChevronDown size={14} className="shrink-0 text-gray-500" /> : <ChevronRight size={14} className="shrink-0 text-gray-500" />}
-        <span className="min-w-0 flex-1 truncate text-xs font-medium text-gray-200">{title}</span>
+        <span className={`min-w-0 flex-1 truncate text-xs font-medium ${accent ? accent.title : 'text-gray-200'}`}>{title}</span>
         {badge != null && badge > 0 && (
-          <span className="shrink-0 rounded-full bg-gray-700 px-1.5 text-[10px] tabular-nums text-gray-300">{badge}</span>
+          <span className={`shrink-0 rounded-full px-1.5 text-[10px] tabular-nums ${accent ? accent.badge : 'bg-gray-700 text-gray-300'}`}>{badge}</span>
         )}
       </button>
       {isOpen && <div className="flex flex-col gap-1.5 border-t border-gray-700/70 p-2">{children}</div>}
@@ -68,8 +81,8 @@ export type CamProj = 'persp' | 'ortho'
  * Přepínač projekce kamery: perspektiva ↔ pohled shora bez perspektivy (ortho).
  *
  * Jedno segmentové tlačítko, ne dvě samostatná — přepíná se mezi dvěma stavy a je potřeba vidět,
- * ve kterém zrovna jsi. Stejná komponenta sedí v panelu i v liště dole, aby se ty dvě místa
- * nemohla rozejít.
+ * ve kterém zrovna jsi. V liště dole je tatáž volba jako skupina „Pohled" (mapTools.tsx) — obojí
+ * volá stejné funkce, takže se nemůžou rozejít.
  */
 export function ProjSwitch({ mode, onPersp, onOrtho }: { mode: CamProj; onPersp: () => void; onOrtho: () => void }) {
   const cls = (on: boolean) => `flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors ${
@@ -87,12 +100,13 @@ export function ProjSwitch({ mode, onPersp, onOrtho }: { mode: CamProj; onPersp:
   )
 }
 
-export function ToggleBtn({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+/** Přepínací tlačítko; `tool` ho v zapnutém stavu obarví barvou nástroje (`toolColors.ts`). */
+export function ToggleBtn({ active, onClick, icon, label, tool }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; tool?: ToolId }) {
   return (
     <button
       onClick={onClick}
       className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors ${
-        active ? 'bg-emerald-600/25 text-emerald-200 border border-emerald-500/40' : 'text-gray-400 hover:bg-gray-800 border border-transparent'
+        active ? (tool ? toolTheme(tool).soft : 'bg-emerald-600/25 text-emerald-200 border border-emerald-500/40') : 'text-gray-400 hover:bg-gray-800 border border-transparent'
       }`}
     >
       {icon} {label}

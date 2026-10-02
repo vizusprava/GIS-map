@@ -39,11 +39,14 @@ export async function ruianAtPoint(layer: number, lon: number, lat: number): Pro
 
 /** Kraj/okres/obec obsahující bod (bez geometrie — ta se dotáhne až při výběru). */
 export async function fetchAdminUnits(lon: number, lat: number): Promise<AdminUnit[]> {
-  const out: AdminUnit[] = []
-  for (const [layer, level] of RUIAN_LEVELS) {
-    try { const u = await ruianAtPoint(layer, lon, lat); if (u) out.push({ level, name: u.nazev, kod: u.kod, layer, obec: level === 'Obec' ? u.kod : undefined }) } catch { /* přeskoč */ }
-  }
-  return out
+  // souběžně, každá vrstva sama za sebe; pořadí (kraj → okres → obec) drží `RUIAN_LEVELS`
+  const hits = await Promise.all(RUIAN_LEVELS.map(async ([layer, level]): Promise<AdminUnit | null> => {
+    try {
+      const u = await ruianAtPoint(layer, lon, lat)
+      return u ? { level, name: u.nazev, kod: u.kod, layer, obec: level === 'Obec' ? u.kod : undefined } : null
+    } catch { return null }
+  }))
+  return hits.filter((u): u is AdminUnit => u !== null)
 }
 /** Katastrální území dané obce (kód obce) — názvy + kódy, bez geometrie. */
 export async function fetchAdminParts(obecKod: number): Promise<AdminUnit[]> {
@@ -96,36 +99,37 @@ function parseParcelsGml(gml: string): WfsParcel[] {
 /**
  * Z kliku najde katastrální parcelu (ČÚZK WFS, GML v S-JTSK) a vrátí obrys ve WGS84.
  * Stáhne víc kandidátů (BBOX matchuje obálky) a vybere tu, jejíž geometrie bod opravdu obsahuje.
+ *
+ * `null` = v místě žádná parcela není. Výpadek nebo chyba ČÚZK se HÁZÍ — dřív to bylo taky
+ * `null` a klik pak tiše neudělal nic, takže se nedalo poznat, jestli je chyba v kliknutí.
  */
 export async function fetchParcelAt(lon: number, lat: number): Promise<Parcel | null> {
   // ~10 m bbox, víc kandidátů; BBOX se NEkóduje (ČÚZK chce literální čárky/dvojtečky)
   const d = 0.0001
   const bbox = `${lat - d},${lon - d},${lat + d},${lon + d},urn:ogc:def:crs:EPSG::4326`
   const url = `https://services.cuzk.cz/wfs/inspire-cp-wfs.asp?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=cp:CadastralParcel&COUNT=10&BBOX=${bbox}`
-  try {
-    const feats = parseParcelsGml(await (await fetch(url)).text())
-    if (!feats.length) return null
-    const toWgs = (r: number[][]) => r.map(([x, y]) => wgsOf(x, y))
-    const cands = feats.map(f => ({ ...f, outerW: toWgs(f.outer), holesW: f.holes.map(toWgs) }))
-    // Parcela, která bod skutečně obsahuje. Klik v díře patří té VNITŘNÍ parcele, ne téhle —
-    // proto se díry z testu vylučují (dřív klik na dům v zahradě vybral zahradu).
-    let chosen = cands.find(c => pointInRing(lon, lat, c.outerW) && !c.holesW.some(h => pointInRing(lon, lat, h)))
-    if (!chosen) { // nic netrefeno (klik mimo/na hranu) → nejbližší podle těžiště
-      let best = Infinity
-      for (const c of cands) {
-        const [cx, cy] = ringCentroid(c.outerW)
-        const dist = (cx - lon) ** 2 + (cy - lat) ** 2
-        if (dist < best) { best = dist; chosen = c }
-      }
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) })
+  if (!res.ok) throw new Error(`Katastr (WFS): HTTP ${res.status}`)
+  const feats = parseParcelsGml(await res.text())
+  if (!feats.length) return null
+  const toWgs = (r: number[][]) => r.map(([x, y]) => wgsOf(x, y))
+  const cands = feats.map(f => ({ ...f, outerW: toWgs(f.outer), holesW: f.holes.map(toWgs) }))
+  // Parcela, která bod skutečně obsahuje. Klik v díře patří té VNITŘNÍ parcele, ne téhle —
+  // proto se díry z testu vylučují (dřív klik na dům v zahradě vybral zahradu).
+  let chosen = cands.find(c => pointInRing(lon, lat, c.outerW) && !c.holesW.some(h => pointInRing(lon, lat, h)))
+  if (!chosen) { // nic netrefeno (klik mimo/na hranu) → nejbližší podle těžiště
+    let best = Infinity
+    for (const c of cands) {
+      const [cx, cy] = ringCentroid(c.outerW)
+      const dist = (cx - lon) ** 2 + (cy - lat) ** 2
+      if (dist < best) { best = dist; chosen = c }
     }
-    if (!chosen) return null
-    const toCart = (r: [number, number][]) => r.map(([lo, la]) => Cesium.Cartesian3.fromDegrees(lo, la))
-    return {
-      id: chosen.id, label: chosen.label, knArea: chosen.knArea,
-      positions: toCart(chosen.outerW), holes: chosen.holesW.map(toCart),
-    }
-  } catch {
-    return null
+  }
+  if (!chosen) return null
+  const toCart = (r: [number, number][]) => r.map(([lo, la]) => Cesium.Cartesian3.fromDegrees(lo, la))
+  return {
+    id: chosen.id, label: chosen.label, knArea: chosen.knArea,
+    positions: toCart(chosen.outerW), holes: chosen.holesW.map(toCart),
   }
 }
 
