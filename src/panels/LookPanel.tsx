@@ -1,25 +1,19 @@
 /**
- * Panel vzhledu kamery — hloubka ostrosti, zorný úhel, bloom.
+ * Vzhled kamery — zorný úhel, rozostření okrajů, chvění a kroužení. Záložka „Vzhled" v nabídce
+ * Kamera v liště dole (CameraMenu.tsx); projekci přepíná nabídka sama nad záložkami.
  *
- * Jen ovládání; co se s tím děje ve scéně, drží `useLookTool`.
+ * Jen ovládání; co se s tím děje ve scéně, drží `useLookTool` a `useCameraMotion`.
  */
-import { ProjSwitch } from '../ui'
 import type { CamProj } from '../ui'
 import type { LookTool } from '../useLookTool'
 
 export function LookPanel({
-  look, camProj, camPerspective, camTopOrtho, presentOn,
+  look, camProj, presentOn,
   shakeOn, setShakeOn, shakeAmt, setShakeAmt, spinOn, setSpinOn, spinSpeed, setSpinSpeed,
 }: {
   look: LookTool
-  /**
-   * Panel „Vzhled kamery" sahá dál než hook: kromě hloubky ostrosti a bloomu ovládá i projekci
-   * a chování kamery při přeletu. Že je toho v props tolik, je poctivá informace — ta sekce
-   * opravdu spojuje tři různé věci a je to místo, kde by se dalo pokračovat v úklidu.
-   */
+  /** v pohledu shora (ortho) zorný úhel nemá smysl — slider se zhasne */
   camProj: CamProj
-  camPerspective: () => void
-  camTopOrtho: () => void
   presentOn: boolean
   shakeOn: boolean
   setShakeOn: (v: boolean) => void
@@ -35,9 +29,8 @@ export function LookPanel({
         <div className="px-1 text-[10px] leading-snug text-gray-500">
           Všechno tady se ukládá <span className="text-gray-400">s pohledem</span> — každý může vypadat jinak.
         </div>
-        <ProjSwitch mode={camProj} onPersp={camPerspective} onOrtho={camTopOrtho} />
         {/* FOV — v ortho projekci nemá co dělat, tak je zhasnutý místo aby tiše nedělal nic */}
-        <label className="flex items-center gap-1.5 text-xs border-t border-gray-700 pt-2">
+        <label className="flex items-center gap-1.5 text-xs">
           <span className="text-gray-400 w-16 shrink-0">Zorný úhel</span>
           <input
             type="range" min={20} max={100} step={1} value={look.fov}
@@ -90,11 +83,6 @@ export function LookPanel({
             </label>
           </>}
         </div>
-        {/* Bloom */}
-        <label className="flex items-center gap-1.5 text-xs border-t border-gray-700 pt-2 cursor-pointer">
-          <input type="checkbox" checked={look.bloomOn} onChange={e => { look.setBloomOn(e.target.checked); look.applyBloom(e.target.checked) }} className="accent-sky-500" />
-          <span className="text-gray-200">Bloom (jemná záře)</span>
-        </label>
         {/* Handheld — jemné chvění pohledu; ukládá se s pohledem, běží jen v prezentaci */}
         <div className="flex flex-col gap-1.5 border-t border-gray-700 pt-2">
           <label className="flex items-center gap-1.5 text-xs cursor-pointer" title="Jemné rozechvění pohledu jako z ruky. Ukládá se s pohledem (tlačítko Uložit / ikona fotoaparátu), takže si ho dáš jen na záběry, kterým sluší. Pracuje jen opticky — kamera, přelety ani ovládání myší se tím nemění.">

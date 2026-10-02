@@ -1,5 +1,5 @@
 /**
- * Lišta dole nad mapou: podklad, výběr, nástroje a pohled — každé jako jedna rozbalovací skupina.
+ * Lišta dole nad mapou: podklad, výběr, nástroje, kamera a prezentace — každé jako jedna skupina.
  *
  * Skupina se rozbalí najetím myší (na dotykové obrazovce ťuknutím) a její tlačítko ukazuje, co je
  * v ní zrovna zapnuté, takže lišta zůstává úzká a stav je vidět i zavřený. Je to schválně jen rychlá
@@ -11,6 +11,11 @@
  *
  * Posun modelu je v nástrojích jen když je model vybraný; jinak by to byla položka, která nic nedělá.
  *
+ * Kamera a Prezentace nejsou krátké nabídky, ale panely (pohledy, slidery, popisky) — dřív to
+ * byly sekce levého panelu. Otevřou se najetím jako ostatní, ale jakmile do nich klikneš, zůstanou
+ * otevřené („přišpendlí se"), ať jde posouvat slider nebo psát název, aniž by panel ujel pod myší.
+ * Zavře je Esc, klik mimo nebo znovu tlačítko skupiny.
+ *
  * Každý nástroj má svou barvu (`toolColors.ts`): v ní svítí tlačítko skupiny, položka v nabídce
  * i rámeček nápovědy. Tlačítka v nápovědě mají barvu toho, KAM výsledek půjde — „Parcely uvnitř"
  * barvu parcel, „Dlaždice uvnitř" barvu dlaždic —, ať je vidět, ve které sekci panelu skončí.
@@ -18,9 +23,9 @@
  * Nástroje jdou zapnout i klávesou (`SHORTCUTS` níž); písmeno je vidět v nabídce a celý přehled
  * pod tlačítkem „?" nebo klávesou ?. Vedle lišty se točí kolečko, dokud se mapa dotahuje.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type * as Cesium from 'cesium'
-import { Building2, Check, ChevronUp, Crosshair, Grid3x3, Hexagon, Image, Keyboard, Landmark, Layers, Loader2, Map as MapIcon, MapPin, Mountain, MousePointerClick, Move, PencilRuler, Ruler, X } from 'lucide-react'
+import { Building2, Check, ChevronUp, Crosshair, Eye, EyeOff, Grid3x3, Hexagon, Image, Keyboard, Landmark, Layers, Loader2, Map as MapIcon, MapPin, MousePointerClick, Move, PencilRuler, Ruler, Video, X } from 'lucide-react'
 import { ENABLE_GOOGLE_3D } from './config'
 import { TILE_SIZES, type TileSize } from './tiles'
 import type { CamProj } from './ui'
@@ -57,13 +62,21 @@ type Props = {
   onMove: () => void
   /** je vybraný model, který jde posouvat? */
   canMove: boolean
-  // pohled
+  // kamera a prezentace
   camProj: CamProj
   onPersp: () => void
   onOrtho: () => void
+  /** obsah panelu Kamera (CameraMenu) a kolik je uložených pohledů */
+  cameraMenu: ReactNode
+  viewCount: number
+  /** obsah panelu Prezentace (PresentationMenu) */
+  presentationMenu: ReactNode
+  presentOn: boolean
+  /** pokládá se popisek — klik do mapy panel Prezentace nezavře, ať jde hned psát text */
+  calloutMode: boolean
 }
 
-type GroupId = 'podklad' | 'vyber' | 'nastroje' | 'pohled'
+type GroupId = 'podklad' | 'vyber' | 'nastroje' | 'kamera' | 'prezentace'
 
 /** Klávesová zkratka: písmeno (malé), případně se Shiftem, a co udělá. */
 type Shortcut = { key: string; shift?: boolean; label: string; run: () => void; when?: boolean; note?: string }
@@ -96,12 +109,26 @@ const isTyping = (t: EventTarget | null) => {
 
 export function MapTools(p: Props) {
   const [open, setOpen] = useState<GroupId | null>(null)
+  // Přišpendlená skupina (panel, do kterého se kliklo) nejde najetím na jinou skupinu zavřít.
+  const [pinned, setPinned] = useState(false)
+  useEffect(() => { if (!open) setPinned(false) }, [open])
+  const calloutRef = useRef(p.calloutMode)
+  useEffect(() => { calloutRef.current = p.calloutMode })
   // Klik kamkoliv mimo lištu skupinu zavře — na dotykové obrazovce jiná cesta zavření není.
+  // Výjimka: pokládání popisku z panelu Prezentace — klik do mapy ho položí a panel zůstane.
+  // Esc zavře otevřenou skupinu dřív, než by vypnul nástroj (zachytávací fáze, jako u přehledu
+  // zkratek); v textovém poli patří Esc poli.
   useEffect(() => {
     if (!open) return
-    const close = () => setOpen(null)
+    const close = () => { if (!(open === 'prezentace' && calloutRef.current)) setOpen(null) }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || isTyping(e.target)) return
+      e.stopImmediatePropagation()
+      setOpen(null)
+    }
     window.addEventListener('pointerdown', close)
-    return () => window.removeEventListener('pointerdown', close)
+    window.addEventListener('keydown', onKey, true)
+    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', onKey, true) }
   }, [open])
   /** volba v nabídce: provést a nabídku zavřít */
   const pick = (fn: () => void) => () => { setOpen(null); fn() }
@@ -148,7 +175,7 @@ export function MapTools(p: Props) {
   const selLabel = p.parcelMode ? 'Parcela' : p.areaMode ? 'Oblast' : p.tileMode ? 'Dlaždice' : p.region.regionMode ? 'Území' : null
   const toolId: ToolId | null = p.rulerMode ? 'ruler' : p.coordsMode ? 'coords' : p.moveMode ? 'move' : null
   const toolLabel = p.rulerMode ? (p.rulerKind === 'area' ? 'Plocha' : 'Vzdálenost') : p.coordsMode ? 'Souřadnice' : p.moveMode ? 'Posun' : null
-  const group = { open, setOpen }
+  const group = { open, setOpen, pinned, setPinned }
 
   return (
     <div className="pointer-events-auto flex flex-col items-center gap-1.5">
@@ -158,7 +185,7 @@ export function MapTools(p: Props) {
         <Group
           {...group} id="podklad" title="Podklad mapy a katastr"
           icon={googleLoading ? <Loader2 size={15} className="animate-spin" /> : <Layers size={15} />}
-          label={katastrOn ? `${baseLabel} · katastr` : baseLabel}
+          label={baseLabel} badge={katastrOn ? 'K' : undefined}
         >
           <Item icon={<Image size={13} />} label="Ortofoto ČR" active={base === 'ortofoto'} onClick={pick(() => setBase('ortofoto'))} />
           <Item icon={<MapIcon size={13} />} label="Topografická mapa" active={base === 'zm'} onClick={pick(() => setBase('zm'))} />
@@ -195,14 +222,19 @@ export function MapTools(p: Props) {
         </Group>
 
         <Group
-          {...group} id="pohled" title="Perspektiva, nebo pohled shora bez perspektivy"
-          icon={p.camProj === 'ortho' ? <MapIcon size={15} /> : <Mountain size={15} />}
-          label={p.camProj === 'ortho' ? 'Shora' : 'Perspektiva'}
+          {...group} id="kamera" panel title="Kamera: perspektiva / shora, uložené pohledy a vzhled"
+          icon={p.camProj === 'ortho' ? <MapIcon size={15} /> : <Video size={15} />}
+          label={p.camProj === 'ortho' ? 'Shora' : 'Kamera'} badge={p.viewCount ? String(p.viewCount) : undefined}
         >
-          <Item icon={<Mountain size={13} />} label="Perspektiva" active={p.camProj === 'persp'} onClick={pick(p.onPersp)} />
-          <Item icon={<MapIcon size={13} />} label="Shora (půdorys)" active={p.camProj === 'ortho'} onClick={pick(p.onOrtho)} />
-          <Sep />
-          <div className="px-2.5 pb-0.5 text-[10px] text-gray-500">Přepnout klávesou <Kbd>T</Kbd></div>
+          {p.cameraMenu}
+        </Group>
+
+        <Group
+          {...group} id="prezentace" panel title={p.presentOn ? 'Prezentace zapnutá — popisky a efekty pohledů' : 'Prezentace vypnutá'}
+          icon={p.presentOn ? <Eye size={15} /> : <EyeOff size={15} />}
+          label="Prezentace"
+        >
+          {p.presentationMenu}
         </Group>
 
         <button
@@ -223,29 +255,49 @@ export function MapTools(p: Props) {
  * Jedna skupina lišty. Najetí myší ji otevře, odjetí zavře s malým zpožděním — mezi tlačítkem
  * a nabídkou je mezera a myš by ji cestou nahoru jinak nestihla. Přejetí na sousední skupinu
  * přepne rovnou na ni. Ťuknutí (dotyk, pero) ji otevře a zavře se klikem mimo.
+ *
+ * `panel` = místo krátké nabídky širší panel s ovládáním. Klik do něj (nebo na tlačítko) ho
+ * přišpendlí: pak ho nezavře odjetí myší ani najetí na jinou skupinu, jen Esc, klik mimo nebo
+ * znovu tlačítko.
  */
-function Group({ id, open, setOpen, icon, label, title, tone, children }: {
+function Group({ id, open, setOpen, pinned, setPinned, icon, label, badge, title, tone, panel, children }: {
   id: GroupId
   open: GroupId | null
   setOpen: React.Dispatch<React.SetStateAction<GroupId | null>>
+  pinned: boolean
+  setPinned: (v: boolean) => void
   icon: React.ReactNode
   label: string
+  /** krátký údaj vedle popisku (počet pohledů, „K" = zapnutý katastr) */
+  badge?: string
   title: string
   /** barva tlačítka, když je ve skupině něco zapnuté */
   tone?: string
+  panel?: boolean
   children: React.ReactNode
 }) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
   const isOpen = open === id
+  const click = () => {
+    if (!panel) { setOpen(id); setPinned(false); return }
+    if (isOpen && pinned) { setOpen(null); return }
+    setOpen(id); setPinned(true)
+  }
   return (
     <div
       className="relative"
-      onPointerEnter={e => { if (e.pointerType !== 'mouse') return; clearTimeout(timer.current); setOpen(id) }}
-      onPointerLeave={e => { if (e.pointerType !== 'mouse') return; timer.current = setTimeout(() => setOpen(o => (o === id ? null : o)), 200) }}
+      onPointerEnter={e => {
+        if (e.pointerType !== 'mouse' || (pinned && open !== id)) return
+        clearTimeout(timer.current); setOpen(id)
+      }}
+      onPointerLeave={e => {
+        if (e.pointerType !== 'mouse' || (pinned && isOpen)) return
+        timer.current = setTimeout(() => setOpen(o => (o === id ? null : o)), 200)
+      }}
     >
       <button
-        onClick={() => setOpen(id)}
+        onClick={click}
         title={title}
         aria-haspopup="menu"
         aria-expanded={isOpen}
@@ -255,14 +307,28 @@ function Group({ id, open, setOpen, icon, label, title, tone, children }: {
       >
         {icon}
         <span className="whitespace-nowrap">{label}</span>
+        {badge && <span className="rounded bg-gray-700/80 px-1 text-[10px] leading-4 tabular-nums text-gray-300">{badge}</span>}
         <ChevronUp size={12} className={`opacity-60 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
       {isOpen && (
         // `pb-1.5` je průhledný můstek mezi tlačítkem a nabídkou — myš na něm nabídku neopustí
         <div className="absolute bottom-full left-1/2 z-10 -translate-x-1/2 pb-1.5">
-          <div role="menu" className="flex w-48 flex-col rounded-lg border border-gray-700 bg-gray-900 py-1 shadow-xl">
-            {children}
-          </div>
+          {panel ? (
+            <div
+              role="dialog"
+              aria-label={title}
+              data-panel={id}
+              onPointerDown={() => setPinned(true)}
+              className={`w-80 max-w-[92vw] overflow-y-auto rounded-lg border bg-gray-900 shadow-xl ${pinned ? 'border-gray-600' : 'border-gray-700'}`}
+              style={{ maxHeight: 'min(70vh, 620px)' }}
+            >
+              {children}
+            </div>
+          ) : (
+            <div role="menu" className="flex w-48 flex-col rounded-lg border border-gray-700 bg-gray-900 py-1 shadow-xl">
+              {children}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -369,6 +435,9 @@ function Hint(p: Props) {
         )}
       </div>
     )
+  }
+  if (p.calloutMode) {
+    return <div className={`${frame} border-sky-600/70`}>Klikni do mapy, kam má popisek ukazovat. Bublinu pak přetáhneš a text napíšeš v panelu Prezentace.{esc}</div>
   }
   if (p.coordsMode) {
     return <div className={box('coords')}>Klikni do mapy — bod se odečte v S-JTSK s výškou Bpv přímo z ČÚZK. Bod jde přetáhnout.{esc}</div>

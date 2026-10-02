@@ -4,7 +4,8 @@
  * Unit testy (`npm test`) hlídají výpočty; tohle hlídá, že se appka v prohlížeči vůbec rozjede
  * a jde ovládat — chyby typu „černá obrazovka po přepnutí nástroje", které se typově přeloží.
  * Postaví mapu s podvrženou scénou (scripts/smoke/), spustí headless Chrome přes DevTools
- * protokol a projde nástroje, klávesové zkratky, soustředění panelu a detail ortofota.
+ * protokol a projde nástroje, klávesové zkratky, soustředění panelu, panely Kamera a Prezentace
+ * v liště a detail ortofota.
  * Kdykoliv se v appce objeví výjimka nebo odmítnutý slib, test spadne.
  *
  *   --full         navíc: vyhledání parcely podle čísla a její 2D export (potřebuje síť k ČÚZK)
@@ -108,7 +109,7 @@ async function shot(name) {
   writeFileSync(join(work, 'snimky', `${name}.png`), Buffer.from(r.result.data, 'base64'))
 }
 const COLORS = 'emerald|orange|cyan|violet|amber|blue|sky|rose|lime|fuchsia|teal'
-/** Popisek a barva tlačítka skupiny v liště (0 podklad, 1 výběr, 2 nástroje, 3 pohled). */
+/** Popisek a barva tlačítka skupiny v liště (0 podklad, 1 výběr, 2 nástroje, 3 kamera, 4 prezentace). */
 const group = i => ev(`(() => { const b = document.querySelectorAll('button[aria-haspopup="menu"]')[${i}]; const m = b.className.match(/bg-(${COLORS})-600/); return { label: b.innerText.trim(), color: m ? m[1] : null } })()`)
 /** Sekce panelu: existuje? rozbalená? obarvená? */
 const section = id => ev(`(() => { const d = document.querySelector('[data-sec="${id}"]'); if (!d) return null; const m = d.className.match(/border-(${COLORS})-500/); return { open: d.children.length > 1, color: m ? m[1] : null, title: d.querySelector('button')?.innerText.trim() } })()`)
@@ -173,7 +174,7 @@ async function main() {
 
   console.log('▸ kontroly')
   await check('mapa se rozjede a kreslí', async () => {
-    await waitFor(`!!window.__scene && document.querySelectorAll('button[aria-haspopup="menu"]').length === 4`, SOFT ? 120_000 : 60_000, 'scéna Cesia a lišta nástrojů')
+    await waitFor(`!!window.__scene && document.querySelectorAll('button[aria-haspopup="menu"]').length === 5`, SOFT ? 120_000 : 60_000, 'scéna Cesia a lišta nástrojů')
     const c = await ev(`(() => { const c = window.__scene.canvas; return [c.width, c.height] })()`)
     expect(c[0] > 0 && c[1] > 0, `plátno má nulovou velikost ${c}`)
     return `plátno ${c[0]}×${c[1]}`
@@ -221,6 +222,60 @@ async function main() {
     expect(!(await ev(`document.body.innerText.includes('Klávesové zkratky')`)), 'přehled se nezavřel')
     expect((await group(1)).label === 'Dlaždice', 'Esc s otevřeným přehledem vypnul i nástroj')
     await press('Escape')
+  })
+
+  const openGroup = i => ev(`document.querySelectorAll('button[aria-haspopup="menu"]')[${i}].click()`)
+  const panelText = id => ev(`document.querySelector('[data-panel="${id}"]')?.innerText ?? null`)
+
+  await check('levý panel bez sekcí Pohledy, Vzhled kamery a Prezentace (jsou v liště)', async () => {
+    for (const id of ['pohledy', 'kamera', 'prezentace']) expect(!(await section(id)), `sekce ${id} je pořád v panelu`)
+  })
+
+  await check('panel Kamera: projekce, uložení pohledu, vzhled bez bloomu, zůstane otevřený', async () => {
+    await openGroup(3)
+    await waitFor(`!!document.querySelector('[data-panel="kamera"]')`, 5000, 'panel Kamera')
+    let t = await panelText('kamera')
+    expect(t.includes('Perspektiva') && t.includes('Shora'), 'chybí přepínač projekce')
+    expect(await clickText(`document.querySelector('[data-panel="kamera"]')`, 'Uložit aktuální pohled'), 'chybí Uložit aktuální pohled')
+    await sleep(600)
+    await press('Escape') // nový pohled se otevře k přejmenování — Esc zruší jen přejmenování
+    t = await panelText('kamera')
+    await shot('panel-kamera')
+    expect(t && /1\./.test(t), 'uložený pohled není v seznamu (nebo Esc v poli zavřel panel)')
+    expect((await group(3)).label.includes('1') || (await ev(`document.querySelectorAll('button[aria-haspopup="menu"]')[3].innerText`)).includes('1'), 'na tlačítku Kamera chybí počet pohledů')
+    expect(await clickText(`document.querySelector('[data-panel="kamera"]')`, 'Vzhled'), 'chybí záložka Vzhled')
+    await sleep(300)
+    t = await panelText('kamera')
+    expect(t.includes('Zorný úhel') && t.includes('Rozostření'), 'záložka Vzhled je prázdná')
+    await shot('panel-kamera-vzhled')
+    expect(!/bloom/i.test(t), 'bloom pořád v nabídce')
+    // přišpendlený panel nezavře odjetí myší ani najetí na jinou skupinu
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 300, pointerType: 'mouse' })
+    const r = await ev(`(() => { const b = document.querySelectorAll('button[aria-haspopup="menu"]')[1].getBoundingClientRect(); return [b.x + b.width / 2, b.y + b.height / 2] })()`)
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: r[0], y: r[1], pointerType: 'mouse' })
+    await sleep(500)
+    expect(await panelText('kamera'), 'přišpendlený panel se zavřel')
+    expect(!(await ev(`!!document.querySelector('[role="menu"]')`)), 'najetí na jinou skupinu otevřelo její nabídku')
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 300, pointerType: 'mouse' })
+    await clickText(`document.querySelector('[data-panel="kamera"]')`, 'Pohledy')
+    await press('Escape')
+    expect(!(await panelText('kamera')), 'Esc panel nezavřel')
+  })
+
+  await check('panel Prezentace: vypínač a popisky, bez pulzu parcel', async () => {
+    await openGroup(4)
+    await waitFor(`!!document.querySelector('[data-panel="prezentace"]')`, 5000, 'panel Prezentace')
+    let t = await panelText('prezentace')
+    expect(t.includes('Prezentace zapnutá') && t.includes('Přidat popisek'), 'chybí vypínač nebo popisky')
+    await shot('panel-prezentace')
+    expect(!/pulz/i.test(t), 'pulz parcel pořád v nabídce')
+    expect(await clickText(`document.querySelector('[data-panel="prezentace"]')`, 'Prezentace zapnutá'), 'vypínač nejde zmáčknout')
+    await sleep(300)
+    t = await panelText('prezentace')
+    expect(t.includes('Prezentace vypnutá'), 'vypínač nepřepnul')
+    await clickText(`document.querySelector('[data-panel="prezentace"]')`, 'Prezentace vypnutá')
+    await press('Escape')
+    expect(!(await panelText('prezentace')), 'Esc panel nezavřel')
   })
 
   await check('detail ortofota: maximální a zpátky', async () => {

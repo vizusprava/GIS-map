@@ -23,7 +23,7 @@ export type CamViewsTool = ReturnType<typeof useCamViews>
  * nedělá, protože je vypínač zhasnutý.
  */
 function sameLook(a: CamLook, b: CamLook): boolean {
-  if (a.fov !== b.fov || a.bloom !== b.bloom) return false
+  if (a.fov !== b.fov) return false
   if (a.dofOn !== b.dofOn) return false
   if (a.dofOn && (a.dofMode !== b.dofMode || a.dofBlur !== b.dofBlur)) return false
   if (a.dofOn && a.dofMode === 'dist' && a.dofFocal !== b.dofFocal) return false
@@ -43,18 +43,16 @@ export function useCamViews(deps: {
   motion: CameraMotion
   presentOn: boolean
   /** co bylo v prezentaci zapnuté, než se vypnula (přílet na pohled to aktualizuje) */
-  presentSnapRef: React.RefObject<{ dofOn: boolean; bloom: boolean } | null>
-  /** přílet na pohled — spustí se pulz parcel, který k němu patří */
-  onEnterView: (cv: CamView) => void
-  /** kolik popisků a pulzů na pohledu visí (do otázky při mazání) */
-  viewRefs: (id: string) => { callouts: number; pulses: number }
-  /** pohled je pryč — popisky a pulzy na něm přestanou viset */
+  presentSnapRef: React.RefObject<{ dofOn: boolean } | null>
+  /** kolik popisků na pohledu visí (do otázky při mazání) */
+  viewRefs: (id: string) => { callouts: number }
+  /** pohled je pryč — popisky na něm přestanou viset */
   onViewDeleted: (id: string) => void
 }) {
-  const { viewerRef, viewerReady, sceneRef, presentOn, presentSnapRef, onEnterView, viewRefs, onViewDeleted } = deps
+  const { viewerRef, viewerReady, sceneRef, presentOn, presentSnapRef, viewRefs, onViewDeleted } = deps
   const {
-    applyBloom, applyDofRaw, applyFovRaw, bloomOn, dofBlur, dofFeather, dofFocal, dofMode, dofOn, dofRadius, fov,
-    lookAnimRef, setBloomOn, setDofBlur, setDofFeather, setDofFocal, setDofMode, setDofOn, setDofRadius, setFov,
+    applyDofRaw, applyFovRaw, dofBlur, dofFeather, dofFocal, dofMode, dofOn, dofRadius, fov,
+    lookAnimRef, setDofBlur, setDofFeather, setDofFocal, setDofMode, setDofOn, setDofRadius, setFov,
   } = deps.look
   const {
     orbitAnimRef, orbitOn, setShakeAmt, setShakeOn, setSpinOn, setSpinSpeed, shakeAmt, shakeOn, shakeRef,
@@ -62,7 +60,7 @@ export function useCamViews(deps: {
   } = deps.motion
   const scene = sceneRef.current // jen počáteční hodnoty stavu
 
-  // kamera: uložené pohledy + DOF/FOV/bloom
+  // kamera: uložené pohledy + DOF/FOV
   const [camViews, setCamViews] = useState<CamView[]>(() =>
     // Pohledy uložené dřív nemají id — doplň ho při načtení, ať se na ně popisky můžou odkazovat.
     (scene.initial.camViews ?? []).map((cv, i) => cv.id ? cv : { ...cv, id: `v${i}_${Date.now()}` }),
@@ -74,7 +72,7 @@ export function useCamViews(deps: {
 
   // ── uložené pohledy kamery (přežijí refresh) ──
   function persistCamViews(vs: CamView[]) { setCamViews(vs); sceneRef.current.patchState({ camViews: vs }) }
-  const currentLook = (): CamLook => ({ fov, bloom: bloomOn, dofOn, dofMode, dofFocal, dofBlur, dofRadius, dofFeather, shakeOn, shakeAmt, spinOn, spinSpeed })
+  const currentLook = (): CamLook => ({ fov, dofOn, dofMode, dofFocal, dofBlur, dofRadius, dofFeather, shakeOn, shakeAmt, spinOn, spinSpeed })
   /**
    * Přejede vzhled na cílový během přeletu — stejně dlouho a stejnou easeInOut jako pohyb kamery,
    * takže obojí dosedne naráz.
@@ -84,7 +82,6 @@ export function useCamViews(deps: {
    *    vzdáleností není co prolínat. Animují se pak už jen parametry cílového režimu.
    *  - `dofOn` se nepřepíná skokem: rozostření zůstane celou dobu zapnuté a přejíždí se jeho SÍLA
    *    z/na nulu, takže zapnutí i vypnutí vyblednou místo cvaknutí (stepSize 0 = žádné rozmazání).
-   *  - `bloom` je jen přepínač, sepne se na konci.
    *  - `spinOn`/`spinSpeed` (kroužení) se do přeletu vůbec nemíchají: kameru po tu dobu řídí let,
    *    tak se zapnou až po doletu (drží je `spinHoldRef`) a vezmou si čerstvý střed pohledu.
    *  - `shakeOn`/`shakeAmt` jedou přes intenzitu jako rozostření (viz níž) — chvění patří k pohledu,
@@ -99,8 +96,8 @@ export function useCamViews(deps: {
     // navazuje na pohled, na kterém zrovna stojíš.
     let to = target
     if (!presentOn) {
-      presentSnapRef.current = { dofOn: target.dofOn, bloom: target.bloom }
-      to = { ...target, dofOn: false, bloom: false }
+      presentSnapRef.current = { dofOn: target.dofOn }
+      to = { ...target, dofOn: false }
     }
     const from = currentLook()
     const token = ++lookAnimRef.current
@@ -130,7 +127,7 @@ export function useCamViews(deps: {
       if (anyShake) shakeRef.current = { on: presentOn, amt: mix(shakeFrom, shakeTo) }
       if (t < 1) { requestAnimationFrame(step); return }
       // dosedni přesně na cíl a srovnej s ním stav ovládání
-      setFov(to.fov); setBloomOn(to.bloom); applyBloom(to.bloom)
+      setFov(to.fov)
       setDofOn(to.dofOn); setDofMode(to.dofMode); setDofFocal(to.dofFocal); setDofBlur(to.dofBlur)
       setDofRadius(to.dofRadius); setDofFeather(to.dofFeather)
       applyDofRaw({ on: to.dofOn, mode: to.dofMode, focal: to.dofFocal, blur: to.dofBlur, radius: to.dofRadius, feather: to.dofFeather })
@@ -243,7 +240,7 @@ export function useCamViews(deps: {
     // jinak by u nich svítilo pořád a nešlo by to nijak umlčet.
     const lookOff = !!cv.look && !sameLook(cv.look, currentLook())
     return moved || rotated || lookOff
-  }, [camTick, camViews, activeViewId, fov, bloomOn, dofOn, dofMode, dofFocal, dofBlur, dofRadius, dofFeather, shakeOn, shakeAmt, spinOn, spinSpeed])
+  }, [camTick, camViews, activeViewId, fov, dofOn, dofMode, dofFocal, dofBlur, dofRadius, dofFeather, shakeOn, shakeAmt, spinOn, spinSpeed])
 
   /** Další/předchozí pohled — pro procházení scénáře při prezentaci (tlačítka i šipky). */
   function stepCamView(dir: 1 | -1) {
@@ -276,7 +273,6 @@ export function useCamViews(deps: {
     // pozici. Pivot se zahodí, ať si po doletu vezme střed NOVÉHO pohledu, ne toho, odkud se letělo.
     spinHoldRef.current = performance.now() + 3200
     spinPivotRef.current = null
-    onEnterView(cv)
     if (cv.look) animateCamLook(cv.look) // starší pohledy `look` nemají → nastavení se nechá být
     if (orbitOn) orbitToCamView(cv); else gotoCamViewDirect(cv)
   }
@@ -363,15 +359,12 @@ export function useCamViews(deps: {
     }
     requestAnimationFrame(step)
   }
-  // Smazání pohledu s sebou vezme i vazby popisků a pulzů, které na něm visely. Dřív zmizely
+  // Smazání pohledu s sebou vezme i vazby popisků, které na něm visely. Dřív zmizely
   // tiše a nebylo je jak vrátit — proto se ptáme a rovnou řekneme, čeho se to týká.
   function delCamView(i: number) {
     const gone = camViews[i]; if (!gone) return
-    const { callouts: nc, pulses: np } = viewRefs(gone.id)
-    const parts: string[] = []
-    if (nc) parts.push(`${nc}× popisek`)
-    if (np) parts.push(`${np}× pulz`)
-    const tail = parts.length ? `\n\nPřestane se v něm ukazovat: ${parts.join(', ')}.` : ''
+    const { callouts: nc } = viewRefs(gone.id)
+    const tail = nc ? `\n\nPřestane se v něm ukazovat: ${nc}× popisek.` : ''
     if (!confirm(`Smazat pohled „${gone.name}"?${tail}`)) return
     persistCamViews(camViews.filter((_, j) => j !== i))
     onViewDeleted(gone.id)

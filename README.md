@@ -88,8 +88,8 @@ Persistence je do mapy **injektovaná** (`ScenePersist`), takže `MapView.tsx` o
 
 | Kde | Co |
 |---|---|
-| **server** | vše, co patří ke scéně: nahrané soubory, usazení modelů, pohledy kamery, popisky, pulzy, měření, vybrané parcely a dlaždice, odečtené body a posun terénu, nastavení exportů, podklad, pozadí, poslední pozice kamery |
-| **localStorage** | jen předvolby vázané na tenhle počítač: profil výkonu (auto / úsporný / kvalitní), ostrost renderu, výchozí hodnoty sliderů kroužení a chvění, rozbalené sekce panelu |
+| **server** | vše, co patří ke scéně: nahrané soubory, usazení modelů, pohledy kamery, popisky, měření, vybrané parcely a dlaždice, odečtené body a posun terénu, nastavení exportů, podklad, pozadí, poslední pozice kamery |
+| **localStorage** | jen předvolby vázané na tenhle počítač: profil výkonu (auto / úsporný / kvalitní), detail ortofota, vyhlazení hran, výchozí hodnoty sliderů kroužení a chvění, rozbalené sekce panelu, záložka v panelu Kamera |
 | **IndexedDB** | cache dlaždic ČÚZK a napečené ortofoto (`src/cache.ts`) — čistě výkonová věc, kdykoliv se dá smazat |
 
 Ukládání je **automatické a odložené** — nic se nepotvrzuje tlačítkem. Tažení posuvníkem

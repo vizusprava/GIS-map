@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { toast } from 'sonner'
-import { ChevronLeft, ChevronRight, Eye, EyeOff, Layers, Loader2, Sparkles, Trash2, Upload } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Layers, Loader2, Sparkles, Trash2, Upload } from 'lucide-react'
 import { ION_TOKEN, NEEDS_ION, SHARP_KEY } from './config'
 import { geoidN } from './geoid'
 import { perfSettings, readPerfChoice, resolvePerf, savePerfChoice, type PerfChoice } from './perfProfile'
@@ -17,7 +17,6 @@ import type { MapClickOwner, SceneObj } from './types'
 import type { ScenePersist } from './lib/scenePersist'
 import { CalloutLayer } from './callouts'
 import { Compass } from './compass'
-import { CamViews } from './camViews'
 import { CoordsPanel } from './coords'
 import { MapTools } from './mapTools'
 import { MapSearch } from './mapSearch'
@@ -55,8 +54,8 @@ import { RegionPanel } from './panels/RegionPanel'
 import { ScenePanel, useScenePanelUi } from './panels/ScenePanel'
 import { ModelPanel } from './panels/ModelPanel'
 import { SectionPanel } from './panels/SectionPanel'
-import { LookPanel } from './panels/LookPanel'
-import { PresentationPanel } from './panels/PresentationPanel'
+import { CameraMenu } from './panels/CameraMenu'
+import { PresentationMenu } from './panels/PresentationMenu'
 import { StorageFooter } from './panels/StorageFooter'
 
 /**
@@ -94,10 +93,10 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // nemusí nic doplňovat a stav přežije i jejich přejmenování.
   // Panel překrývá levých 320 px mapy, takže musí jít odsunout — jinak se pod ním nedá klikat.
   const [panelOpen, setPanelOpen] = useState(true)
-  // Hlavní vypínač prezentačních prvků (popisky + pulz). Při běžné práci s mapou překážejí.
+  // Hlavní vypínač prezentace (popisky + efekty pohledů). Při běžné práci s mapou překážejí.
   const [presentOn, setPresentOn] = useState(true)
   // Co bylo zapnuté, než se prezentace vypnula — aby zapnutí vrátilo přesně to, ne nějaký default.
-  const presentSnapRef = useRef<{ dofOn: boolean; bloom: boolean } | null>(null)
+  const presentSnapRef = useRef<{ dofOn: boolean } | null>(null)
   const [openSec, setOpenSec] = useState<Record<string, boolean>>(() => {
     try { const v = localStorage.getItem('geo.opensec'); if (v) return JSON.parse(v) as Record<string, boolean> } catch { /* */ }
     return {}
@@ -167,11 +166,11 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   })
   const { viewerRef, viewerReady } = viewer
 
-  // ── vzhled kamery: hloubka ostrosti, zorný úhel, bloom: stav i obsluha žijí v `useLookTool` ──
+  // ── vzhled kamery: hloubka ostrosti a zorný úhel — stav i obsluha žijí v `useLookTool` ──
   const look = useLookTool({ viewerRef })
-  const { applyBloom, applyDof, bloomOn, dofOn, setBloomOn, setDofOn } = look
+  const { applyDof, dofOn, setDofOn } = look
   const motion = useCameraMotion({ viewerRef, presentOn, fov: look.fov, applyFovRaw: look.applyFovRaw })
-  const { camProj, camPerspective, camTopOrtho, orbitOn, setOrbitOn, shakeOn, setShakeOn, shakeAmt, setShakeAmt, spinOn, setSpinOn, spinSpeed, setSpinSpeed } = motion
+  const { camProj, camPerspective, camTopOrtho } = motion
 
   // ── hledání a správní území (obojí píše do téže nabídky v liště nahoře) ──
   const search = useMapSearch({
@@ -259,16 +258,12 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // ── pohledy kamery a prezentace na nich ──
   const views = useCamViews({
     viewerRef, viewerReady, sceneRef, look, motion, presentOn, presentSnapRef,
-    onEnterView: cv => pres.triggerPulses(presentOn ? cv.id : null),
     viewRefs: id => pres.viewRefs(id),
     onViewDeleted: id => pres.forgetView(id),
   })
-  const {
-    camViews, activeViewId, activeDirty, renamingViewId, setRenamingViewId, renameCamView, gotoCamView,
-    updateCamView, duplicateCamView, delCamView, moveCamView, saveCamView, stepCamView,
-  } = views
-  const pres = usePresentation({ viewerRef, viewerReady, sceneRef, calloutMode, activeViewId, presentOn, parcelsRef, releaseMapClick })
-  const { callouts, pulses, calloutSel, setCalloutSel, updateCallout, visibleCallouts } = pres
+  const { camViews, activeViewId } = views
+  const pres = usePresentation({ viewerRef, viewerReady, sceneRef, calloutMode, activeViewId, presentOn, releaseMapClick })
+  const { callouts, calloutSel, setCalloutSel, updateCallout, visibleCallouts } = pres
 
   // ── disk prohlížeče a exporty ──
   const cache = useLocalCache({ refreshOrtoLayer: () => layers.refreshOrtoLayer() })
@@ -488,25 +483,21 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   }, [])
 
   /**
-   * Hlavní vypínač prezentace: popisky, pulz a obrazové efekty (rozostření, bloom) naráz.
+   * Hlavní vypínač prezentace: popisky a obrazové efekty pohledů (rozostření; chvění a kroužení
+   * běží jen v prezentaci samy) naráz.
    * Vypnutí si pamatuje, co bylo zapnuté, takže zapnutí nevrací výchozí hodnoty, ale ty tvoje.
    */
   function togglePresent() {
     const nv = !presentOn
     setPresentOn(nv)
     if (!nv) {
-      presentSnapRef.current = { dofOn, bloom: bloomOn }
+      presentSnapRef.current = { dofOn }
       setDofOn(false); applyDof({ on: false })
-      setBloomOn(false); applyBloom(false)
     } else {
       const snap = presentSnapRef.current
-      if (snap) {
-        setDofOn(snap.dofOn); applyDof({ on: snap.dofOn })
-        setBloomOn(snap.bloom); applyBloom(snap.bloom)
-      }
+      if (snap) { setDofOn(snap.dofOn); applyDof({ on: snap.dofOn }) }
     }
-    // Popisky si zajedou samy (řídí je visibleCallouts), pulz je ale primitiv — musí se říct hned.
-    pres.triggerPulses(nv ? activeViewId : null)
+    // popisky si zajedou samy — řídí je visibleCallouts
   }
 
   function locateObject(o: SceneObj) {
@@ -724,6 +715,16 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           camProj={camProj}
           onPersp={camPerspective}
           onOrtho={camTopOrtho}
+          viewCount={camViews.length}
+          cameraMenu={<CameraMenu views={views} look={look} motion={motion} presentOn={presentOn} />}
+          presentOn={presentOn}
+          calloutMode={calloutMode}
+          presentationMenu={
+            <PresentationMenu
+              pres={pres} activeView={activeView} activeViewId={activeViewId} presentOn={presentOn}
+              togglePresent={togglePresent} calloutMode={calloutMode} toggleCallout={toggleCallout}
+            />
+          }
         />
       </div>
       {/* Kompas v rohu, mimo střed s lištou — ať se s ní neperou o místo, když je okno úzké.
@@ -745,17 +746,10 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       )}
       <div className={`absolute inset-y-0 left-0 z-20 flex w-80 flex-col border-r border-gray-700 bg-gray-900/95 transition-transform ${panelOpen ? '' : '-translate-x-full'}`}>
         <div className="flex shrink-0 flex-col gap-1.5 border-b border-gray-700 p-2">
-          {/* Navigace a hlavní vypínač prezentace na jednom řádku — dřív zabíraly dva. */}
+          {/* Navigace; vypínač prezentace se přestěhoval do lišty dole (panel Prezentace). */}
           <div className="flex items-center gap-1">
             <button onClick={() => void leaveScene()} title="Zpět na přehled scén" className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-2 py-1 text-xs text-gray-200 transition-colors hover:bg-gray-700">
               <ChevronLeft size={14} /> Scény
-            </button>
-            <button
-              onClick={togglePresent}
-              title={presentOn ? 'Skrýt popisky a pulz' : 'Zobrazit popisky a pulz'}
-              className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs ${presentOn ? 'bg-sky-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'}`}
-            >
-              {presentOn ? <Eye size={14} /> : <EyeOff size={14} />} Prezentace
             </button>
             <div className="flex-1" />
             <button onClick={() => setPanelOpen(false)} title="Skrýt panel" className="rounded p-0.5 text-gray-500 hover:text-gray-200"><ChevronLeft size={16} /></button>
@@ -890,46 +884,6 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             <SectionPanel sec={sec} setMoveMode={setMoveMode} />
           </Section>
           )}
-          {/* Pohledy a vzhled kamery byly jedna sekce — přes dvacet ovládacích prvků na sobě,
-              a seznam pohledů (to, co se používá nejvíc) až úplně dole pod slidery. Teď jsou
-              to dvě věci: scénář nahoře a jeho vzhled zabalený pod ním. */}
-          <Section id="pohledy" title="Pohledy" dflt={true} badge={camViews.length} open={openSec} onToggle={toggleSec}>
-            <CamViews
-              views={camViews}
-              activeId={activeViewId}
-              dirty={activeDirty}
-              renamingId={renamingViewId}
-              onRenameStart={setRenamingViewId}
-              onRename={renameCamView}
-              onGoto={gotoCamView}
-              onOverwrite={updateCamView}
-              onDuplicate={duplicateCamView}
-              onDelete={delCamView}
-              onMove={moveCamView}
-              onSave={saveCamView}
-              onStep={stepCamView}
-            />
-            <label className="flex cursor-pointer items-center gap-1.5 text-xs" title="Kamera nepoletí napřímo, ale obloukem kolem toho, na co zrovna koukáš — objekt uprostřed zůstane uprostřed.">
-              <input type="checkbox" checked={orbitOn} onChange={e => setOrbitOn(e.target.checked)} className="accent-sky-500" />
-              <span className="text-gray-200">Přelet obloukem (orbit kolem středu)</span>
-            </label>
-          </Section>
-
-          <Section id="kamera" title="Vzhled kamery" dflt={false} open={openSec} onToggle={toggleSec}>
-            <LookPanel
-              look={look} camProj={camProj} camPerspective={camPerspective} camTopOrtho={camTopOrtho}
-              presentOn={presentOn} shakeOn={shakeOn} setShakeOn={setShakeOn} shakeAmt={shakeAmt}
-              setShakeAmt={setShakeAmt} spinOn={spinOn} setSpinOn={setSpinOn} spinSpeed={spinSpeed} setSpinSpeed={setSpinSpeed}
-            />
-          </Section>
-          {/* Popisky i pulz visí na uloženém pohledu a řídí je vypínač „Prezentace" nahoře —
-              patří k sobě, tak jsou v jedné sekci a ne rozstrkané pod kamerou. */}
-          <Section id="prezentace" title="Prezentace" dflt={false} badge={callouts.length + pulses.length} open={openSec} onToggle={toggleSec}>
-            <PresentationPanel
-              pres={pres} activeView={activeView} activeViewId={activeViewId} presentOn={presentOn} calloutMode={calloutMode}
-              toggleCallout={toggleCallout} parcelCount={parcelCount} openSec={openSec} toggleSec={toggleSec}
-            />
-          </Section>
         </div>
         </SectionFocusContext.Provider>
 

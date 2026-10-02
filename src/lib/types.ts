@@ -2,11 +2,10 @@
  * Datové typy backendu — řádky tabulek a tvar JSON blobů, které do nich ukládáme.
  *
  * Jsou to jen popisy tvaru dat, žádná logika. Typy scény schválně odkazují na typy
- * jednotlivých vrstev (popisky, pulzy, měření), ať se JSON nikdy nerozejde s tím, co
+ * jednotlivých vrstev (popisky, měření), ať se JSON nikdy nerozejde s tím, co
  * vrstvy skutečně umí přečíst.
  */
 import type { Callout } from '../callouts'
-import type { PulseSet } from '../pulse'
 import type { Ruler } from '../ruler'
 import type { Base, CamView, Placement } from '../types'
 
@@ -98,7 +97,7 @@ export type SavedCamera = { dest: [number, number, number]; h: number; p: number
 export type SceneState = {
   camViews?: CamView[]
   callouts?: Callout[]
-  pulses?: PulseSet[]
+  // `pulses` (pulz parcel) se už nepoužívá — ve starších scénách klíč zůstal a ignoruje se
   rulers?: Ruler[]
   parcels?: SavedParcel[]
   base?: Base

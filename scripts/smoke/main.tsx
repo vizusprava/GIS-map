@@ -42,4 +42,4 @@ const scene: ScenePersist = {
 }
 
 createRoot(document.getElementById('root')!, { onUncaughtError: note, onCaughtError: note })
-  .render(<StrictMode><MapView scene={scene} /><Toaster /></StrictMode>)
+  .render(<StrictMode><MapView scene={scene} /><Toaster position="bottom-right" offset={{ bottom: 88 }} richColors /></StrictMode>)

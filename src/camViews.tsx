@@ -6,7 +6,7 @@
  * slidery se nastaví jednou. Teď je seznam nahoře a vzhled kamery zabalený pod ním.
  *
  * Čtyři věci, které tady dřív nebyly a chyběly:
- *  - přejmenování (šlo jen smazat a uložit znovu — a tím přijít o navázané popisky a pulzy),
+ *  - přejmenování (šlo jen smazat a uložit znovu — a tím přijít o navázané popisky),
  *  - pořadí tažením, protože pohledy jsou scénář a na jejich sledu záleží,
  *  - značka „upraveno", když se aktivní pohled rozešel s tím, co je zrovna vidět,
  *  - náhled, protože samotný název je slabá nápověda, co na tom záběru vlastně je.
@@ -39,7 +39,8 @@ export function CamViews(p: Props) {
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [dragOver, setDragOver] = useState<number | null>(null)
 
-  // Nabídka ⋯ se musí zavřít i kliknutím jinam, ne jen opětovným kliknutím na tečky.
+  // Nabídka ⋯ se musí zavřít i kliknutím jinam, ne jen opětovným kliknutím na tečky. Seznam
+  // sedí v panelu lišty, která kliky dál k oknu nepouští — proto i klik jinam do seznamu.
   useEffect(() => {
     if (!menuId) return
     const close = () => setMenuId(null)
@@ -48,7 +49,7 @@ export function CamViews(p: Props) {
   }, [menuId])
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5" onPointerDown={() => setMenuId(null)}>
       <div className="flex items-center gap-1">
         <button
           onClick={p.onSave}

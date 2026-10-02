@@ -1,7 +1,7 @@
 /**
- * Vzhled kamery — hloubka ostrosti, zorný úhel a bloom.
+ * Vzhled kamery — hloubka ostrosti a zorný úhel.
  *
- * Drží se pohromadě, protože jde o tutéž věc: jak scéna VYPADÁ, ne co v ní je. Všechny tři
+ * Drží se pohromadě, protože jde o tutéž věc: jak scéna VYPADÁ, ne co v ní je. Obojí
  * se navíc mění při přeletu na uložený pohled, a to přes `lookAnimRef` — číslo, kterým si
  * kamera označí probíhající animaci. Kdo sáhne na vzhled ručně, ho zvýší a rozdělaný přechod
  * tím zruší; jinak by doběhl a přepsal, co jsi právě nastavil.
@@ -27,14 +27,12 @@ export function useLookTool(deps: {
   const [dofFeather, setDofFeather] = useState(0.7)
   const [fov, setFov] = useState(60)
 
-  const [bloomOn, setBloomOn] = useState(false)
-
   const dofRef = useRef<Cesium.PostProcessStageComposite | null>(null)
   const dofCircleRef = useRef<Cesium.PostProcessStageComposite | null>(null)
 
   const lookAnimRef = useRef(0)                        // totéž pro přechod vzhledu (FOV/DOF) při přeletu
 
-  // ── DOF / FOV / bloom ──
+  // ── DOF / FOV ──
   type DofCfg = { on: boolean; mode: 'dist' | 'circle'; focal: number; blur: number; radius: number; feather: number }
   /**
    * Přepošle nastavení do post-process stages. Bere jen změněné hodnoty (`applyDof({ radius })`),
@@ -87,20 +85,11 @@ export function useLookTool(deps: {
     const dist = Math.round(Cesium.Cartesian3.distance(v.camera.positionWC, Cesium.Cartesian3.fromDegrees(g.lon, g.lat, g.height)))
     setDofFocal(dist); setDofOn(true); applyDof({ on: true, focal: dist })
   }
-  function applyBloom(on: boolean) {
-    const v = viewerRef.current; if (!v || v.isDestroyed()) return
-    v.scene.postProcessStages.bloom.enabled = on
-  }
-
-  // odletí kamerou na daný objekt (výkres / model / parcela)
-
   return {
-    applyBloom,
     applyDof,
     applyDofRaw,
     applyFov,
     applyFovRaw,
-    bloomOn,
     dofBlur,
     dofFeather,
     dofFocal,
@@ -110,7 +99,6 @@ export function useLookTool(deps: {
     dofRadius,
     fov,
     lookAnimRef,
-    setBloomOn,
     setDofBlur,
     setDofFeather,
     setDofFocal,

@@ -33,7 +33,8 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <App />
-      <Toaster position="bottom-right" richColors />
+      {/* nad lištou nástrojů a kompasem v mapě, ať je oznámení nezakrývají */}
+      <Toaster position="bottom-right" offset={{ bottom: 88 }} richColors />
     </QueryClientProvider>
   </StrictMode>,
 )

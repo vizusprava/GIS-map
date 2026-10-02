@@ -81,8 +81,8 @@ export type CamProj = 'persp' | 'ortho'
  * Přepínač projekce kamery: perspektiva ↔ pohled shora bez perspektivy (ortho).
  *
  * Jedno segmentové tlačítko, ne dvě samostatná — přepíná se mezi dvěma stavy a je potřeba vidět,
- * ve kterém zrovna jsi. V liště dole je tatáž volba jako skupina „Pohled" (mapTools.tsx) — obojí
- * volá stejné funkce, takže se nemůžou rozejít.
+ * ve kterém zrovna jsi. Sedí nahoře v panelu Kamera v liště dole (CameraMenu.tsx); totéž přepíná
+ * klávesa T.
  */
 export function ProjSwitch({ mode, onPersp, onOrtho }: { mode: CamProj; onPersp: () => void; onOrtho: () => void }) {
   const cls = (on: boolean) => `flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors ${
