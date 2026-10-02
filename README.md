@@ -91,6 +91,7 @@ Persistence je do mapy **injektovaná** (`ScenePersist`), takže `MapView.tsx` o
 | **server** | vše, co patří ke scéně: nahrané soubory, usazení modelů, pohledy kamery, popisky, měření, vybrané parcely a dlaždice, odečtené body a posun terénu, nastavení exportů, podklad, pozadí, poslední pozice kamery |
 | **localStorage** | jen předvolby vázané na tenhle počítač: profil výkonu (auto / úsporný / kvalitní), detail ortofota, vyhlazení hran, výchozí hodnoty sliderů kroužení a chvění, rozbalené sekce panelu, záložka v panelu Kamera |
 | **IndexedDB** | cache dlaždic ČÚZK a napečené ortofoto (`src/cache.ts`) — čistě výkonová věc, kdykoliv se dá smazat |
+| **IndexedDB (trvale)** | soubory scény, které se nevešly do úložiště (nad `VITE_MAX_UPLOAD_MB`) — zůstanou jen v počítači, kde se nahrály (`src/lib/localFiles.ts`). Scéna o nich ví; jinde se zeptá, kde soubor je, a vybraný si uloží. Tlačítko „vymazat“ u cache na ně nesahá |
 
 Ukládání je **automatické a odložené** — nic se nepotvrzuje tlačítkem. Tažení posuvníkem
 se sloučí do jednoho zápisu, odchod ze scény a zavření okna rozpracovaný zápis dopíšou.

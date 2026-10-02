@@ -12,6 +12,8 @@ import { Loader2, ArrowLeft, RotateCcw } from 'lucide-react'
 import { MapView } from '../MapView'
 import { createAsset, deleteAsset, flushAssetConfigs, hasPendingAssetConfigs, listAssets, renameAsset, saveAssetConfig } from '../lib/assets'
 import { flushScene, getScene, hasPendingSave, saveSceneState, saveSceneThumb, touchScene } from '../lib/scenes'
+import { MAX_UPLOAD_BYTES, fmtMb, isTooLargeError } from '../lib/storage'
+import { ask } from '../dialog'
 import { useAuthStore } from '../stores/authStore'
 import type { ScenePersist } from '../lib/scenePersist'
 import type { AssetRow, SceneRow, SceneState } from '../lib/types'
@@ -147,7 +149,23 @@ export function ScenePage() {
       initial: loaded.scene.state ?? {},
       assets: loaded.assets,
       patchState,
-      uploadAsset: (opts) => createAsset({ sceneId: id, ownerId, ...opts }),
+      // Soubor větší, než úložiště bere: místo chyby se nabídne nechat ho jen v tomhle počítači
+      // (localFiles.ts). Platí i pro nižší strop serveru, než s jakým počítá appka.
+      uploadAsset: async (opts) => {
+        const tooBig = opts.file.size > MAX_UPLOAD_BYTES || (opts.sidecar?.size ?? 0) > MAX_UPLOAD_BYTES
+        if (!tooBig) {
+          try { return await createAsset({ sceneId: id, ownerId, ...opts }) } catch (e) { if (!isTooLargeError(e)) throw e }
+        }
+        const keep = await ask({
+          title: `„${opts.file.name}“ se do úložiště nevejde`,
+          message: `Má ${fmtMb(opts.file.size)}, úložiště bere nejvýš ${fmtMb(MAX_UPLOAD_BYTES)} na soubor.\n\n`
+            + 'Může zůstat jen v tomhle počítači: scéna si ho zapamatuje a bude ho načítat odsud. '
+            + 'Na jiném počítači (nebo po vymazání dat prohlížeče) se zeptá, kde soubor je.',
+          okLabel: 'Nechat v tomto počítači',
+        })
+        if (!keep) throw new Error(`„${opts.file.name}“ se do scény neuložil — po zavření zmizí`)
+        return createAsset({ sceneId: id, ownerId, ...opts, local: true })
+      },
       patchAssetConfig: saveAssetConfig,
       renameAsset,
       deleteAsset,

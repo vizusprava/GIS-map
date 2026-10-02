@@ -28,11 +28,19 @@ Cesium.Scene.prototype.render = function (this: Cesium.Scene, ...args: unknown[]
 
 // výchozí pohled: kolmo nad centrem Českých Budějovic; jde přepsat v adrese (?lon=&lat=&h=)
 const q = new URLSearchParams(location.search)
+// `?localdxf=<velikost>`: scéna s výkresem uloženým „jen v jiném počítači" (lib/localFiles.ts) —
+// test ho pak dohledá na disku a ověří, že se příště načte sám
+const localDxf = q.get('localdxf')
+const assets: ScenePersist['assets'] = localDxf ? [{
+  id: 'smoke-local-1', scene_id: 'smoke', owner: 'nikdo', kind: 'drawing', name: 'Výkres jen v počítači',
+  file_name: 'mimo-uloziste.dxf', file_path: 'local:smoke-local-1/file', sidecar_path: null, sidecar_name: null,
+  size_bytes: Number(localDxf), config: {}, sort_order: 0, created_at: '', updated_at: '',
+}] : []
 const start = Cesium.Cartesian3.fromDegrees(Number(q.get('lon') ?? 14.4746), Number(q.get('lat') ?? 48.9745), Number(q.get('h') ?? 1500))
 const scene: ScenePersist = {
   sceneId: 'smoke', sceneName: 'Kouřový test', ownerId: 'nikdo',
   initial: { camera: { dest: [start.x, start.y, start.z], h: 0, p: Cesium.Math.toRadians(-89.9), r: 0 } } as unknown as ScenePersist['initial'],
-  assets: [],
+  assets,
   patchState: () => {},
   uploadAsset: async () => { throw new Error('V kouřovém testu se nenahrává') },
   patchAssetConfig: () => {},

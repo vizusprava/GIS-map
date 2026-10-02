@@ -6,6 +6,7 @@
  * Cesium si o URL řekne při každém načtení scény.
  */
 import { supabase, BUCKET } from './supabase'
+import { isLocalPath, localDel } from './localFiles'
 
 const SIGN_TTL = 60 * 60 // 1 h — po tu dobu je odkaz na model/výkres platný
 
@@ -21,7 +22,7 @@ const SIGN_TTL = 60 * 60 // 1 h — po tu dobu je odkaz na model/výkres platný
 const MAX_UPLOAD_MB = Number(import.meta.env.VITE_MAX_UPLOAD_MB ?? 50)
 export const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
-const fmtMb = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+export const fmtMb = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 
 const signCache = new Map<string, { url: string; exp: number }>()
 
@@ -41,6 +42,12 @@ export async function signedUrl(path: string, ttl = SIGN_TTL): Promise<string> {
 export async function signedUrlOrNull(path: string | null | undefined): Promise<string | null> {
   if (!path) return null
   try { return await signedUrl(path) } catch { return null }
+}
+
+/** Odmítlo úložiště soubor kvůli velikosti (náš strop, nebo nižší strop serveru)? */
+export function isTooLargeError(e: unknown): boolean {
+  const m = e instanceof Error ? e.message : String(e)
+  return /maximum allowed size|too large|413|úložiště bere nejvýš/i.test(m)
 }
 
 /** Nahraje soubor na danou cestu (upsert — opakované nahrání přepíše). */
@@ -63,9 +70,14 @@ export async function downloadFile(path: string, fileName: string): Promise<File
   return new File([data], fileName, { type: data.type || 'application/octet-stream' })
 }
 
-/** Smaže soubory (chybějící cesty se ignorují — mazání nesmí spadnout na půl cesty). */
+/**
+ * Smaže soubory (chybějící cesty se ignorují — mazání nesmí spadnout na půl cesty). Soubory
+ * uložené jen v tomhle počítači (`local:…`, viz localFiles.ts) se smažou z prohlížeče.
+ */
 export async function removeFiles(paths: (string | null | undefined)[]): Promise<void> {
-  const list = paths.filter((p): p is string => !!p)
+  const all = paths.filter((p): p is string => !!p)
+  for (const p of all) if (isLocalPath(p)) await localDel(p)
+  const list = all.filter(p => !isLocalPath(p))
   if (!list.length) return
   await supabase.storage.from(BUCKET).remove(list)
   for (const p of list) signCache.delete(p)

@@ -12,7 +12,11 @@ import type { ParcelHit } from './katastr'
 import { loadGeoRaster, disposeRasterSrc, type CrsId } from './worldRaster'
 import { parseDrawingFile } from './drawingClient'
 import { captureThumb } from './snapshot'
-import { fetchAssetFile, fetchAssetSidecar } from './lib/assets'
+import { fetchAssetFile, fetchAssetSidecar, relinkLocalAsset } from './lib/assets'
+import { MissingLocalFile } from './lib/localFiles'
+import type { AssetRow } from './lib/types'
+import { ask } from './dialog'
+import { MissingFilesPanel } from './panels/MissingFilesPanel'
 import type { MapClickOwner, SceneObj } from './types'
 import type { ScenePersist } from './lib/scenePersist'
 import { CalloutLayer } from './callouts'
@@ -284,6 +288,77 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // POSTUPNĚ: modely i výkresy jsou velké a paralelní dekódování by appku na chvíli zabilo.
   const restoredRef = useRef(false)
   const [restoring, setRestoring] = useState<string | null>(null)
+  // Soubory scény uložené jen v jiném počítači (lib/localFiles.ts) — panel je nabídne dohledat.
+  const [missingFiles, setMissingFiles] = useState<AssetRow[]>([])
+
+  /** Načte soubor scény do mapy podle druhu — při obnově scény i po dohledání chybějícího. */
+  async function mountAsset(a: AssetRow, file: File, alive: () => boolean = () => true) {
+    if (a.kind === 'model') {
+      await importModel(file, { assetId: a.id, name: a.name, config: a.config })
+    } else if (a.kind === 'drawing') {
+      const parse = await parseDrawingFile(file)
+      if (!alive()) return
+      await renderDrawing(parse, a.file_name, { assetId: a.id, config: a.config })
+    } else {
+      const world = await fetchAssetSidecar(a)
+      const raster = await loadGeoRaster(file, world ?? undefined)
+      const v2 = viewerRef.current
+      if (!alive() || !v2 || v2.isDestroyed()) { disposeRasterSrc(raster.src); return }
+      mountRaster(v2, raster, {
+        crsId: (a.config.crsId as CrsId | undefined) ?? raster.crsId,
+        alpha: a.config.rasterAlpha ?? 1,
+        visible: a.config.rasterVisible ?? true,
+        assetId: a.id,
+      })
+    }
+  }
+
+  /**
+   * Dohledaný chybějící soubor: sedí-li název a velikost, rovnou se použije, jinak se zeptá.
+   * Uloží se do tohohle počítače (příště se načte sám) a načte se do mapy.
+   */
+  async function relinkMissing(a: AssetRow, picked: File[]) {
+    const ext = (n: string) => n.slice(n.lastIndexOf('.')).toLowerCase()
+    const main = picked.find(p => p.name === a.file_name) ?? picked.find(p => ext(p.name) === ext(a.file_name)) ?? picked[0]
+    const side = a.sidecar_name
+      ? picked.find(p => p !== main && p.name === a.sidecar_name) ?? picked.find(p => p !== main && ext(p.name) === ext(a.sidecar_name as string)) ?? null
+      : null
+    const size = main.size + (side?.size ?? 0)
+    const fits = main.name === a.file_name && (a.size_bytes == null || a.size_bytes === size)
+    if (!fits && !(await ask({
+      title: 'Je to ten správný soubor?',
+      message: `Ve scéně byl „${a.file_name}“${a.size_bytes ? ` (${(a.size_bytes / 1048576).toFixed(1)} MB)` : ''}, vybraný je „${main.name}“ (${(size / 1048576).toFixed(1)} MB).`,
+      okLabel: 'Použít',
+    }))) return
+    if (a.sidecar_name && !side && !(await ask({
+      title: `Chybí „${a.sidecar_name}“`,
+      message: 'K rastru patří i soubor s georeferencí. Vyber příště oba najednou — bez něj se snímek nemusí umístit.',
+      okLabel: 'Přesto načíst',
+    }))) return
+    try {
+      await relinkLocalAsset(a, main, side)
+      setMissingFiles(list => list.filter(x => x.id !== a.id))
+      await mountAsset(a, main)
+      toast.success(`„${a.name}“ je zpátky — příště se načte sám`)
+    } catch (e) {
+      console.error(`Dohledaný soubor „${a.name}“ se nepodařilo načíst:`, e)
+      toast.error(`„${a.name}“ se nepodařilo načíst`)
+    }
+  }
+
+  /** Soubor je nenávratně pryč — odebere se ze scény, ať se na něj neptá pořád dokola. */
+  async function removeMissing(a: AssetRow) {
+    if (!(await ask({
+      title: `Odebrat „${a.name}“ ze scény?`,
+      message: 'Soubor se pak už nebude hledat. Usazení a nastavení, které k němu patřily, se smažou.',
+      okLabel: 'Odebrat', danger: true,
+    }))) return
+    try {
+      await sceneRef.current.deleteAsset(a.id)
+      setMissingFiles(list => list.filter(x => x.id !== a.id))
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Odebrání se nepovedlo') }
+  }
+
   useEffect(() => {
     if (!viewerReady || restoredRef.current) return
     restoredRef.current = true
@@ -295,6 +370,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     let alive = true
     void (async () => {
       let done = 0
+      const missing: AssetRow[] = []
       for (const a of assets) {
         const v = viewerRef.current
         if (!alive || !v || v.isDestroyed()) return
@@ -302,30 +378,24 @@ export function MapView({ scene }: { scene: ScenePersist }) {
         try {
           const file = await fetchAssetFile(a)
           if (!alive) return
-          if (a.kind === 'model') {
-            await importModel(file, { assetId: a.id, name: a.name, config: a.config })
-          } else if (a.kind === 'drawing') {
-            const parse = await parseDrawingFile(file)
-            if (!alive) return
-            await renderDrawing(parse, a.file_name, { assetId: a.id, config: a.config })
-          } else {
-            const world = await fetchAssetSidecar(a)
-            const raster = await loadGeoRaster(file, world ?? undefined)
-            const v2 = viewerRef.current
-            if (!alive || !v2 || v2.isDestroyed()) { disposeRasterSrc(raster.src); return }
-            mountRaster(v2, raster, {
-              crsId: (a.config.crsId as CrsId | undefined) ?? raster.crsId,
-              alpha: a.config.rasterAlpha ?? 1,
-              visible: a.config.rasterVisible ?? true,
-              assetId: a.id,
-            })
-          }
+          await mountAsset(a, file, () => alive)
         } catch (e) {
+          // uložený jen v jiném počítači → nabídnout k dohledání, ne hlásit jako chybu
+          if (e instanceof MissingLocalFile) { missing.push(a); continue }
           console.error(`Obnova souboru „${a.name}" selhala:`, e)
           toast.error(`Soubor „${a.name}" se nepodařilo načíst`)
         }
       }
-      if (alive) setRestoring(null)
+      if (!alive) return
+      setRestoring(null)
+      if (missing.length) {
+        setMissingFiles(missing)
+        setPanelOpen(true)
+        toast.warning(missing.length === 1 ? `„${missing[0].name}“ je uložený jen v jiném počítači` : `${missing.length} soubory jsou uložené jen v jiném počítači`, {
+          description: 'Najdi je na disku v panelu vlevo, sekce Chybějící soubory.',
+          duration: 8000,
+        })
+      }
     })()
     return () => { alive = false }
   }, [viewerReady])
@@ -772,6 +842,11 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             Dlaždice, …) stojí hned pod tím, co je vyrobilo, a revealSection k nim odscrolluje. */}
         <SectionFocusContext.Provider value={sectionFocus}>
         <div ref={panelScrollRef} className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2">
+          {missingFiles.length > 0 && (
+          <Section id="chybi" title="Chybějící soubory" dflt={true} badge={missingFiles.length} open={openSec} onToggle={toggleSec}>
+            <MissingFilesPanel files={missingFiles} onRelink={(a, picked) => void relinkMissing(a, picked)} onRemove={a => void removeMissing(a)} />
+          </Section>
+          )}
           <Section id="podklad" title="Podklad a překryvy" dflt={true} open={openSec} onToggle={toggleSec}>
             <BasePanel
               layers={layers} districts={districts} perfChoice={perfChoice} setPerfChoice={setPerfChoice} perfLevel={perfLevel}

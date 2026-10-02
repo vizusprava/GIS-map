@@ -7,10 +7,14 @@
  *
  * `config` (usazení modelu, výška výkresu, průhlednost rastru) se ukládá odloženě: tahání
  * sliderem jinak vystřelí request na každý pixel.
+ *
+ * Soubor větší, než úložiště bere, může zůstat jen v tomhle počítači (`local: true`): řádek
+ * vznikne stejně, jen cesta začíná `local:` a bajty jdou do úložiště prohlížeče (localFiles.ts).
  */
 import { supabase } from './supabase'
 import { cacheDel, cacheGet, cachePut } from '../cache'
 import { downloadFile, extOf, removeFiles, uploadFile } from './storage'
+import { MissingLocalFile, isLocalPath, localGet, localPath, localPut, requestPersistence } from './localFiles'
 import { createSaveQueue } from './saveQueue'
 import type { AssetConfig, AssetKind, AssetRow } from './types'
 
@@ -39,8 +43,10 @@ export async function createAsset(opts: {
   file: File
   sidecar?: File | null
   config?: AssetConfig
+  /** nenahrávat, nechat jen v tomhle počítači (soubor je na úložiště moc velký) */
+  local?: boolean
 }): Promise<AssetRow> {
-  const { sceneId, ownerId, kind, name, file, sidecar, config } = opts
+  const { sceneId, ownerId, kind, name, file, sidecar, config, local } = opts
 
   const { data: row, error } = await supabase
     .from('geo_assets')
@@ -58,12 +64,18 @@ export async function createAsset(opts: {
   if (error) throw new Error(`Zápis souboru do scény selhal: ${error.message}`)
 
   const asset = row as AssetRow
-  const filePath = `${ownerId}/${sceneId}/${asset.id}${extOf(file.name)}`
-  const sidecarPath = sidecar ? `${ownerId}/${sceneId}/${asset.id}${extOf(sidecar.name)}` : null
+  const filePath = local ? localPath(asset.id, 'file') : `${ownerId}/${sceneId}/${asset.id}${extOf(file.name)}`
+  const sidecarPath = !sidecar ? null : local ? localPath(asset.id, 'sidecar') : `${ownerId}/${sceneId}/${asset.id}${extOf(sidecar.name)}`
 
   try {
-    await uploadFile(filePath, file)
-    if (sidecar && sidecarPath) await uploadFile(sidecarPath, sidecar)
+    if (local) {
+      void requestPersistence()
+      await localPut(filePath, file)
+      if (sidecar && sidecarPath) await localPut(sidecarPath, sidecar)
+    } else {
+      await uploadFile(filePath, file)
+      if (sidecar && sidecarPath) await uploadFile(sidecarPath, sidecar)
+    }
     const { data: updated, error: upErr } = await supabase
       .from('geo_assets')
       .update({ file_path: filePath, sidecar_path: sidecarPath })
@@ -100,13 +112,35 @@ const assetKey = (id: string, part: 'file' | 'sidecar') => `asset/${id}/${part}`
  * Cache je best-effort: cokoliv se pokazí (kvóta, privátní režim), tiše se stáhne ze sítě.
  */
 export async function fetchAssetFile(asset: AssetRow): Promise<File> {
+  if (isLocalPath(asset.file_path)) return localFile(asset.file_path, asset.file_name, 'file')
   return cachedDownload(assetKey(asset.id, 'file'), asset.file_path, asset.file_name)
 }
 
 /** Stáhne doprovodný soubor rastru (world file), pokud ho asset má. */
 export async function fetchAssetSidecar(asset: AssetRow): Promise<File | null> {
   if (!asset.sidecar_path || !asset.sidecar_name) return null
+  if (isLocalPath(asset.sidecar_path)) return localFile(asset.sidecar_path, asset.sidecar_name, 'sidecar')
   return cachedDownload(assetKey(asset.id, 'sidecar'), asset.sidecar_path, asset.sidecar_name)
+}
+
+/** Soubor jen z tohohle počítače — když tu není, `MissingLocalFile` (obnova se zeptá, kde je). */
+async function localFile(path: string, fileName: string, part: 'file' | 'sidecar'): Promise<File> {
+  const b = await localGet(path)
+  if (!b) throw new MissingLocalFile(part)
+  return b instanceof File ? b : new File([b], fileName, { type: b.type || 'application/octet-stream' })
+}
+
+/** Je soubor scény uložený jen v tomhle počítači? */
+export const isLocalAsset = (a: Pick<AssetRow, 'file_path'>) => isLocalPath(a.file_path)
+
+/**
+ * Dohledaný soubor (jiný počítač, vymazaná data prohlížeče) se uloží zpátky do tohohle
+ * počítače, ať se příště načte sám.
+ */
+export async function relinkLocalAsset(asset: AssetRow, file: File, sidecar?: File | null): Promise<void> {
+  void requestPersistence()
+  if (isLocalPath(asset.file_path)) await localPut(asset.file_path, file)
+  if (sidecar && isLocalPath(asset.sidecar_path)) await localPut(asset.sidecar_path, sidecar)
 }
 
 async function cachedDownload(key: string, path: string, fileName: string): Promise<File> {

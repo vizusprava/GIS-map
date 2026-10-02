@@ -381,6 +381,41 @@ async function main() {
     // appka se ptá vlastním oknem (dialog.tsx); systémové confirm/alert/prompt už nemá vyskočit
     expect(!dialogs.length, `systémové okno: ${dialogs.join(' | ')}`)
   })
+
+  // ── soubor, který se nevešel do úložiště: je „jen v jiném počítači" → najít → příště sám ──
+  // (nová stránka se stejným profilem: IndexedDB zůstává, chyby se počítají znovu)
+  const mapReady = `!!window.__scene && document.querySelectorAll('button[aria-haspopup="menu"]').length === 6`
+  await check('soubor jen v jiném počítači: nabídne se k dohledání, načte se a příště sám', async () => {
+    // malý výkres v S-JTSK u centra Českých Budějovic
+    const L = ['0', 'SECTION', '2', 'HEADER', '9', '$INSUNITS', '70', '6', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES']
+    for (let i = 0; i < 10; i++) L.push('0', 'LINE', '8', 'KRESBA', '10', String(-755900 + i * 20), '20', '-1166250', '11', String(-755900 + i * 20), '21', '-1166050')
+    L.push('0', 'ENDSEC', '0', 'EOF')
+    const dxfPath = join(work, 'mimo-uloziste.dxf')
+    writeFileSync(dxfPath, L.join('\r\n') + '\r\n')
+    const url = `${http}/scripts/smoke/index.html?localdxf=${statSync(dxfPath).size}`
+    await page.send('Page.navigate', { url })
+    await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa po znovunačtení')
+    await waitFor(`!!document.querySelector('[data-sec="chybi"]')`, 20_000, 'sekce Chybějící soubory')
+    expect((await ev(`document.querySelector('[data-sec="chybi"]').innerText`)).includes('Výkres jen v počítači'), 'v sekci chybí výkres')
+    await shot('chybejici-soubory')
+    // „Najít soubor…" — vybrat soubor na disku (stejný název i velikost → bez ptaní)
+    await page.send('DOM.enable')
+    const { result } = await page.send('Runtime.evaluate', { expression: `document.querySelector('[data-relink-input="smoke-local-1"]')` })
+    await page.send('DOM.setFileInputFiles', { files: [dxfPath], objectId: result.result.objectId })
+    await waitFor(`!document.querySelector('[data-sec="chybi"]')`, 20_000, 'zmizení sekce po dohledání')
+    await waitFor(`(document.querySelector('[data-sec="scena"]')?.innerText ?? '').includes('mimo-uloziste')`, 20_000, 'výkres ve scéně')
+    // příště už se neptá: znovu otevřít scénu
+    await page.send('Page.navigate', { url })
+    await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa po druhém otevření')
+    await waitFor(`(document.querySelector('[data-sec="scena"]')?.innerText ?? '').includes('mimo-uloziste')`, 20_000, 'výkres z tohohle počítače')
+    expect(!(await ev(`!!document.querySelector('[data-sec="chybi"]')`)), 'podruhé se znovu ptá, kde soubor je')
+  })
+
+  await check('žádné chyby po znovuotevření scény', async () => {
+    const errs = await ev('window.__errors')
+    expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
+    expect(!dialogs.length, `systémové okno: ${dialogs.join(' | ')}`)
+  })
 }
 
 try {
