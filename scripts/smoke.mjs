@@ -365,6 +365,16 @@ async function main() {
     })
   }
 
+  await check('náhled scény při odchodu: malý JPEG, ne černý', async () => {
+    expect(await clickText('document', 'Scény'), 'chybí tlačítko Scény')
+    await waitFor('!!window.__thumb', 10_000, 'náhled scény')
+    const t = await ev('window.__thumb')
+    expect(t.type === 'image/jpeg' && t.w <= 960 && t.size > 1000, `náhled ${t.type} ${t.w}×${t.h}, ${t.size} B`)
+    // bez sítě (CI) může být mapa ještě tmavá; s ČÚZK musí být na náhledu ortofoto
+    if (FULL) expect(t.mean > 20, `náhled je skoro černý (průměrný jas ${t.mean.toFixed(0)})`)
+    return `${t.w}×${t.h} px, ${Math.round(t.size / 1024)} kB, jas ${t.mean.toFixed(0)}`
+  })
+
   await check('žádné chyby v appce ani systémová okna', async () => {
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)

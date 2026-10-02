@@ -31,8 +31,8 @@ export type ScenePersist = {
   renameAsset: (assetId: string, name: string) => Promise<void>
   /** Smaž soubor ze scény i z úložiště. */
   deleteAsset: (assetId: string) => Promise<void>
-  /** Ulož náhled scény do přehledu (snímek plátna). */
-  saveThumb: (png: Blob) => Promise<void>
+  /** Ulož náhled scény do přehledu (zmenšený JPEG záběru, viz `captureThumb`). */
+  saveThumb: (img: Blob) => Promise<void>
   /** Zpět na přehled scén. */
   exit: () => void
 }

@@ -64,12 +64,19 @@ export async function deleteScene(scene: SceneRow): Promise<void> {
   if (error) throw new Error(`Smazání scény selhalo: ${error.message}`)
 }
 
-/** Uloží náhled scény (snímek plátna) a zapíše cestu do řádku. */
-export async function saveSceneThumb(sceneId: string, ownerId: string, png: Blob): Promise<string> {
-  const path = `${ownerId}/${sceneId}/thumb.png`
-  await uploadFile(path, png, 'image/png')
-  // `thumb_path` se nemění, ale ukládáme ho i tak — první náhled scény ho ještě nemá
-  await supabase.from('geo_scenes').update({ thumb_path: path }).eq('id', sceneId)
+/**
+ * Uloží náhled scény (zmenšený snímek mapy) a zapíše cestu do řádku.
+ *
+ * Náhled býval PNG (`thumb.png`), teď je JPEG — při prvním uložení se starý soubor uklidí
+ * (`prevPath`), ať v úložišti nestraší. Smazání scény maže jen soubor, na který řádek ukazuje.
+ */
+export async function saveSceneThumb(sceneId: string, ownerId: string, img: Blob, prevPath?: string | null): Promise<string> {
+  const path = `${ownerId}/${sceneId}/thumb.${img.type === 'image/png' ? 'png' : 'jpg'}`
+  await uploadFile(path, img, img.type || 'image/jpeg')
+  // cesta se mění jen při přechodu z PNG, ale zapisuje se vždy — první náhled scény ji ještě nemá
+  const { error } = await supabase.from('geo_scenes').update({ thumb_path: path }).eq('id', sceneId)
+  if (error) throw new Error(`Zápis náhledu selhal: ${error.message}`)
+  if (prevPath && prevPath !== path) await removeFiles([prevPath]).catch(() => { /* jen úklid */ })
   return path
 }
 

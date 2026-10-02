@@ -11,7 +11,7 @@ import { tilesBounds, wgsOf } from './tiles'
 import type { ParcelHit } from './katastr'
 import { loadGeoRaster, disposeRasterSrc, type CrsId } from './worldRaster'
 import { parseDrawingFile } from './drawingClient'
-import { renderNow } from './snapshot'
+import { captureThumb } from './snapshot'
 import { fetchAssetFile, fetchAssetSidecar } from './lib/assets'
 import type { MapClickOwner, SceneObj } from './types'
 import type { ScenePersist } from './lib/scenePersist'
@@ -339,10 +339,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     if (v && !v.isDestroyed()) {
       try {
         // Snímek se musí sebrat DŘÍV, než odchod odmountuje viewer — pak už canvas nestojí.
-        // Samotné nahrání dojede na pozadí, na to se nečeká.
-        renderNow(v)
-        const blob = await new Promise<Blob | null>(res => v.scene.canvas.toBlob(res, 'image/png'))
-        if (blob && blob.size > 1000) void sceneRef.current.saveThumb(blob).catch(() => {})
+        // Samotné nahrání dojede na pozadí, na to se nečeká; přehled se po něm sám obnoví.
+        const blob = await captureThumb(v)
+        if (blob && blob.size > 1000) void sceneRef.current.saveThumb(blob).catch(e => console.warn('Náhled scény se neuložil:', e))
       } catch { /* náhled je jen bonus, odchod nesmí zdržet */ }
     }
     sceneRef.current.exit()

@@ -7,6 +7,7 @@
  */
 import { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, ArrowLeft, RotateCcw } from 'lucide-react'
 import { MapView } from '../MapView'
 import { createAsset, deleteAsset, flushAssetConfigs, hasPendingAssetConfigs, listAssets, renameAsset, saveAssetConfig } from '../lib/assets'
@@ -73,6 +74,7 @@ class MapErrorBoundary extends Component<{ children: ReactNode; onExit: () => vo
 export function ScenePage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const ownerId = useAuthStore(s => s.user?.id)
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -149,14 +151,20 @@ export function ScenePage() {
       patchAssetConfig: saveAssetConfig,
       renameAsset,
       deleteAsset,
-      saveThumb: async (png) => { await saveSceneThumb(id, ownerId, png) },
+      // Nahrává se až po odchodu na přehled — ten se mezitím načetl bez nového náhledu, tak se
+      // mu po dokončení řekne, ať si seznam scén i odkazy na náhledy vezme znovu.
+      saveThumb: async (img) => {
+        await saveSceneThumb(id, ownerId, img, loaded.scene.thumb_path)
+        void qc.invalidateQueries({ queryKey: ['scenes'] })
+        void qc.invalidateQueries({ queryKey: ['thumb'] })
+      },
       exit: () => {
         void flushScene(id)
         void flushAssetConfigs()
         navigate('/')
       },
     }
-  }, [loaded, id, ownerId, patchState, navigate])
+  }, [loaded, id, ownerId, patchState, navigate, qc])
 
   if (error) {
     return (

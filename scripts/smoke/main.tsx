@@ -38,7 +38,17 @@ const scene: ScenePersist = {
   patchAssetConfig: () => {},
   renameAsset: async () => {},
   deleteAsset: async () => {},
-  saveThumb: async () => {},
+  // náhled scény při odchodu: test zkontroluje typ, rozměr a že není černý
+  saveThumb: async img => {
+    const bmp = await createImageBitmap(img)
+    const c = document.createElement('canvas'); c.width = 32; c.height = 18
+    const g = c.getContext('2d')!
+    g.drawImage(bmp, 0, 0, 32, 18)
+    const px = g.getImageData(0, 0, 32, 18).data
+    let sum = 0
+    for (let i = 0; i < px.length; i += 4) sum += (px[i] + px[i + 1] + px[i + 2]) / 3
+    Object.assign(window, { __thumb: { size: img.size, type: img.type, w: bmp.width, h: bmp.height, mean: sum / (px.length / 4) } })
+  },
   exit: () => {},
 }
 
