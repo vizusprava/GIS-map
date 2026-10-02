@@ -11,6 +11,7 @@
 import { supabase } from './supabase'
 import { cacheDel, cacheGet, cachePut } from '../cache'
 import { downloadFile, extOf, removeFiles, uploadFile } from './storage'
+import { createSaveQueue } from './saveQueue'
 import type { AssetConfig, AssetKind, AssetRow } from './types'
 
 const CONFIG_DEBOUNCE_MS = 800
@@ -79,12 +80,6 @@ export async function createAsset(opts: {
   }
 }
 
-export async function getAsset(assetId: string): Promise<AssetRow | null> {
-  const { data, error } = await supabase.from('geo_assets').select('*').eq('id', assetId).maybeSingle()
-  if (error) throw new Error(`Soubor se nepodařilo načíst: ${error.message}`)
-  return (data as AssetRow | null) ?? null
-}
-
 /**
  * Klíč do lokální cache. Stačí `asset.id`, a to je podstatné: `createAsset` zakládá pro každé
  * nahrání NOVÝ řádek s novým id a to id je součástí cesty v bucketu, takže se binárka nikdy
@@ -145,38 +140,32 @@ export async function renameAsset(assetId: string, name: string): Promise<void> 
 }
 
 // ── Odložené ukládání `config` ──────────────────────────────────────────────────
-const timers = new Map<string, ReturnType<typeof setTimeout>>()
-const pending = new Map<string, AssetConfig>()
-
-async function push(assetId: string): Promise<void> {
-  const config = pending.get(assetId)
-  if (!config) return
-  pending.delete(assetId)
-  const { error } = await supabase.from('geo_assets').update({ config }).eq('id', assetId)
-  if (error) {
-    if (!pending.has(assetId)) pending.set(assetId, config)
-    console.error('Uložení nastavení souboru selhalo:', error)
-  }
-}
+// Stejná fronta jako u stavu scény: slučuje, řadí zápisy za sebe a po chybě zkouší znovu.
+const configSaves = createSaveQueue<AssetConfig>({
+  debounceMs: CONFIG_DEBOUNCE_MS,
+  label: 'Uložení nastavení souboru',
+  send: async (assetId, config) => {
+    const { error } = await supabase.from('geo_assets').update({ config }).eq('id', assetId)
+    if (error) throw error
+  },
+})
 
 /** Naplánuje uložení nastavení souboru (usazení modelu, výška výkresu, alfa rastru). */
 export function saveAssetConfig(assetId: string, config: AssetConfig): void {
-  pending.set(assetId, config)
-  const t = timers.get(assetId)
-  if (t) clearTimeout(t)
-  timers.set(assetId, setTimeout(() => { timers.delete(assetId); void push(assetId) }, CONFIG_DEBOUNCE_MS))
+  configSaves.save(assetId, config)
 }
 
 /** Dopíše rozpracovaná nastavení hned (odchod ze scény). */
-export async function flushAssetConfigs(): Promise<void> {
-  for (const t of timers.values()) clearTimeout(t)
-  timers.clear()
-  await Promise.all([...pending.keys()].map(push))
+export function flushAssetConfigs(): Promise<void> {
+  return configSaves.flush()
+}
+
+/** Čeká nějaké nastavení souboru na zápis? */
+export function hasPendingAssetConfigs(): boolean {
+  return configSaves.hasPending()
 }
 
 /** Zahodí naplánované uložení — soubor se maže, není kam ho zapsat. */
 function cancelConfigSave(assetId: string): void {
-  const t = timers.get(assetId)
-  if (t) { clearTimeout(t); timers.delete(assetId) }
-  pending.delete(assetId)
+  configSaves.cancel(assetId)
 }

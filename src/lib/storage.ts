@@ -9,6 +9,20 @@ import { supabase, BUCKET } from './supabase'
 
 const SIGN_TTL = 60 * 60 // 1 h — po tu dobu je odkaz na model/výkres platný
 
+/**
+ * Strop na velikost jednoho souboru. Supabase ho hlídá na serveru („The object exceeded the
+ * maximum allowed size"), jenže to se pozná až po nahrání celého souboru a hláška neřekne
+ * ani velikost, ani limit. Kontrolujeme proto předem.
+ *
+ * 50 MB je tvrdý strop tarifu Free a NEJDE ho zvednout ani resumable uploadem — je to limit
+ * projektu, ne způsobu nahrávání. Po přechodu na Pro se zvedne v Storage Settings a sem se
+ * nová hodnota dostane přes `VITE_MAX_UPLOAD_MB`.
+ */
+const MAX_UPLOAD_MB = Number(import.meta.env.VITE_MAX_UPLOAD_MB ?? 50)
+export const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
+const fmtMb = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+
 const signCache = new Map<string, { url: string; exp: number }>()
 
 /** Vrátí dočasné URL pro soubor v bucketu. Vyhodí chybu — bez souboru scéna nejde složit. */
@@ -31,6 +45,9 @@ export async function signedUrlOrNull(path: string | null | undefined): Promise<
 
 /** Nahraje soubor na danou cestu (upsert — opakované nahrání přepíše). */
 export async function uploadFile(path: string, file: Blob, contentType?: string): Promise<void> {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    throw new Error(`má ${fmtMb(file.size)}, úložiště bere nejvýš ${fmtMb(MAX_UPLOAD_BYTES)} na soubor`)
+  }
   const { error } = await supabase.storage.from(BUCKET).upload(path, file, {
     upsert: true,
     contentType: contentType ?? (file instanceof File ? file.type : undefined) ?? 'application/octet-stream',

@@ -7,6 +7,7 @@
  */
 import { supabase } from './supabase'
 import { removeFiles, uploadFile } from './storage'
+import { createSaveQueue } from './saveQueue'
 import type { AssetRow, SceneRow, SceneState } from './types'
 
 /** Kolik čekat od poslední změny, než se stav pošle na server. */
@@ -73,47 +74,29 @@ export async function saveSceneThumb(sceneId: string, ownerId: string, png: Blob
 }
 
 // ── Odložené ukládání stavu ─────────────────────────────────────────────────────
-// Jeden timer na scénu. `pending` drží poslední známý stav, takže rychlé změny za sebou
-// se sloučí do jednoho requestu s tou nejnovější hodnotou.
-const timers = new Map<string, ReturnType<typeof setTimeout>>()
-const pending = new Map<string, SceneState>()
-const inFlight = new Set<string>()
-
-async function push(sceneId: string): Promise<void> {
-  const state = pending.get(sceneId)
-  if (!state) return
-  pending.delete(sceneId)
-  inFlight.add(sceneId)
-  try {
+// Slučování, pořadí zápisů i opakování po chybě řeší `createSaveQueue`. Uživateli se o chybě
+// neříká při každém zaškobrtnutí sítě — zápis se zopakuje sám a před zavřením okna se
+// prohlížeč zeptá, pokud pořád něco čeká (viz ScenePage).
+const sceneSaves = createSaveQueue<SceneState>({
+  debounceMs: SAVE_DEBOUNCE_MS,
+  label: 'Uložení stavu scény',
+  send: async (sceneId, state) => {
     const { error } = await supabase.from('geo_scenes').update({ state }).eq('id', sceneId)
     if (error) throw error
-  } catch (e) {
-    // Neúspěch nesmí sebrat rozdělanou práci: stav vrátíme do fronty a zkusí se s další
-    // změnou. Uživateli o tom neříkáme při každém zaškobrtnutí sítě.
-    if (!pending.has(sceneId)) pending.set(sceneId, state)
-    console.error('Uložení stavu scény selhalo:', e)
-  } finally {
-    inFlight.delete(sceneId)
-  }
-}
+  },
+})
 
 /** Naplánuje uložení stavu scény (sloučí rychlé změny do jednoho zápisu). */
 export function saveSceneState(sceneId: string, state: SceneState): void {
-  pending.set(sceneId, state)
-  const t = timers.get(sceneId)
-  if (t) clearTimeout(t)
-  timers.set(sceneId, setTimeout(() => { timers.delete(sceneId); void push(sceneId) }, SAVE_DEBOUNCE_MS))
+  sceneSaves.save(sceneId, state)
 }
 
 /** Dopíše rozpracované uložení hned (odchod ze scény, zavření okna). */
-export async function flushScene(sceneId: string): Promise<void> {
-  const t = timers.get(sceneId)
-  if (t) { clearTimeout(t); timers.delete(sceneId) }
-  await push(sceneId)
+export function flushScene(sceneId: string): Promise<void> {
+  return sceneSaves.flush(sceneId)
 }
 
 /** Čeká někde neuložená změna? (Pro varování „máte neuložené změny“.) */
 export function hasPendingSave(sceneId?: string): boolean {
-  if (sceneId) return pending.has(sceneId) || inFlight.has(sceneId)
-  return pending.size > 0 || inFlight.size > 0
+  return sceneSaves.hasPending(sceneId)
 }

@@ -3,8 +3,7 @@
  *
  * `MapView` je pořád jen mapa — o Supabase nic neví. Dostane tenhle objekt a přes něj hlásí
  * „tohle si zapamatuj" (stav scény, nahraný soubor, usazení modelu). Kdo to ukládá a kam,
- * řeší `ScenePage`. Stejný trik jako `ViewerAdapter` u 3D vieweru: persistence se injektuje,
- * nesahá se na ni z komponenty.
+ * řeší `ScenePage`. Persistence se injektuje, nesahá se na ni z komponenty.
  */
 import type { AssetConfig, AssetKind, AssetRow, SceneState } from './types'
 
@@ -28,12 +27,12 @@ export type ScenePersist = {
   }) => Promise<AssetRow>
   /** Zapamatuj si nastavení souboru (usazení modelu, výška výkresu, alfa rastru). */
   patchAssetConfig: (assetId: string, config: AssetConfig) => void
+  /** Přejmenuj soubor scény (jméno, pod kterým se ukazuje v panelu). */
+  renameAsset: (assetId: string, name: string) => Promise<void>
   /** Smaž soubor ze scény i z úložiště. */
   deleteAsset: (assetId: string) => Promise<void>
   /** Ulož náhled scény do přehledu (snímek plátna). */
   saveThumb: (png: Blob) => Promise<void>
-  /** Otevři model v editoru modelu (viewer-core) — anotace, vegetace, materiály. */
-  openModel: (assetId: string) => void
   /** Zpět na přehled scén. */
   exit: () => void
 }
