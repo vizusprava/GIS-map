@@ -11,7 +11,7 @@ import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js'
 import { wgsOf } from './tiles'
-import { GEOID_CZ } from './config'
+import { geoidN } from './geoid'
 import { FOOT_MAX_TRIS_UNION, MASK_NAME_RE, concaveFootprint, simplifyRingCapped, unionOutlines } from './rings'
 import type { Anchor } from './types'
 
@@ -119,7 +119,10 @@ export async function georeferenceSjtskGlb(file: File): Promise<{ url: string; a
   const toSjtsk = (v: THREE.Vector3): [number, number, number] => [fx * comp(v, xAxis), fy * comp(v, yAxis), comp(v, upAxis)]
 
   const [aLon, aLat] = wgsOf(fx * comp(c, xAxis), fy * comp(c, yAxis))
-  const anchor: Anchor = { lon: aLon, lat: aLat, h: comp(c, upAxis) + GEOID_CZ }
+  // Bpv → elipsoid jednou hodnotou pro celý model (v kotvě): přes pár set metrů se kvazigeoid
+  // mění o milimetry a model tak zůstane tuhý
+  const geoid = geoidN(aLon, aLat)
+  const anchor: Anchor = { lon: aLon, lat: aLat, h: comp(c, upAxis) + geoid }
   const anchorECEF = Cesium.Cartesian3.fromDegrees(anchor.lon, anchor.lat, anchor.h)
   const inv = Cesium.Matrix4.inverseTransformation(Cesium.Transforms.eastNorthUpToFixedFrame(anchorECEF), new Cesium.Matrix4())
   const s = new Cesium.Cartesian3(), o = new Cesium.Cartesian3(), vw = new THREE.Vector3()
@@ -139,7 +142,7 @@ export async function georeferenceSjtskGlb(file: File): Promise<{ url: string; a
       vw.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(wm) // do světových souřadnic (respektuj hierarchii)
       const [sx, sy, up] = toSjtsk(vw)
       const [lon, lat] = wgsOf(sx, sy)
-      const e = Cesium.Cartesian3.fromDegrees(lon, lat, up + GEOID_CZ)
+      const e = Cesium.Cartesian3.fromDegrees(lon, lat, up + geoid)
       s.x = e.x; s.y = e.y; s.z = e.z
       Cesium.Matrix4.multiplyByPoint(inv, s, o) // (east, north, up) v ENU kolem kotvy
       pos.setXYZ(i, o.x, o.z, -o.y)             // gltf (E, U, -N) — stejné jako buildExportScene
