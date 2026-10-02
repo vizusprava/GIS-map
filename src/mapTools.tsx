@@ -14,9 +14,13 @@
  * Každý nástroj má svou barvu (`toolColors.ts`): v ní svítí tlačítko skupiny, položka v nabídce
  * i rámeček nápovědy. Tlačítka v nápovědě mají barvu toho, KAM výsledek půjde — „Parcely uvnitř"
  * barvu parcel, „Dlaždice uvnitř" barvu dlaždic —, ať je vidět, ve které sekci panelu skončí.
+ *
+ * Nástroje jdou zapnout i klávesou (`SHORTCUTS` níž); písmeno je vidět v nabídce a celý přehled
+ * pod tlačítkem „?" nebo klávesou ?. Vedle lišty se točí kolečko, dokud se mapa dotahuje.
  */
 import { useEffect, useRef, useState } from 'react'
-import { Building2, Check, ChevronUp, Crosshair, Grid3x3, Hexagon, Image, Landmark, Layers, Loader2, Map as MapIcon, MapPin, Mountain, MousePointerClick, Move, PencilRuler, Ruler, X } from 'lucide-react'
+import type * as Cesium from 'cesium'
+import { Building2, Check, ChevronUp, Crosshair, Grid3x3, Hexagon, Image, Keyboard, Landmark, Layers, Loader2, Map as MapIcon, MapPin, Mountain, MousePointerClick, Move, PencilRuler, Ruler, X } from 'lucide-react'
 import { ENABLE_GOOGLE_3D } from './config'
 import { TILE_SIZES, type TileSize } from './tiles'
 import type { CamProj } from './ui'
@@ -27,6 +31,8 @@ import type { TilesTool } from './useTiles'
 import type { RegionTool } from './useRegionTool'
 
 type Props = {
+  /** pro kolečko „načítám mapu" — null, dokud mapa není */
+  viewer: Cesium.Viewer | null
   layers: MapLayers
   // výběr
   parcels: ParcelsTool
@@ -59,6 +65,35 @@ type Props = {
 
 type GroupId = 'podklad' | 'vyber' | 'nastroje' | 'pohled'
 
+/** Klávesová zkratka: písmeno (malé), případně se Shiftem, a co udělá. */
+type Shortcut = { key: string; shift?: boolean; label: string; run: () => void; when?: boolean; note?: string }
+const kbdLabel = (sc: Pick<Shortcut, 'key' | 'shift'>) => (sc.shift ? '⇧' : '') + sc.key.toUpperCase()
+
+/**
+ * Tabulka zkratek. Tatáž plní posluchač kláves, písmena v nabídkách i přehled pod „?",
+ * takže se nemůžou rozejít. Písmena podle českých názvů, kde to šlo (Parcela, Oblast,
+ * Dlaždice, Území, Měření, Souřadnice, Katastr) — a jen ta, která se na české i anglické
+ * klávesnici píšou stejně (žádné Y/Z).
+ */
+function shortcuts(p: Props): Shortcut[] {
+  return [
+    { key: 'p', label: 'Vybrat parcelu', run: p.onParcel },
+    { key: 'o', label: 'Vybrat oblast', run: p.onArea },
+    { key: 'd', label: 'Vybrat dlaždice', run: p.tiles.toggleTileMode },
+    { key: 'u', label: 'Vybrat území', run: p.onRegion },
+    { key: 'm', label: 'Měření vzdálenosti', run: () => p.onRuler('line') },
+    { key: 'm', shift: true, label: 'Měření plochy', run: () => p.onRuler('area') },
+    { key: 's', label: 'Souřadnice bodu', run: p.onCoords },
+    { key: 'v', label: 'Posun modelu', run: p.onMove, when: p.canMove, note: 'jen s vybraným modelem' },
+    { key: 'k', label: 'Katastr zap / vyp', run: () => p.layers.setKatastrOn(v => !v) },
+    { key: 't', label: 'Shora / perspektiva', run: p.camProj === 'ortho' ? p.onPersp : p.onOrtho },
+  ]
+}
+const isTyping = (t: EventTarget | null) => {
+  const el = t as HTMLElement | null
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
+}
+
 export function MapTools(p: Props) {
   const [open, setOpen] = useState<GroupId | null>(null)
   // Klik kamkoliv mimo lištu skupinu zavře — na dotykové obrazovce jiná cesta zavření není.
@@ -71,6 +106,42 @@ export function MapTools(p: Props) {
   /** volba v nabídce: provést a nabídku zavřít */
   const pick = (fn: () => void) => () => { setOpen(null); fn() }
 
+  // ── klávesové zkratky ──
+  const keys = shortcuts(p)
+  const kbd = (label: string) => { const sc = keys.find(k => k.label === label); return sc ? kbdLabel(sc) : undefined }
+  const [help, setHelp] = useState(false)
+  // posluchač se registruje jednou a sahá na aktuální tabulku přes ref (jako Esc v MapView)
+  const keysRef = useRef(keys)
+  useEffect(() => { keysRef.current = keys })
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || isTyping(e.target)) return
+      if (e.key === '?') { e.preventDefault(); setHelp(h => !h); return }
+      const k = e.key.toLowerCase()
+      const sc = keysRef.current.find(s => s.key === k && !!s.shift === e.shiftKey && s.when !== false)
+      if (!sc) return
+      e.preventDefault()
+      setOpen(null)
+      sc.run()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  // Otevřený přehled zavře Esc (a jen on — nástroj ani výběr se tím nevypne: posluchač běží
+  // v zachytávací fázi, takže se k Esc v MapView nedostane) nebo klik mimo.
+  useEffect(() => {
+    if (!help) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopImmediatePropagation()
+      setHelp(false)
+    }
+    const close = () => setHelp(false)
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('pointerdown', close)
+    return () => { window.removeEventListener('keydown', onKey, true); window.removeEventListener('pointerdown', close) }
+  }, [help])
+
   const { base, setBase, katastrOn, setKatastrOn, googleLoading } = p.layers
   const baseLabel = base === 'google' ? '3D realita' : base === 'zm' ? 'Topo' : 'Ortofoto'
   const selTool: ToolId | null = p.parcelMode ? 'parcel' : p.areaMode ? 'area' : p.tileMode ? 'tiles' : p.region.regionMode ? 'region' : null
@@ -81,9 +152,9 @@ export function MapTools(p: Props) {
 
   return (
     <div className="pointer-events-auto flex flex-col items-center gap-1.5">
-      <Hint {...p} />
+      {help ? <KeyHelp keys={keys} onClose={() => setHelp(false)} /> : <Hint {...p} />}
 
-      <div onPointerDown={e => e.stopPropagation()} className="flex items-center gap-1 rounded-xl border border-gray-700 bg-gray-900/90 p-1 shadow-lg">
+      <div onPointerDown={e => e.stopPropagation()} className="relative flex items-center gap-1 rounded-xl border border-gray-700 bg-gray-900/90 p-1 shadow-lg">
         <Group
           {...group} id="podklad" title="Podklad mapy a katastr"
           icon={googleLoading ? <Loader2 size={15} className="animate-spin" /> : <Layers size={15} />}
@@ -96,7 +167,7 @@ export function MapTools(p: Props) {
           )}
           <Sep />
           {/* Katastr je překryv, ne podklad — přepíná se samostatně a nabídka u toho zůstane otevřená. */}
-          <Item icon={<Layers size={13} />} label="Katastr" active={katastrOn} onClick={() => setKatastrOn(v => !v)} />
+          <Item icon={<Layers size={13} />} label="Katastr" active={katastrOn} kbd={kbd('Katastr zap / vyp')} onClick={() => setKatastrOn(v => !v)} />
         </Group>
 
         <Group
@@ -104,10 +175,10 @@ export function MapTools(p: Props) {
           icon={<MousePointerClick size={15} />} label={selLabel ?? 'Výběr'}
           tone={selTool ? toolTheme(selTool).solid : undefined}
         >
-          <Item icon={p.parcels.parcelLoading ? <Loader2 size={13} className="animate-spin" /> : <MapPin size={13} />} label="Vybrat parcelu" active={p.parcelMode} tool="parcel" onClick={pick(p.onParcel)} />
-          <Item icon={<Hexagon size={13} />} label="Vybrat oblast" active={p.areaMode} tool="area" onClick={pick(p.onArea)} />
-          <Item icon={<Grid3x3 size={13} />} label="Vybrat dlaždice" active={p.tileMode} tool="tiles" onClick={pick(p.tiles.toggleTileMode)} />
-          <Item icon={p.region.regionBusy ? <Loader2 size={13} className="animate-spin" /> : <Landmark size={13} />} label="Vybrat území" active={p.region.regionMode} tool="region" onClick={pick(p.onRegion)} />
+          <Item icon={p.parcels.parcelLoading ? <Loader2 size={13} className="animate-spin" /> : <MapPin size={13} />} label="Vybrat parcelu" active={p.parcelMode} tool="parcel" kbd={kbd('Vybrat parcelu')} onClick={pick(p.onParcel)} />
+          <Item icon={<Hexagon size={13} />} label="Vybrat oblast" active={p.areaMode} tool="area" kbd={kbd('Vybrat oblast')} onClick={pick(p.onArea)} />
+          <Item icon={<Grid3x3 size={13} />} label="Vybrat dlaždice" active={p.tileMode} tool="tiles" kbd={kbd('Vybrat dlaždice')} onClick={pick(p.tiles.toggleTileMode)} />
+          <Item icon={p.region.regionBusy ? <Loader2 size={13} className="animate-spin" /> : <Landmark size={13} />} label="Vybrat území" active={p.region.regionMode} tool="region" kbd={kbd('Vybrat území')} onClick={pick(p.onRegion)} />
         </Group>
 
         <Group
@@ -115,12 +186,12 @@ export function MapTools(p: Props) {
           icon={<PencilRuler size={15} />} label={toolLabel ?? 'Nástroje'}
           tone={toolId ? toolTheme(toolId).solid : undefined}
         >
-          <Item icon={<Ruler size={13} />} label="Měření vzdálenosti" active={p.rulerMode && p.rulerKind === 'line'} tool="ruler" onClick={pick(() => p.onRuler('line'))} />
-          <Item icon={<Hexagon size={13} />} label="Měření plochy" active={p.rulerMode && p.rulerKind === 'area'} tool="ruler" onClick={pick(() => p.onRuler('area'))} />
+          <Item icon={<Ruler size={13} />} label="Měření vzdálenosti" active={p.rulerMode && p.rulerKind === 'line'} tool="ruler" kbd={kbd('Měření vzdálenosti')} onClick={pick(() => p.onRuler('line'))} />
+          <Item icon={<Hexagon size={13} />} label="Měření plochy" active={p.rulerMode && p.rulerKind === 'area'} tool="ruler" kbd={kbd('Měření plochy')} onClick={pick(() => p.onRuler('area'))} />
           {p.rulerMode && <Item icon={<X size={13} />} label="Přestat měřit" onClick={pick(() => p.onRuler(p.rulerKind))} />}
           <Sep />
-          <Item icon={<Crosshair size={13} />} label="Souřadnice bodu" active={p.coordsMode} tool="coords" onClick={pick(p.onCoords)} />
-          {p.canMove && <Item icon={<Move size={13} />} label="Posun modelu" active={p.moveMode} tool="move" onClick={pick(p.onMove)} />}
+          <Item icon={<Crosshair size={13} />} label="Souřadnice bodu" active={p.coordsMode} tool="coords" kbd={kbd('Souřadnice bodu')} onClick={pick(p.onCoords)} />
+          {p.canMove && <Item icon={<Move size={13} />} label="Posun modelu" active={p.moveMode} tool="move" kbd={kbd('Posun modelu')} onClick={pick(p.onMove)} />}
         </Group>
 
         <Group
@@ -130,7 +201,19 @@ export function MapTools(p: Props) {
         >
           <Item icon={<Mountain size={13} />} label="Perspektiva" active={p.camProj === 'persp'} onClick={pick(p.onPersp)} />
           <Item icon={<MapIcon size={13} />} label="Shora (půdorys)" active={p.camProj === 'ortho'} onClick={pick(p.onOrtho)} />
+          <Sep />
+          <div className="px-2.5 pb-0.5 text-[10px] text-gray-500">Přepnout klávesou <Kbd>T</Kbd></div>
         </Group>
+
+        <button
+          onClick={() => setHelp(h => !h)}
+          title="Klávesové zkratky (?)"
+          aria-pressed={help}
+          className={`rounded-lg p-1.5 transition-colors ${help ? 'bg-gray-700 text-gray-100' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'}`}
+        >
+          <Keyboard size={15} />
+        </button>
+        <MapLoading viewer={p.viewer} />
       </div>
     </div>
   )
@@ -186,8 +269,8 @@ function Group({ id, open, setOpen, icon, label, title, tone, children }: {
   )
 }
 
-/** Položka nabídky; patří-li k nástroji (`tool`), zapnutá svítí jeho barvou. */
-function Item({ icon, label, active, tool, onClick }: { icon: React.ReactNode; label: string; active?: boolean; tool?: ToolId; onClick: () => void }) {
+/** Položka nabídky; patří-li k nástroji (`tool`), zapnutá svítí jeho barvou. `kbd` = klávesová zkratka. */
+function Item({ icon, label, active, tool, kbd, onClick }: { icon: React.ReactNode; label: string; active?: boolean; tool?: ToolId; kbd?: string; onClick: () => void }) {
   return (
     <button
       role="menuitem"
@@ -196,8 +279,67 @@ function Item({ icon, label, active, tool, onClick }: { icon: React.ReactNode; l
     >
       <span className="shrink-0">{icon}</span>
       <span className="min-w-0 flex-1">{label}</span>
-      {active && <Check size={12} className="shrink-0" />}
+      {kbd && <Kbd>{kbd}</Kbd>}
+      <Check size={12} className={`shrink-0 ${active ? '' : 'invisible'}`} />
     </button>
+  )
+}
+
+function Kbd({ children }: { children: React.ReactNode }) {
+  return <kbd className="shrink-0 rounded border border-gray-700 bg-gray-800 px-1 font-sans text-[10px] leading-4 text-gray-400">{children}</kbd>
+}
+
+/** Přehled klávesových zkratek — místo nápovědy nad lištou, dokud je otevřený. */
+function KeyHelp({ keys, onClose }: { keys: Shortcut[]; onClose: () => void }) {
+  const rows: { k: string; label: string; note?: string }[] = [
+    ...keys.map(sc => ({ k: kbdLabel(sc), label: sc.label, note: sc.note })),
+    { k: 'Esc', label: 'Vypnout nástroj, podruhé zrušit výběr' },
+    { k: '← →', label: 'Předchozí / další uložený pohled' },
+    { k: '?', label: 'Tenhle přehled' },
+  ]
+  return (
+    <div onPointerDown={e => e.stopPropagation()} className="max-w-[min(92vw,520px)] rounded-lg border border-gray-700 bg-gray-900/95 px-3 py-2 text-[11px] text-gray-300 shadow-lg">
+      <div className="mb-1.5 flex items-center gap-2">
+        <Keyboard size={13} className="text-gray-400" />
+        <span className="flex-1 font-medium text-gray-200">Klávesové zkratky</span>
+        <button onClick={onClose} title="Zavřít (Esc)" className="rounded p-0.5 text-gray-400 hover:bg-gray-800 hover:text-gray-200"><X size={13} /></button>
+      </div>
+      <div className="grid grid-cols-1 gap-x-5 gap-y-1 sm:grid-cols-2">
+        {rows.map(r => (
+          <div key={r.k + r.label} className="flex items-center gap-2">
+            <span className="w-9 shrink-0 text-right"><Kbd>{r.k}</Kbd></span>
+            <span>{r.label}{r.note && <span className="text-gray-500"> ({r.note})</span>}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Kolečko „načítám mapu" vedle lišty, dokud glóbus dotahuje dlaždice (terén, ortofoto, topo).
+ *
+ * Stav drží tahle malá komponenta, ne MapView: událost chodí s každou změnou fronty a překreslovat
+ * kvůli ní celý panel by stálo víc než samo načítání. Ukáže se až po chvilce, ať při drobném
+ * posunu mapy jen neproblikne; zmizí hned, jak je fronta prázdná.
+ */
+function MapLoading({ viewer }: { viewer: Cesium.Viewer | null }) {
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (!viewer || viewer.isDestroyed()) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const onProgress = (queued: number) => {
+      if (queued > 0) { if (!timer) timer = setTimeout(() => setBusy(true), 400) }
+      else { clearTimeout(timer); timer = undefined; setBusy(false) }
+    }
+    const off = viewer.scene.globe.tileLoadProgressEvent.addEventListener(onProgress)
+    return () => { off(); clearTimeout(timer) }
+  }, [viewer])
+  if (!busy) return null
+  return (
+    <div data-map-loading className="pointer-events-none absolute left-full top-1/2 ml-2 flex -translate-y-1/2 items-center gap-1.5 whitespace-nowrap rounded-full border border-gray-700 bg-gray-900/85 px-2 py-1 text-[10px] text-gray-300 shadow">
+      <Loader2 size={11} className="animate-spin" /> načítám mapu
+    </div>
   )
 }
 
