@@ -6,7 +6,8 @@
  * Vlastní TOLERANTNÍ parser group codů — na nečekané hodnoty (např. flag „12") NEPADÁ, jen je
  * ignoruje. (Hotové knihovny na takových souborech vyhazují výjimku a zabijí celý import.)
  *
- * Souřadnice zůstávají v jednotkách výkresu — georeferenci (S-JTSK vs lokální) řeší až renderer.
+ * Souřadnice se převedou na METRY podle `$INSUNITS` z hlavičky (kresba v milimetrech by jinak
+ * vyšla tisíckrát větší); georeferenci (S-JTSK vs lokální) řeší až renderer.
  * Modul je bez Cesia/DOMu, aby šel testovat i mimo prohlížeč.
  */
 
@@ -19,7 +20,54 @@ export type DrawPrim =
 export type HAlign = 0 | 1 | 2
 export type VAlign = 0 | 1 | 2
 
-export type DrawParse = { prims: DrawPrim[]; minX: number; minY: number; maxX: number; maxY: number }
+export type DrawParse = {
+  prims: DrawPrim[]; minX: number; minY: number; maxX: number; maxY: number
+  /**
+   * Kde kresba doopravdy leží — MEDIÁN souřadnic prvků, ne střed obálky.
+   *
+   * Střed obálky rozhodí jediná zatoulaná entita: stačí jeden bod v počátku nebo blok odložený
+   * stranou a obálka se roztáhne přes půl kontinentu (měřeno na reálném výkresu: 2 386 × 2 293 km
+   * u stavby široké pár set metrů). Renderer podle toho středu pozná, jestli je výkres v Křováku —
+   * a s rozhozeným středem to pozná špatně a položí správně georeferencovaný výkres „lokálně"
+   * doprostřed pohledu. Medián je proti tomu odolný: ať jsou odlehlé prvky jednotky, nebo pětina,
+   * pořád ukazuje tam, kde je kresba.
+   */
+  midX: number
+  midY: number
+  /**
+   * Jádro kresby — 2. a 98. percentil souřadnic prvků.
+   *
+   * Slouží k přeletu po importu. Obálka (`minX`…`maxY`) se k tomu nehodí ze stejného důvodu
+   * jako její střed: pár zatoulaných prvků z ní udělá půl kontinentu a kamera pak skončí tak
+   * vysoko, že z výkresu není vidět nic. Percentil je odolný a přitom NEomezuje velikost:
+   * stokilometrová trasa koridoru zůstane stokilometrová, jen bez těch pár úletů.
+   */
+  coreMinX: number
+  coreMinY: number
+  coreMaxX: number
+  coreMaxY: number
+  /** kolik METRŮ je jedna jednotka výkresu podle `$INSUNITS` (1 = soubor je rovnou v metrech) */
+  unit: number
+  /** jak se ta jednotka jmenuje — do hlášky, ať je vidět, podle čeho se to rozhodlo */
+  unitName: string
+}
+
+/**
+ * `$INSUNITS` z hlavičky → metry na jednotku.
+ *
+ * Bez toho se kresba v milimetrech bere jako kresba v metrech a výkres vyjde tisíckrát větší,
+ * než je — typicky se pak ani netrefí do Křováku a skončí „někde ve středu pohledu". Chybějící
+ * nebo nulová hodnota znamená „bez jednotek": tam se schválně NEPŘEPOČÍTÁVÁ nic, protože
+ * geodetické výkresy v S-JTSK bývají právě takhle a jsou v metrech.
+ */
+const INSUNITS: Record<number, { m: number; name: string }> = {
+  1: { m: 0.0254, name: 'palce' },
+  2: { m: 0.3048, name: 'stopy' },
+  4: { m: 0.001, name: 'milimetry' },
+  5: { m: 0.01, name: 'centimetry' },
+  6: { m: 1, name: 'metry' },
+  7: { m: 1000, name: 'kilometry' },
+}
 
 // AutoCAD Color Index (běžné 1–9); vyšší indexy padnou na barvu hladiny nebo bílou.
 const ACI: Record<number, number> = { 1: 0xff0000, 2: 0xffff00, 3: 0x00ff00, 4: 0x00ffff, 5: 0x0000ff, 6: 0xff00ff, 7: 0xffffff, 8: 0x808080, 9: 0xc0c0c0 }
@@ -170,6 +218,8 @@ function parseStructure(toks: Prop[]) {
   const layers: Record<string, number> = {}
   const blocks: Record<string, { entities: RawEnt[] }> = {}
   const entities: RawEnt[] = []
+  /** proměnné z HEADERu: `9` nese jméno, hodnota je v tokenu hned za ním */
+  const header: Record<string, string> = {}
 
   const readEnt = (i: number): { ent: RawEnt; next: number } => {
     const type = toks[i].value.trim()
@@ -183,6 +233,13 @@ function parseStructure(toks: Prop[]) {
   let i = 0
   while (i < toks.length) {
     const t = toks[i]
+    if (section === 'HEADER' && t.code === 9) {
+      const name = t.value.trim()
+      const val = toks[i + 1]
+      if (val && val.code !== 9 && val.code !== 0) header[name] = val.value.trim()
+      i += 2
+      continue
+    }
     if (t.code !== 0) { i++; continue }
     const marker = t.value.trim()
     if (marker === 'SECTION') { section = i + 1 < toks.length && toks[i + 1].code === 2 ? toks[i + 1].value.trim() : ''; i += 2; continue }
@@ -215,7 +272,7 @@ function parseStructure(toks: Prop[]) {
 
     const { next } = readEnt(i); i = next // jiná sekce → přeskoč
   }
-  return { layers, blocks, entities }
+  return { layers, blocks, entities, header }
 }
 
 // přečte entitu do pole; starý POLYLINE spolkne následující VERTEX až po SEQEND
@@ -273,10 +330,25 @@ export function cleanDxfText(raw: string): string {
   return s.replace(/\s+/g, ' ').trim()
 }
 
+/**
+ * DXF přečtený s ohledem na kódování.
+ *
+ * AutoCAD u nás ukládá DXF ve WINDOWS-1250, ne v UTF-8 — `file.text()` z toho udělá
+ * otazníky v každé diakritice. Pozná se to spolehlivě: dekodér UTF-8 vloží U+FFFD všude,
+ * kde bajty nedávají smysl. Když se takový znak objeví, přečte se soubor znovu jako 1250.
+ */
+export function decodeDxf(buf: ArrayBuffer): string {
+  const utf = new TextDecoder('utf-8').decode(buf)
+  return utf.includes('�') ? new TextDecoder('windows-1250').decode(buf) : utf
+}
+
 export function dxfToPrims(text: string): DrawParse {
   const toks = tokenize(text)
   if (!toks.length) throw new Error('DXF je prázdný nebo není textový (binární DXF nepodporujeme)')
-  const { layers, blocks, entities } = parseStructure(toks)
+  const { layers, blocks, entities, header } = parseStructure(toks)
+  const u = INSUNITS[parseInt(header.$INSUNITS ?? '', 10)]
+  const unit = u?.m ?? 1
+  const unitName = u?.name ?? 'bez jednotek (bere se jako metry)'
 
   const prims: DrawPrim[] = []
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -397,5 +469,34 @@ export function dxfToPrims(text: string): DrawParse {
 
   for (const e of entities) emit(e, ID, 0xffffff, 0)
   if (!prims.length) throw new Error('DXF neobsahuje žádnou kresbu (podporované: čáry, polylinie, kružnice, oblouky, texty, bloky)')
-  return { prims, minX, minY, maxX, maxY }
+
+  /**
+   * Přepočet na metry se dělá až tady, jedním průchodem přes hotové prvky.
+   *
+   * Škálovat průběžně v `emit` by znamenalo nepřehodit ani jedno z mnoha míst, kde souřadnice
+   * vznikají (bulge oblouky, rozbalené bloky, kotvy textů) — a to je přesně ten druh úpravy,
+   * u které se na jedno místo zapomene. Takhle je to jedno místo a platí pro všechno.
+   */
+  if (unit !== 1) {
+    for (const p of prims) {
+      if (p.kind === 'poly') for (const q of p.pts) { q[0] *= unit; q[1] *= unit }
+      else { p.pt[0] *= unit; p.pt[1] *= unit; if (p.kind === 'text') p.height *= unit }
+    }
+    minX *= unit; minY *= unit; maxX *= unit; maxY *= unit
+  }
+
+  // jeden reprezentativní bod na prvek → medián (viz `midX` u DrawParse)
+  const xs: number[] = [], ys: number[] = []
+  for (const p of prims) {
+    const q = p.kind === 'poly' ? p.pts[0] : p.pt
+    xs.push(q[0]); ys.push(q[1])
+  }
+  xs.sort((m, n) => m - n); ys.sort((m, n) => m - n)
+  const q = (a: number[], f: number) => a[Math.min(a.length - 1, Math.max(0, Math.round((a.length - 1) * f)))]
+  return {
+    prims, minX, minY, maxX, maxY, unit, unitName,
+    midX: q(xs, 0.5), midY: q(ys, 0.5),
+    coreMinX: q(xs, 0.02), coreMinY: q(ys, 0.02),
+    coreMaxX: q(xs, 0.98), coreMaxY: q(ys, 0.98),
+  }
 }
