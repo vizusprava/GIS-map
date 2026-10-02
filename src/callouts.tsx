@@ -83,9 +83,15 @@ export function CalloutLayer({ viewer, callouts, visibleIds, onMove, onPick, sel
   useEffect(() => {
     if (!viewer) return
     let last = performance.now()
+    let wasAnimating = false
     const tick = () => {
       const now = performance.now()
-      const dt = Math.min(0.1, (now - last) / 1000); last = now
+      // Mapa kreslí jen na vyžádání, takže mezi snímky může uplynout libovolně dlouho. Animace,
+      // která se teprve rozjíždí, proto začíná od nuly — jinak by první snímek po delší pauze
+      // poskočil o celou desetinu vteřiny.
+      const dt = wasAnimating ? Math.min(0.1, (now - last) / 1000) : 0
+      last = now
+      let animating = false
       for (const c of listRef.current) {
         const n = nodes.current.get(c.id)
         if (!n?.root || !n.dot || !n.bubble || !n.line) continue
@@ -97,6 +103,7 @@ export function CalloutLayer({ viewer, callouts, visibleIds, onMove, onPick, sel
         if (p !== target) {
           p = Cesium.Math.clamp(p + (target > p ? 1 : -1) * (dt / REVEAL_S), 0, 1)
           anim.current.set(c.id, p)
+          if (p !== target) animating = true
         }
         const a = p * p * (3 - 2 * p)
 
@@ -117,11 +124,20 @@ export function CalloutLayer({ viewer, callouts, visibleIds, onMove, onPick, sel
         n.line.setAttribute('x2', String(bx)); n.line.setAttribute('y2', String(by))
         n.line.style.opacity = String(a * 0.9)
       }
+      // vysouvání/zasouvání běží, dokud nedojede — každý další krok si řekne o snímek sám
+      wasAnimating = animating
+      if (animating) viewer.scene.requestRender()
     }
     // Registrace MUSÍ zůstat na `preRender` (a MapView si chvění kamery věší dřív) — viz hlavička.
     viewer.scene.preRender.addEventListener(tick)
     return () => { if (!viewer.isDestroyed()) viewer.scene.preRender.removeEventListener(tick) }
   }, [viewer])
+
+  // Změna seznamu, výběru nebo pohledu (popisek má vyjet / zajet) se projeví až v dalším snímku,
+  // a ten si mapa sama nenakreslí — kreslí jen na vyžádání.
+  useEffect(() => {
+    if (viewer && !viewer.isDestroyed()) viewer.scene.requestRender()
+  }, [viewer, callouts, visibleIds, selectedId])
 
   // POZOR: ref callback se při každém překreslení volá nejdřív s null (identita funkce se mění).
   // Mazat na null celý záznam by proto při běžném re-renderu zahodilo i sourozenecké reference
@@ -145,7 +161,10 @@ export function CalloutLayer({ viewer, callouts, visibleIds, onMove, onPick, sel
     onPick?.(c.id)
     const base = dragTmp.current.get(c.id) ?? c.off
     const x0 = e.clientX, y0 = e.clientY
-    const move = (ev: MouseEvent) => dragTmp.current.set(c.id, [base[0] + ev.clientX - x0, base[1] + ev.clientY - y0])
+    const move = (ev: MouseEvent) => {
+      dragTmp.current.set(c.id, [base[0] + ev.clientX - x0, base[1] + ev.clientY - y0])
+      viewer?.scene.requestRender() // poloha bubliny se píše při vykreslení snímku
+    }
     const up = () => {
       window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
       const fin = dragTmp.current.get(c.id)
@@ -176,7 +195,7 @@ export function CalloutLayer({ viewer, callouts, visibleIds, onMove, onPick, sel
             ref={put(c.id, 'bubble')}
             onMouseDown={startDrag(c)}
             title="Táhnutím posuneš bublinu"
-            className="absolute left-0 top-0 max-w-[15rem] cursor-move whitespace-pre-wrap rounded-lg px-2.5 py-1.5 leading-snug text-gray-100 backdrop-blur-sm pointer-events-auto"
+            className="absolute left-0 top-0 max-w-[15rem] cursor-move whitespace-pre-wrap rounded-lg px-2.5 py-1.5 leading-snug text-gray-100 pointer-events-auto"
             style={{
               fontSize: `${c.size ?? SIZE_DEFAULT}px`,
               background: 'rgba(17,24,39,0.82)',

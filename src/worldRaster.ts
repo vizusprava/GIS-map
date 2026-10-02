@@ -18,8 +18,8 @@
 import * as Cesium from 'cesium'
 import proj4 from 'proj4'
 import { fromBlob } from 'geotiff'
-// Kvůli vedlejšímu efektu: `tiles.ts` je jediné místo, kde žije definice EPSG:5514 pro proj4.
-import './tiles'
+// `tiles.ts` je jediné místo, kde žije definice EPSG:5514 pro proj4 — a s ní i hotový převodník.
+import { sjtskOf, wgsOf } from './tiles'
 
 // UTM 33N pokrývá skoro celou ČR — běžný výstup dronové fotogrammetrie (Pix4D, Agisoft).
 proj4.defs('EPSG:32633', '+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs')
@@ -92,22 +92,23 @@ function makeCrs(id: CrsId, w: WorldAffine): Crs {
     const neg = w.x0 < 0                          // uloženo záporně = tak, jak to dává proj4
     return {
       fromWgs(lon, lat) {
-        const [px, py] = proj4('EPSG:4326', 'EPSG:5514', [lon, lat]) as [number, number]
+        const [px, py] = sjtskOf(lon, lat)
         const a = neg ? px : -px, b = neg ? py : -py
         return swap ? [b, a] : [a, b]
       },
       toWgs(x, y) {
         let a = swap ? y : x, b = swap ? x : y
         if (!neg) { a = -a; b = -b }
-        return proj4('EPSG:5514', 'EPSG:4326', [a, b]) as [number, number]
+        return wgsOf(a, b)
       },
     }
   }
   if (id === 'wgs84') return { fromWgs: (lon, lat) => [lon, lat], toWgs: (x, y) => [x, y] }
-  const code = id === 'webmerc' ? 'EPSG:3857' : 'EPSG:32633'
+  // převodník jednou na rastr, ne na každý vzorek — viz `KROVAK` v tiles.ts
+  const conv = proj4('EPSG:4326', id === 'webmerc' ? 'EPSG:3857' : 'EPSG:32633')
   return {
-    fromWgs: (lon, lat) => proj4('EPSG:4326', code, [lon, lat]) as [number, number],
-    toWgs: (x, y) => proj4(code, 'EPSG:4326', [x, y]) as [number, number],
+    fromWgs: (lon, lat) => conv.forward([lon, lat]) as [number, number],
+    toWgs: (x, y) => conv.inverse([x, y]) as [number, number],
   }
 }
 

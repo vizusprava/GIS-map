@@ -12,19 +12,20 @@ const DB_NAME = 'geo-tile-cache'
 const STORE = 'tiles'
 // Malé key→value úložiště (mimo LRU) — drobná metadata, aby přežila refresh.
 const KV = 'kv'
-// „Lokální mapa": trvale napečené ortofoto dlaždice (pyramida) — klíč `owms/{level}/{x}/{y}`.
+// „Lokální mapa": trvale napečené ortofoto dlaždice (pyramida) — klíč viz `orthoBakedKey` v imagery.ts.
 // VLASTNÍ store MIMO LRU → nikdy se neevictují, přežijí refresh, načítají se lokálně.
 const BAKED = 'baked'
-const DB_VERSION = 3
+const DB_VERSION = 4
 const CACHE_MAX_BYTES = 800 * 1024 * 1024 // ~800 MB strop; přes to se mažou nejstarší
 
-// pin=1 → „stažené natrvalo": LRU eviction je NIKDY nesmaže (viz „Stáhnout do localu")
+// pin=1 → „stažené natrvalo": LRU eviction je NIKDY nesmaže. Dnes už se nezapisuje (napečená
+// mapa má vlastní store BAKED), ale v cache ze starších verzí takové řádky ještě být můžou.
 type Row = { b: Uint8Array; ts: number; n: number; pin?: 1 } // data, čas posledního použití, velikost
 
 const hasIDB = typeof indexedDB !== 'undefined'
 let dbPromise: Promise<IDBDatabase> | null = null
 let totalBytes = -1 // −1 = ještě nesečteno
-let pinnedBytes = 0 // kolik z toho je „připnuté" (jen pro UI)
+let totalPromise: Promise<number> | null = null
 
 function openDb(): Promise<IDBDatabase> {
   if (!dbPromise) {
@@ -32,15 +33,24 @@ function openDb(): Promise<IDBDatabase> {
       const req = indexedDB.open(DB_NAME, DB_VERSION)
       req.onupgradeneeded = () => {
         const db = req.result
-        if (!db.objectStoreNames.contains(STORE)) {
-          const s = db.createObjectStore(STORE)
-          s.createIndex('ts', 'ts') // pro mazání nejstarších (LRU)
-        }
+        const s = db.objectStoreNames.contains(STORE) ? req.transaction!.objectStore(STORE) : db.createObjectStore(STORE)
+        if (!s.indexNames.contains('ts')) s.createIndex('ts', 'ts') // pro mazání nejstarších (LRU)
+        // v4: velikost řádku jako index → součet jde sečíst z klíčů, bez čtení samotných dat
+        if (!s.indexNames.contains('n')) s.createIndex('n', 'n')
         if (!db.objectStoreNames.contains(KV)) db.createObjectStore(KV) // v2: drobná metadata
         if (!db.objectStoreNames.contains(BAKED)) db.createObjectStore(BAKED) // v3: napečené ortofoto dlaždice
       }
-      req.onsuccess = () => resolve(req.result)
+      req.onsuccess = () => {
+        const db = req.result
+        // Otevřela se novější verze appky v jiné záložce a chce databázi povýšit. Bez puštění
+        // spojení by na nás čekala — a s ní všechno, co jde přes cache, včetně terénu.
+        db.onversionchange = () => { db.close(); dbPromise = null }
+        resolve(db)
+      }
       req.onerror = () => reject(req.error)
+      // Opačný případ: povýšení blokuje starší záložka, která spojení pustit neumí. Cache je jen
+      // zrychlení, takže se do zavření té záložky jede ze sítě — čekat by znamenalo prázdnou mapu.
+      req.onblocked = () => reject(new Error('IndexedDB: povýšení blokuje jiná otevřená záložka'))
     })
   }
   return dbPromise
@@ -55,31 +65,46 @@ function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T
   }))
 }
 
-/** Součet velikostí v cache (jednou spočítá, pak drží v paměti). */
-async function ensureTotal(): Promise<number> {
-  if (totalBytes >= 0) return totalBytes
-  let sum = 0, pin = 0
-  await openDb().then(db => new Promise<void>((resolve, reject) => {
-    const t = db.transaction(STORE, 'readonly')
-    const cur = t.objectStore(STORE).openCursor()
+/**
+ * Součet velikostí v cache (jednou spočítá, pak drží v paměti).
+ *
+ * Sčítá se přes KLÍČE indexu `n`, ne přes řádky. Kurzor nad řádky by kvůli jednomu číslu
+ * vytáhl z disku i samotná data — u plné cache stovky MB při každém otevření scény.
+ */
+function ensureTotal(): Promise<number> {
+  if (totalBytes >= 0) return Promise.resolve(totalBytes)
+  totalPromise ??= openDb().then(db => new Promise<number>((resolve, reject) => {
+    let sum = 0
+    const cur = db.transaction(STORE, 'readonly').objectStore(STORE).index('n').openKeyCursor()
     cur.onsuccess = () => {
       const c = cur.result
-      if (c) { const r = c.value as Row; sum += r.n; if (r.pin) pin += r.n; c.continue() } else resolve()
+      if (c) { sum += Number(c.key) || 0; c.continue() } else resolve(sum)
     }
     cur.onerror = () => reject(cur.error)
-  }))
-  totalBytes = sum; pinnedBytes = pin
-  return sum
+  })).then(sum => {
+    if (totalBytes < 0) totalBytes = sum
+    return totalBytes
+  }).finally(() => { totalPromise = null })
+  return totalPromise
 }
 
-/** Vrátí uložené bajty, nebo null. Při hitu osvěží čas (LRU), ať se nesmažou aktivní dlaždice. */
+/** Vrátí uložené bajty, nebo null. Čas posledního použití (LRU) osvěží, ale jen jednou za den. */
 export async function cacheGet(key: string): Promise<Uint8Array | null> {
   if (!hasIDB) return null
   try {
     const row = await tx<Row | undefined>('readonly', s => s.get(key))
     if (!row) return null
-    // osvěžení času děláme na pozadí (nečekáme na něj) — na výsledek nemá vliv
-    tx('readwrite', s => s.put({ ...row, ts: Date.now() }, key)).catch(() => {})
+    /**
+     * Čas posledního použití se osvěžuje jen občas, ne při každém čtení.
+     *
+     * Slouží jen k tomu, aby se přes strop mazalo to nejstarší — na den sem nebo tam nezáleží.
+     * Zápis je přitom v IndexedDB serializovaný, takže při stovkách dlaždic terénu naráz
+     * stály zápisy frontu i čtením, která na ně čekala.
+     */
+    if (Date.now() - row.ts > 86_400_000) {
+      // na pozadí, nečekáme na to — na výsledek nemá vliv
+      tx('readwrite', s => s.put({ ...row, ts: Date.now() }, key)).catch(() => {})
+    }
     return row.b
   } catch { return null }
 }
@@ -127,14 +152,14 @@ async function evictTo(target: number): Promise<void> {
   }))
 }
 
-/** Kolik cache zabírá (položky + bajty, z toho připnuté) — pro UI. */
-export async function cacheStats(): Promise<{ count: number; bytes: number; pinnedBytes: number }> {
-  if (!hasIDB) return { count: 0, bytes: 0, pinnedBytes: 0 }
+/** Kolik cache zabírá (položky + bajty) — pro UI. */
+export async function cacheStats(): Promise<{ count: number; bytes: number }> {
+  if (!hasIDB) return { count: 0, bytes: 0 }
   try {
     const count = await tx<number>('readonly', s => s.count())
     const bytes = await ensureTotal()
-    return { count, bytes, pinnedBytes }
-  } catch { return { count: 0, bytes: 0, pinnedBytes: 0 } }
+    return { count, bytes }
+  } catch { return { count: 0, bytes: 0 } }
 }
 
 /** Smaže celou cache (VČETNĚ připnutých stažených dlaždic). */
@@ -142,7 +167,7 @@ export async function cacheClear(): Promise<void> {
   if (!hasIDB) return
   try {
     await tx('readwrite', s => s.clear())
-    totalBytes = 0; pinnedBytes = 0
+    totalBytes = 0
   } catch { /* nevadí */ }
 }
 
@@ -206,11 +231,14 @@ export async function bakedAllKeys(): Promise<string[]> {
   catch { return [] }
 }
 
-/** Počet napečených dlaždic (pro UI; velikost se odhaduje). */
-export async function bakedCount(): Promise<number> {
-  if (!hasIDB) return 0
-  try { return await bakedReq<number>('readonly', s => s.count()) }
-  catch { return 0 }
+/**
+ * Smaže napečené dlaždice s danou předponou klíče — úklid lokální mapy ve formátu, který appka
+ * už neumí zobrazit. Jeden požadavek na celý rozsah klíčů, ne mazání po kusech.
+ */
+export async function bakedDeletePrefix(prefix: string): Promise<void> {
+  if (!hasIDB) return
+  try { await bakedReq('readwrite', s => s.delete(IDBKeyRange.bound(prefix, prefix + '￿'))) }
+  catch { /* nevadí — zabírá jen místo, zobrazení se netýká */ }
 }
 
 /** Smaže VŠECHNY napečené dlaždice (celou lokální mapu). */

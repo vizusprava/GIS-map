@@ -214,6 +214,12 @@ export class PulseLayer {
       cur.set = s   // count i views se propíšou rovnou
     }
     for (const id of [...this.live.keys()]) if (!seen.has(id)) this.drop(id)
+    this.kick()
+  }
+
+  /** Mapa kreslí jen na vyžádání — změnu uniformů ani primitiv Cesium samo nepozná. */
+  private kick() {
+    if (!this.viewer.isDestroyed()) this.viewer.scene.requestRender()
   }
 
   trigger(activeIds: ReadonlySet<string>) {
@@ -227,6 +233,7 @@ export class PulseLayer {
       }
       l.t0 = performance.now()
     }
+    this.kick() // rozjede animaci; další snímky si pak vyžádá `frame`, dokud pulz běží
   }
 
   destroy() {
@@ -240,6 +247,7 @@ export class PulseLayer {
   private recolor(l: Live, hex: string) {
     const c = Cesium.Color.fromCssColorString(hex) ?? Cesium.Color.ORANGE
     if (l.color) { l.color.red = c.red; l.color.green = c.green; l.color.blue = c.blue }
+    this.kick()
   }
 
   private build(s: PulseSet) {
@@ -331,10 +339,13 @@ export class PulseLayer {
 
   private frame() {
     const now = performance.now()
+    let running = false
     for (const l of this.live.values()) {
       if (l.t0 == null || !l.mat) continue
       const cycles = (now - l.t0) / 1000 / PULSE_PERIOD_S
-      if (cycles >= l.set.count) { this.stop(l); continue }
+      // dohraný pulz se zhasne — a i to je změna, kterou je potřeba ještě jednou vykreslit
+      if (cycles >= l.set.count) { this.stop(l); this.kick(); continue }
+      running = true
       // kosinová vlna začíná i končí na nule → každý pulz plynule najede a zhasne, žádné cvaknutí
       l.mat.uniforms.bodyA = 0.6 * ((1 - Math.cos(2 * Math.PI * cycles)) / 2)
       // ráz: každý pulz jeden, z nejhlubšího bodu uvnitř ven za hranici
@@ -343,5 +354,7 @@ export class PulseLayer {
       l.mat.uniforms.waveD = l.maxInside - (l.maxInside + l.outEnd) * p
       l.mat.uniforms.waveA = Math.min(1, wp * 6) * (1 - wp) ** 1.2 * 0.8
     }
+    // uniformy platí pro PŘÍŠTÍ snímek — dokud pulz běží, musí si o něj říct
+    if (running) this.kick()
   }
 }

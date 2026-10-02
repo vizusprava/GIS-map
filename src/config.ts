@@ -32,11 +32,6 @@ export const NEEDS_ION = ENABLE_GOOGLE_3D || ENABLE_OSM_BUILDINGS
 // Asset je nutné jednorázově přidat ve svém ion účtu (Asset Depot → Google Photorealistic 3D Tiles).
 export const GOOGLE_3D_ION_ASSET = 2275207
 
-// TEST: Gaussian splat (Schillerova rozhledna nad Kryry) nahraný do Cesium ion → 3D Tiles.
-export const SPLAT_ASSET_ID = 5137495
-export const SPLAT_ANCHOR = { lon: 13.42995, lat: 50.17221, h: 383 } // věž ~383 m n.m. (Bpv)
-// Splat z COLMAPu chodí otočený o 90° (Y-up vs Cesium Z-up) → výchozí roll narovná nastojato.
-export const SPLAT_BASE_ROLL = -90
 export const SHARP_KEY = 'geo.ostrost'      // supersampling nad rámec fyzických pixelů displeje
 export const SPIN_KEY = 'geo.kamera.krouzeni' // { speed } — jen výchozí rychlost slideru;
                                               // zapnutí kroužení patří uloženému pohledu (CamLook)
@@ -59,8 +54,36 @@ export const AREA_TILES_CONFIRM = 2000
 // Dokud se s mapou hýbe, nemá cenu dotahovat detail, který stejně proletí přes obraz — a přitom
 // se kvůli němu stahují a dekódují dlaždice, tedy to, na co appka čeká nejvíc. V klidu se detail
 // vrátí. Rozdíl mezi 8 a 16 je zhruba ČTYŘNÁSOBEK počtu dlaždic.
+// Hodnoty pro kvalitní profil; úsporný si je zhrubí sám (perfProfile.ts).
 export const GOOGLE_SSE_STILL = 8     // v klidu: víc detailu dřív
 export const GOOGLE_SSE_MOVING = 16   // za pohybu: výchozí hodnota Cesia
+
+/**
+ * Povolená chyba dlaždic glóbu v pixelech — pro každý podklad jiná.
+ *
+ * Tohle rozhoduje, jakou úroveň pyramidy Cesium vybere pro kterou dlaždici, a vybírá ji
+ * podle VZDÁLENOSTI od kamery. Zhora je všechno stejně daleko a mapa je jednolitá; jakmile
+ * se pohled nakloní, je blízký okraj třeba třikrát blíž než vzdálený, takže na sebe na
+ * obrazovce narazí dvě různé úrovně. Půlka chyby = dlaždice o úroveň jemnější, a protože
+ * blízký okraj stejně naráží na strop pyramidy, rozdíl se tím o úroveň smrskne.
+ *
+ * Proč to není stejné číslo pro obojí: rozpůlení chyby znamená ČTYŘIKRÁT tolik dlaždic glóbu,
+ * a s nimi i terénu, který se pod každou musí postavit. U topa to za to stojí, protože ZTM má
+ * v každé úrovni JINOU KARTOGRAFII (jinde vrstevnice, jiné popisky), takže je předěl vidět jako
+ * rovná hrana napříč mapou. U ortofota se úrovně liší jen měkkostí, žádná hrana tam není.
+ *
+ * Ostrost ortofota se proto neřeší tady, ale levněji v imagery.ts (`ORTO_TILE_PX`): ortofoto
+ * sáhne o úroveň hloub, aniž by přibyly dlaždice glóbu a terénu. (Dřív šlo ortofoto přes WMS
+ * po 435 kB na dlaždici a jemnější úroveň by načítání položila; z cache má dlaždice ~35 kB.)
+ *
+ * Úplně srovnat to při nakloněné kameře nejde ani u topa: jediné, co by dalo jednu úroveň
+ * přes celou obrazovku, je stáhnout i blízký okraj na tu vzdálenou, tedy rozmazat popředí.
+ * Od toho je tlačítko „Shora", kde je všechno stejně daleko z podstaty věci.
+ *
+ * Tohle jsou hodnoty kvalitního profilu; úsporný jde o stupeň hruběji (perfProfile.ts).
+ */
+export const GLOBE_SSE_PHOTO = 2  // ortofoto a 3D realita: výchozí hodnota Cesia
+export const GLOBE_SSE_TOPO = 1   // topo: jemněji, ať se na obrazovce nesejdou dvě kartografie
 export const MOVE_SETTLE_MS = 400     // jak dlouho po puštění se čeká, než se kvalita vrátí
 
 // Náhled uloženého pohledu. Leží přímo ve stavu scény (viz CamView.thumb), a ten se ukládá celý
@@ -76,10 +99,7 @@ export const VIEW_DIRTY_DEG = 0.5
 export const CR_EXTENT = Cesium.Rectangle.fromDegrees(12.0, 48.5, 18.9, 51.1)
 // úvodní pohled: přiblížení na Liberec
 export const LIBEREC_EXTENT = Cesium.Rectangle.fromDegrees(14.98, 50.72, 15.13, 50.81)
-// geoidová odchylka Bpv→WGS84 elipsoid v ČR (~+44 m); konstanta lokálně stačí
-export const GEOID_CZ = 44
-// Google Photorealistic dlaždice sedí ~0,5 m níž než DMR — zvedneme je, ať to lícuje
-export const GOOGLE_LIFT_M = 0.5
+// Převod výšek Bpv ↔ elipsoid je podle místa v `geoid.ts` (kvazigeoid ČÚZK CR-2005).
 // 3ds Max při exportu glb otočí model o 90° kolem svislé osy — při kotveném importu kompenzujeme
 export const MAX_GLB_YAW_DEG = 90
 // OSM budovy posunout o 1 m dolů, ať lépe sedí na terén

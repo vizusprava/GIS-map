@@ -9,12 +9,19 @@
  * mu dáme alfu 0, splyne s pozadím místo aby kolem republiky svítil obdélník. Kdyby alfa
  * pipeline někde nepřežila (MSAA/tonemapping), zůstane vidět obdélník v barvě `outer` — tedy
  * nejhorší případ je „nenápadný okraj", ne bílá plocha. Proto má `baseColor` smysluplné RGB.
+ *
+ * Režim „černá" jde jinou cestou a schválně vypíná atmosféru glóbu i mlhu. Obojí totiž barví
+ * i tu část glóbu, kde žádná data nejsou — takže i když má `baseColor` přesně barvu pozadí,
+ * atmosféra ho přetře domodra a kolem republiky se vyloupne obdélník. Bez nich zůstane
+ * prázdno černé jako pozadí a na obrazovce je vidět jen mapa. Ostrou hranu dat na obzoru,
+ * kterou jinak rozpouští mlha, tu schovávat nemusíme — černá do černé nepřechází nijak.
  */
 import * as Cesium from 'cesium'
 
-export type BgMode = 'vesmir' | 'tmava' | 'svetla' | 'vlastni'
+export type BgMode = 'cerna' | 'vesmir' | 'tmava' | 'svetla' | 'vlastni'
 
 export const BG_MODES: { id: BgMode; label: string; title: string }[] = [
+  { id: 'cerna', label: 'černá', title: 'Jen mapa na černém — bez oblohy a bez přechodu' },
   { id: 'vesmir', label: 'vesmír', title: 'Hvězdné nebe + atmosféra (výchozí Cesium)' },
   { id: 'tmava', label: 'tmavé', title: 'Tmavý přechod do ztracena — model vynikne' },
   { id: 'svetla', label: 'světlé', title: 'Světlý přechod — pro snímky do dokumentace' },
@@ -97,6 +104,8 @@ export function applyBackground(
 ): void {
   const scene = v.scene
   const space = mode === 'vesmir'
+  /** holá mapa na černém: žádná obloha, žádná atmosféra, žádná mlha */
+  const bare = mode === 'cerna'
 
   // vesmírné kulisy dávají smysl jen v režimu „vesmír" — jinak by přes plochou barvu prosvítaly.
   // POZOR: skyAtmosphere se kreslí bez zápisu do hloubky, takže by ho přechodová stage stejně
@@ -105,7 +114,22 @@ export function applyBackground(
   if (scene.skyAtmosphere) scene.skyAtmosphere.show = space
   if (scene.sun) scene.sun.show = space
   if (scene.moon) scene.moon.show = space
-  scene.globe.showGroundAtmosphere = true // i mimo vesmír: přidává úbytek kontrastu do dálky
+
+  /**
+   * Mlha NIKDY nerozhoduje o úrovni detailu dlaždic.
+   *
+   * Cesium mlhu bere i jako důvod, proč do dálky nenačítat podrobnosti: od povolené chyby
+   * odečítá `fog(vzdálenost) * screenSpaceErrorFactor` (ve výchozím stavu 2), takže vzdálené
+   * dlaždice zůstanou o úroveň hrubší. Při nakloněné kameře z toho je pruh přes obrazovku —
+   * blíž ostrá mapa, dál rozmazaná, mezi tím viditelná hrana. Nula to rozpojí: mlha smí
+   * obarvit, ale ne rozhodovat. Platí i pro 3D dlaždice, které mají stejný vzorec.
+   *
+   * Platí se za to dlaždicemi do dálky navíc; proti poskakující ostrosti je to lepší obchod.
+   */
+  scene.fog.screenSpaceErrorFactor = 0
+
+  scene.globe.showGroundAtmosphere = !bare // mimo černou přidává úbytek kontrastu do dálky
+  scene.fog.enabled = !bare
 
   if (space) {
     scene.atmosphere.saturationShift = 0
@@ -113,7 +137,7 @@ export function applyBackground(
     scene.fog.density = 6e-4           // Cesium default
     scene.fog.heightFalloff = 0.59     // Cesium default
     scene.fog.minimumBrightness = 0.03
-  } else {
+  } else if (!bare) {
     const h = HAZE[mode]
     scene.atmosphere.saturationShift = -1  // atmosféra (= barva mlhy) do šeda, ať nemodrá do pozadí
     scene.atmosphere.brightnessShift = h.brightness
@@ -135,7 +159,7 @@ export function applyBackground(
   } else {
     if (stageRef.current) { scene.postProcessStages.remove(stageRef.current); stageRef.current = null }
     // plná barva: glóbus mimo data dostane TÉŽ barvu pozadí → obdélník kolem ČR zmizí bez shaderu
-    const flat = space ? Cesium.Color.BLACK : Cesium.Color.fromCssColorString(custom)
+    const flat = space || mode === 'cerna' ? Cesium.Color.BLACK : Cesium.Color.fromCssColorString(custom)
     scene.backgroundColor = flat
     scene.globe.baseColor = flat
   }

@@ -1,20 +1,16 @@
 /**
- * Stažení ortofoto dlaždic ČÚZK pro lokální cache. Používá se s „Stáhnout do localu": pro dlaždici
- * (dané Cesium GEOGRAPHIC soustavy, EPSG:4326) stáhne obrázek pro její lon/lat obálku a uloží.
- * ZOBRAZENÍ jede přes WMS (správné zarovnání) — tohle jen plní cache, ať klíč sedí na WMS dlaždici.
+ * Stažení ortofoto dlaždic ČÚZK pro lokální mapu („Načíst 2D lokálně").
  *
- * ČÚZK při paralelní zátěži vrací PRÁZDNÉ dlaždice → nízký souběh (semafor) + retry + validace.
+ * Bere se tatáž hotová cache, ze které jede zobrazení (`ORTOFOTO_WM`, viz imagery.ts), a bajty se
+ * ukládají beze změny — napečená dlaždice je tedy bit po bitu ta, kterou by mapa jinak stáhla.
+ * Dřív se peklo přes WMS export (render na dotaz, ~1 s na kus); z cache je to ~0,1 s.
+ *
  * Bez Cesia/DOMu (jen fetch), ať je to lehké.
  */
-const ORTO_EXPORT = 'https://ags.cuzk.gov.cz/arcgis1/rest/services/ORTOFOTO/MapServer/export'
-const MIN_BYTES = 1500 // menší/nesprávná odpověď = throttle/blank → retry
 
-/** REST export URL pro lon/lat (EPSG:4326) obálku, výstup pxW×pxH (výchozí čtverec), JPEG. */
-export function orthoExport4326Url(w: number, s: number, e: number, n: number, pxW: number, pxH: number = pxW): string {
-  return `${ORTO_EXPORT}?bbox=${w},${s},${e},${n}&bboxSR=4326&imageSR=4326&size=${pxW},${pxH}&format=jpg&f=image`
-}
-
-// ── semafor: max souběžných fetchů na ČÚZK (jinak vrací blank) ──
+// ── semafor: kolik dlaždic se stahuje naráz ──
+// Cache jsou statické soubory, takže ČÚZK víc souběhu snese než u WMS. Zbytek spojení
+// k hostiteli (HTTP/1.1 = šest) nechává mapě, která jede vedle.
 let active = 0
 const queue: (() => void)[] = []
 const MAX_CONC = 4
@@ -24,19 +20,28 @@ function acquire(): Promise<void> {
 }
 function release() { active--; const next = queue.shift(); if (next) next() }
 
-/** Stáhne jednu dlaždici z URL (semafor + retry + validace). Vrací bajty, nebo null při selhání. */
-export async function fetchOrthoUrl(url: string, signal?: AbortSignal): Promise<Uint8Array | null> {
+/**
+ * Stáhne jednu dlaždici z cache (semafor + opakování + kontrola typu).
+ *
+ * `'missing'` = cache dlaždici nemá (404 — za hranicí republiky); to není chyba, jen není co
+ * uložit. `null` = stažení selhalo i po opakování (výpadek), a má smysl to pustit znovu.
+ */
+export async function fetchCacheTile(url: string, signal?: AbortSignal): Promise<Uint8Array | 'missing' | null> {
   await acquire()
   try {
-    for (let a = 1; a <= 5; a++) {
+    for (let a = 1; a <= 4; a++) {
       if (signal?.aborted) return null
       try {
         const r = await fetch(url, { signal })
+        if (r.status === 404) return 'missing'
         const ct = r.headers.get('content-type') || ''
-        const buf = new Uint8Array(await r.arrayBuffer())
-        if (r.ok && ct.includes('image/jpeg') && buf.length >= MIN_BYTES) return buf
-      } catch { if (signal?.aborted) return null /* jinak retry */ }
-      await new Promise(res => setTimeout(res, 250 * a)) // backoff (throttle ČÚZK)
+        // formát cache je „MIXED": JPEG uvnitř republiky, PNG s průhledností u hranic
+        if (r.ok && (ct.includes('image/jpeg') || ct.includes('image/png'))) {
+          const buf = new Uint8Array(await r.arrayBuffer())
+          if (buf.length > 0) return buf
+        }
+      } catch { if (signal?.aborted) return null /* jinak opakovat */ }
+      await new Promise(res => setTimeout(res, 300 * a)) // narůstající pauza
     }
     return null
   } finally { release() }
