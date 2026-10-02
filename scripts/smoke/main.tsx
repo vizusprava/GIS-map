@@ -8,7 +8,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Cesium from 'cesium'
-import { Toaster } from 'sonner'
+import { AppToaster } from '../../src/appToaster'
+import { DialogHost } from '../../src/dialog'
 import '../../src/index.css'
 import { MapView } from '../../src/MapView'
 import type { ScenePersist } from '../../src/lib/scenePersist'
@@ -42,4 +43,4 @@ const scene: ScenePersist = {
 }
 
 createRoot(document.getElementById('root')!, { onUncaughtError: note, onCaughtError: note })
-  .render(<StrictMode><MapView scene={scene} /><Toaster position="bottom-right" offset={{ bottom: 88 }} richColors /></StrictMode>)
+  .render(<StrictMode><MapView scene={scene} /><AppToaster /><DialogHost /></StrictMode>)

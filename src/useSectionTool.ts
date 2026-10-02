@@ -13,6 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import * as THREE from 'three'
 import { toast } from 'sonner'
+import { askText } from './dialog'
 import { pickGround } from './sceneUtils'
 import { getGltfLoader } from './model3d'
 import { MODEL_GLOW } from './config'
@@ -1096,10 +1097,10 @@ export function useSectionTool(deps: {
    * pootočil, světové souřadnice by ukazovaly vedle — takhle jde řez s ním. Model se
    * pamatuje podle jména, protože id souboru se při novém nahrání změní.
    */
-  function saveSection() {
+  async function saveSection() {
     const sel = selectedId ? modelsRef.current.get(selectedId) : null
     if (!sel || !secLine) { toast.error('Nejdřív založ čáru řezu'); return }
-    const name = window.prompt('Název řezu', 'Řez ' + (secSaved.length + 1))?.trim()
+    const name = await askText({ title: 'Název řezu', value: 'Řez ' + (secSaved.length + 1), okLabel: 'Uložit' })
     if (!name) return
     const inv = Cesium.Matrix4.inverse(sel.model.modelMatrix, new Cesium.Matrix4())
     const local = (w: Cesium.Cartesian3): [number, number, number] => {

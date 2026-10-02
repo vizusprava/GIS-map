@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Globe2, Plus, Trash2, Pencil, LogOut, Loader2, Layers, Clock, Image as ImageIcon, Check, X } from 'lucide-react'
 import { toast } from 'sonner'
+import { ask } from '../dialog'
 import { createScene, deleteScene, listScenes, renameScene } from '../lib/scenes'
 import { signedUrlOrNull } from '../lib/storage'
 import { supabase } from '../lib/supabase'
@@ -199,8 +200,12 @@ export function ScenesPage() {
                     <Pencil size={14} />
                   </button>
                   <button
-                    onClick={() => {
-                      if (!window.confirm(`Smazat scénu „${scene.name}" i se všemi nahranými soubory? Tohle nejde vzít zpět.`)) return
+                    onClick={async () => {
+                      if (!(await ask({
+                        title: `Smazat scénu „${scene.name}"?`,
+                        message: 'Smaže se i se všemi nahranými soubory. Tohle nejde vzít zpět.',
+                        okLabel: 'Smazat', danger: true,
+                      }))) return
                       remove.mutate(scene)
                     }}
                     title="Smazat scénu"

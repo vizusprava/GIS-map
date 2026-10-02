@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import { toast } from 'sonner'
+import { ask } from './dialog'
 import { AREA_TILES_CONFIRM, AREA_TILES_MAX } from './config'
 import { toolTheme } from './toolColors'
 import { TILE_SIZES, type TileSize, type Tile, tileKey, tileAt, tileRingLL, wgsOf, sjtskOf } from './tiles'
@@ -72,13 +73,17 @@ export function useTiles(deps: {
     tilesInShape(rings, size, 'center', AREA_TILES_MAX)
 
   /** Společné dokončení hromadného výběru — ptaní se u velkých počtů, zapnutí režimu, hláška. */
-  function applyBulkTiles(res: Tile[] | 'too-many', what: string, keepExisting: boolean): void {
+  async function applyBulkTiles(res: Tile[] | 'too-many', what: string, keepExisting: boolean): Promise<void> {
     if (res === 'too-many') {
       toast.error(`${what} pokrývá přes ${AREA_TILES_MAX} dlaždic. Přepni na větší dlaždici.`)
       return
     }
     if (!res.length) { toast.info(`Uvnitř (${what.toLowerCase()}) nepadl střed žádné dlaždice — zkus větší tvar nebo menší dlaždici.`); return }
-    if (res.length > AREA_TILES_CONFIRM && !confirm(`${what} pokrývá ${res.length} dlaždic. Přidat je všechny?`)) return
+    if (res.length > AREA_TILES_CONFIRM && !(await ask({
+      title: `Přidat ${res.length} dlaždic?`,
+      message: `${what} pokrývá ${res.length} dlaždic. Tolik se jich i stahuje a exportuje — zvaž větší dlaždici.`,
+      okLabel: 'Přidat',
+    }))) return
 
     claimMapClick('tile')
     if (!keepExisting) exclusiveSelect('tile') // nový zdroj výběru → parcely pryč
@@ -92,7 +97,7 @@ export function useTiles(deps: {
     if (!ll) return
     // pozor na pořadí: `claimMapClick` uvnitř applyBulkTiles obrys zahodí, tady už ho máme spočítaný
     const poly = ll.map(([lon, lat]) => sjtskOf(lon, lat) as number[])
-    applyBulkTiles(tilesInRings([poly], tileSize), 'Oblast', false)
+    void applyBulkTiles(tilesInRings([poly], tileSize), 'Oblast', false)
   }
 
   /**
@@ -102,7 +107,7 @@ export function useTiles(deps: {
   function addRegionTiles() {
     const a = region.regionActiveRef.current
     if (!a) { toast.info('Nejdřív vyber území ve vyhledávání nahoře'); return }
-    applyBulkTiles(tilesInRings(a.sjtskRings, tileSize), `Území ${a.name}`, true)
+    void applyBulkTiles(tilesInRings(a.sjtskRings, tileSize), `Území ${a.name}`, true)
   }
 
   // ── výběr dlaždic: klik přepne jednu, tažení „maluje" přes víc ──

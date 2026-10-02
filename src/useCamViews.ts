@@ -3,6 +3,7 @@
  * vzhledu kamery během přeletu a hlídání, jestli aktivní pohled ještě sedí na to, co je vidět.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ask } from './dialog'
 import * as Cesium from 'cesium'
 import { VIEW_THUMB_W, VIEW_THUMB_H, VIEW_THUMB_Q, VIEW_DIRTY_M, VIEW_DIRTY_DEG } from './config'
 import { viewCenterGround } from './sceneUtils'
@@ -361,11 +362,14 @@ export function useCamViews(deps: {
   }
   // Smazání pohledu s sebou vezme i vazby popisků, které na něm visely. Dřív zmizely
   // tiše a nebylo je jak vrátit — proto se ptáme a rovnou řekneme, čeho se to týká.
-  function delCamView(i: number) {
+  async function delCamView(i: number) {
     const gone = camViews[i]; if (!gone) return
     const { callouts: nc } = viewRefs(gone.id)
-    const tail = nc ? `\n\nPřestane se v něm ukazovat: ${nc}× popisek.` : ''
-    if (!confirm(`Smazat pohled „${gone.name}"?${tail}`)) return
+    if (!(await ask({
+      title: `Smazat pohled „${gone.name}"?`,
+      message: nc ? `Přestane se v něm ukazovat ${nc}× popisek (popisky samy zůstanou).` : undefined,
+      okLabel: 'Smazat', danger: true,
+    }))) return
     persistCamViews(camViews.filter((_, j) => j !== i))
     onViewDeleted(gone.id)
     if (activeViewId === gone.id) setActiveViewId(null)

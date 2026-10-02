@@ -268,6 +268,29 @@ async function main() {
     expect(!(await ev(`!!document.querySelector('[role="menu"]')`)), 'najetí na jinou skupinu otevřelo její nabídku')
     await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 300, pointerType: 'mouse' })
     await clickText(`document.querySelector('[data-panel="kamera"]')`, 'Pohledy')
+
+    // mazání pohledu: vlastní okno místo systémového; Esc ho zruší a panel pod ním zůstane
+    const kam = `document.querySelector('[data-panel="kamera"]')`
+    const deleteView = async () => {
+      await ev(`${kam}.querySelector('button[title="Další akce"]').click()`)
+      await sleep(200)
+      expect(await clickText(kam, 'Smazat'), 'v nabídce pohledu chybí Smazat')
+      await waitFor(`!!document.querySelector('[data-dialog]')`, 3000, 'potvrzovací okno')
+    }
+    await deleteView()
+    expect(!dialogs.length, `vyskočilo systémové okno: ${dialogs[0]}`)
+    expect((await ev(`document.querySelector('[data-dialog]').innerText`)).includes('Smazat pohled'), 'okno se ptá na něco jiného')
+    await shot('dialog-smazat-pohled')
+    await press('Escape')
+    expect(!(await ev(`!!document.querySelector('[data-dialog]')`)), 'Esc okno nezavřel')
+    expect(await panelText('kamera'), 'Esc v okně zavřel i panel pod ním')
+    expect(/1\./.test(await panelText('kamera')), 'zrušené mazání pohled stejně smazalo')
+    await deleteView()
+    await ev(`document.querySelector('[data-dialog-ok]').click()`)
+    await sleep(300)
+    expect(!/1\./.test(await panelText('kamera')), 'potvrzené mazání pohled nesmazalo')
+    expect(await panelText('kamera'), 'potvrzení v okně zavřelo i panel pod ním')
+
     await press('Escape')
     expect(!(await panelText('kamera')), 'Esc panel nezavřel')
   })
@@ -330,6 +353,8 @@ async function main() {
       for (const t of ['ortofoto', '20 cm', 'PNG']) expect(await clickText(sec, t), `chybí volba ${t}`)
       await sleep(300)
       expect(await clickText(sec, 'Obrázek výběru (PNG)'), 'chybí tlačítko exportu')
+      await waitFor(`!!document.querySelector('[data-dialog]')`, 5000, 'potvrzení exportu')
+      await ev(`document.querySelector('[data-dialog-ok]').click()`)
       let f = null
       for (let i = 0; i < 240 && !f; i++) { await sleep(500); f = readdirSync(downloads).find(n => n.endsWith('.png')) }
       expect(f, 'PNG se nestáhl')
@@ -340,9 +365,11 @@ async function main() {
     })
   }
 
-  await check('žádné chyby v appce', async () => {
+  await check('žádné chyby v appce ani systémová okna', async () => {
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
+    // appka se ptá vlastním oknem (dialog.tsx); systémové confirm/alert/prompt už nemá vyskočit
+    expect(!dialogs.length, `systémové okno: ${dialogs.join(' | ')}`)
   })
 }
 

@@ -9,6 +9,7 @@
 import { Check, Eye, EyeOff, Grid3x3, Hexagon, Loader2 } from 'lucide-react'
 import { TILE_SIZES, type TileSize } from '../tiles'
 import { toolTheme } from '../toolColors'
+import { ask } from '../dialog'
 import type { ParcelsTool } from '../useParcels'
 import type { TilesTool } from '../useTiles'
 
@@ -44,9 +45,13 @@ export function SelectionPanel({ parcels, tiles, areaMode, toggleAreaMode }: {
   }
 
   // jiná velikost = jiná mřížka, takže výběr zmizí — u rozdělané práce se zeptat (jako v nápovědě nad lištou)
-  const pickSize = (s: TileSize) => {
+  const pickSize = async (s: TileSize) => {
     if (s === tileSize) return
-    if (tileCount && !confirm(`Změna velikosti na ${s} m zruší výběr ${tileCount} dlaždic. Pokračovat?`)) return
+    if (tileCount && !(await ask({
+      title: `Změnit velikost dlaždic na ${s} m?`,
+      message: `Jiná velikost znamená jinou mřížku — výběr ${tileCount} dlaždic se zruší.`,
+      okLabel: 'Změnit', danger: true,
+    }))) return
     changeTileSize(s)
   }
   return (

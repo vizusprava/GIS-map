@@ -10,6 +10,7 @@
  * a zoom na kolečku, na papír naopak 1:100 a čáry v milimetrech.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { createPortal } from 'react-dom'
 import { X, Download, Ruler, Maximize2, Sun, Moon, Trash2, Table2, Tag, Palette, Layers, Spline, Printer, Eye, EyeOff, Focus, PaintBucket, TriangleRight, Scissors } from 'lucide-react'
 import type { Pt2, SectionPoly, SectionResult } from './sectionCut'
@@ -419,7 +420,7 @@ export function SectionDrawing({ result, name, onClose, float = false, slot = 0,
    */
   function doPrint() {
     const w = window.open('', '_blank')
-    if (!w) { alert('Prohlížeč zablokoval okno tisku — povol vyskakovací okna.'); return }
+    if (!w) { toast.error('Prohlížeč zablokoval okno tisku — povol pro tuhle stránku vyskakovací okna.'); return }
     const page = `@page { size: ${sheet.widthMm}mm ${sheet.heightMm}mm; margin: 0 }`
     w.document.write(
       '<!doctype html><html><head><meta charset="utf-8"><title>' + fileBase(name) + '</title>' +

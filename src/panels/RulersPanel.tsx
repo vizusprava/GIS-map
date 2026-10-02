@@ -37,6 +37,11 @@ export function RulersPanel({ rulers: tool, rulerMode }: { rulers: RulersTool; r
       {rulers.length > 1 && (
         <button onClick={clearRulers} className="self-start px-1 text-[10px] text-gray-500 hover:text-red-300">smazat všechna měření</button>
       )}
+      {!rulers.length && rulerMode && (
+        <div className="max-w-[200px] px-1 text-[10px] leading-snug text-gray-500">
+          Klikej body do mapy — měření se tu objeví i s délkou nebo výměrou. Ukončíš pravým klikem.
+        </div>
+      )}
       {!rulers.length && !rulerMode && (
         <div className="max-w-[200px] px-1 text-[10px] leading-snug text-gray-600">
           Zatím žádné — začni tlačítkem <span className="text-gray-400">Měření</span> v liště dole.

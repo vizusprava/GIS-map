@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react'
 import polygonClipping from 'polygon-clipping'
 import * as Cesium from 'cesium'
 import { toast } from 'sonner'
+import { ask } from './dialog'
 import type { ExportRunner } from './useExportRunner'
 import { exportTilesObj as exportTilesObjCore } from './export/tilesObj'
 import { exportMapTiles as exportMapTilesCore } from './export/mapTiles'
@@ -130,10 +131,12 @@ export function useExports(deps: {
     const est = estimateMapTiles(tiles.length, tileSize, mapRes)
     const hasPicker = 'showSaveFilePicker' in window
     const big = est.bytes > 500e6
-    if (big && !hasPicker && !confirm(
-      `Odhad ${fmtBytes(est.bytes)} v ${tiles.length} dlaždicích.\n\n` +
-      'Tenhle prohlížeč neumí zapisovat rovnou na disk, takže se zip poskládá v paměti a u téhle ' +
-      'velikosti může spadnout. Doporučuju hrubší rozlišení, nebo Chrome/Edge.\n\nPokračovat?')) return
+    if (big && !hasPicker && !(await ask({
+      title: `Exportovat ~${fmtBytes(est.bytes)}?`,
+      message: `${tiles.length} dlaždic. Tenhle prohlížeč neumí zapisovat rovnou na disk, takže se zip poskládá ` +
+        'v paměti a u téhle velikosti může spadnout. Doporučuju hrubší detail, nebo Chrome či Edge.',
+      okLabel: 'Přesto exportovat', danger: true,
+    }))) return
     const ov = overlay()
     await runner.runExport(runner.tileUi, 'Export mapy selhal', async ctx => {
       let last = ''
@@ -163,10 +166,18 @@ export function useExports(deps: {
     if (mapFormat === 'tiff' && !plan.tiffOk) { toast.error(`${plan.W}×${plan.H} px = ${fmtBytes(plan.bytes)}. Klasický TIFF má strop 4 GB — zvol hrubší detail nebo PNG.`); return }
     const hasPicker = 'showSaveFilePicker' in window
     const warn = [
-      !plan.afterEffectsOk && 'After Effects zvládne kompozici do 30 000 px — tohle je nad to',
-      !plan.photoshopOk && 'Photoshop zvládne do 300 000 px na stranu — tohle je nad to',
+      !plan.afterEffectsOk && 'After Effects zvládne kompozici do 30 000 px — tohle je nad to.',
+      !plan.photoshopOk && 'Photoshop zvládne do 300 000 px na stranu — tohle je nad to.',
     ].filter(Boolean).join('\n')
-    if (!confirm(`${label}\n${plan.W}×${plan.H} px · ${fmtBytes(plan.bytes)}${warn ? `\n\n${warn}` : ''}\n\nExportovat?`)) return
+    // odhad souboru stejně jako poznámka v panelu (exportUi.imagePlan): PNG ortofota ~60 %, JPEG ~10 %
+    const layerCount = exportLayers().length
+    const est = plan.bytes * (mapFormat === 'jpeg' ? 0.1 : mapFormat === 'png' ? 0.6 : 1) * layerCount
+    const fmtName = mapFormat === 'png' ? 'PNG' : mapFormat === 'jpeg' ? 'JPEG' : 'GeoTIFF'
+    if (!(await ask({
+      title: label,
+      message: `Jeden obrázek ${fmtName}: ${plan.W}×${plan.H} px · ~${fmtBytes(est)}${layerCount > 1 ? ' (obě vrstvy)' : ''}${warn ? `\n\n${warn}` : ''}`,
+      okLabel: 'Exportovat',
+    }))) return
     // Obě vrstvy jdou přes TUTÉŽ obálku i rozlišení, takže vyjdou pixel na pixel a v Photoshopu
     // nebo AE se dají položit přes sebe bez dorovnávání — proto se jen zopakuje tentýž export.
     const ov = overlay()
@@ -232,11 +243,12 @@ export function useExports(deps: {
       px += planGeoTiff(x1 - x0, y1 - y0, mapRes, true).bytes
     }
     const each = `${mapRes < 1 ? `${mapRes * 100} cm` : `${mapRes} m`}/px`
-    if (!confirm(
-      `${kraje.length} krajů × ${layers.length} ${layers.length === 1 ? 'vrstva' : 'vrstvy'} v ${each}\n` +
-      `Odhad celkem: ${fmtBytes(px * layers.length)}\n\n` +
-      'Každý kraj dostane vlastní podsložku. Poběží to dlouho (klidně hodiny) a jde to kdykoliv ' +
-      'přerušit — hotové kraje zůstanou.\n\nVybrat složku a spustit?')) return
+    if (!(await ask({
+      title: `Exportovat všech ${kraje.length} krajů?`,
+      message: `${kraje.length} krajů × ${layers.length} ${layers.length === 1 ? 'vrstva' : 'vrstvy'} v ${each}, odhad celkem ${fmtBytes(px * layers.length)}.\n\n` +
+        'Každý kraj dostane vlastní podsložku. Poběží to dlouho (klidně hodiny) a jde to kdykoliv přerušit — hotové kraje zůstanou.',
+      okLabel: 'Vybrat složku a spustit',
+    }))) return
 
     const root = await picker()
     await runner.runExport(runner.cutoutUi, 'Dávkový export selhal', async ctx => {
@@ -344,7 +356,11 @@ export function useExports(deps: {
     const est = estimateMapTiles(res.length, tileSize, mapRes)
     const hasPicker = 'showSaveFilePicker' in window
     const big = est.bytes > 500e6
-    if (!confirm(`${a.name}: ${res.length} dlaždic, ~${fmtBytes(est.bytes)}${big && !hasPicker ? '\n\nTenhle prohlížeč neumí zápis na disk — u téhle velikosti může spadnout.' : ''}\n\nExportovat?`)) return
+    if (!(await ask({
+      title: `Exportovat ${a.name} po dlaždicích?`,
+      message: `${res.length} dlaždic, ~${fmtBytes(est.bytes)}.${big && !hasPicker ? '\n\nTenhle prohlížeč neumí zápis na disk — u téhle velikosti může spadnout.' : ''}`,
+      okLabel: 'Exportovat',
+    }))) return
     const ov = overlay()
     await runner.runExport(runner.cutoutUi, 'Export mapy selhal', async ctx => {
       let last = ''

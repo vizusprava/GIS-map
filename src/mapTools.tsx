@@ -30,6 +30,7 @@ import { ENABLE_GOOGLE_3D } from './config'
 import { TILE_SIZES, type TileSize } from './tiles'
 import type { CamProj } from './ui'
 import { toolTheme, type ToolId } from './toolColors'
+import { ask, isDialogOpen } from './dialog'
 import type { MapLayers } from './useMapLayers'
 import type { ParcelsTool } from './useParcels'
 import type { TilesTool } from './useTiles'
@@ -122,7 +123,7 @@ export function MapTools(p: Props) {
     if (!open) return
     const close = () => { if (!(open === 'prezentace' && calloutRef.current)) setOpen(null) }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || isTyping(e.target)) return
+      if (e.key !== 'Escape' || isTyping(e.target) || isDialogOpen()) return
       e.stopImmediatePropagation()
       setOpen(null)
     }
@@ -159,7 +160,7 @@ export function MapTools(p: Props) {
   useEffect(() => {
     if (!help) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
+      if (e.key !== 'Escape' || isDialogOpen()) return
       e.stopImmediatePropagation()
       setHelp(false)
     }
@@ -486,9 +487,13 @@ function Hint(p: Props) {
   if (p.tileMode) {
     const { tileCount, tileSize, gridOn, setGridOn, changeTileSize } = p.tiles
     // jiná velikost = jiná mřížka, takže výběr zmizí — u rozdělané práce se zeptat
-    const pickSize = (s: TileSize) => {
+    const pickSize = async (s: TileSize) => {
       if (s === tileSize) return
-      if (tileCount && !confirm(`Změna velikosti na ${s} m zruší výběr ${tileCount} dlaždic. Pokračovat?`)) return
+      if (tileCount && !(await ask({
+        title: `Změnit velikost dlaždic na ${s} m?`,
+        message: `Jiná velikost znamená jinou mřížku — výběr ${tileCount} dlaždic se zruší.`,
+        okLabel: 'Změnit', danger: true,
+      }))) return
       changeTileSize(s)
     }
     return (

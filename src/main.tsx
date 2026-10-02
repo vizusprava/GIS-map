@@ -1,7 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Toaster } from 'sonner'
+import { AppToaster } from './appToaster'
+import { DialogHost } from './dialog'
 import './index.css'
 import App from './App.tsx'
 
@@ -33,8 +34,8 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <App />
-      {/* nad lištou nástrojů a kompasem v mapě, ať je oznámení nezakrývají */}
-      <Toaster position="bottom-right" offset={{ bottom: 88 }} richColors />
+      <AppToaster />
+      <DialogHost />
     </QueryClientProvider>
   </StrictMode>,
 )

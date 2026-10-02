@@ -449,7 +449,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
 
     if (parcelMode || areaMode || tileMode || region.regionMode || rulerMode || calloutMode || moveMode || coordsMode) {
       claimMapClick('none')
-      toast.info('Nástroj vypnut · Esc znovu zruší výběr')
+      toast.info('Nástroj vypnut · Esc znovu zruší výběr', { duration: 2000 })
       return
     }
 
