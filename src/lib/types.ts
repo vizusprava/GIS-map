@@ -81,6 +81,9 @@ export type SavedParcel = {
   pid: string
   label: string
   knArea: number
+  /** identifikátor parcely v katastru a název k.ú. — u parcel uložených dřív chybí, dohledají se */
+  iskn?: number
+  ku?: string
   ring: [number, number][]
   holes: [number, number][][]
 }

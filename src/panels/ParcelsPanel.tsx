@@ -1,10 +1,14 @@
 /**
- * Sekce „Parcely": co s vybranými parcelami — jak je ukázat v mapě a co z nich vyexportovat.
+ * Sekce „Parcely": které parcely jsou vybrané, jak je ukázat v mapě a co z nich vyexportovat.
+ *
+ * Seznam ukazuje číslo parcely, katastrální území a výměru z katastru; klik na číslo přeletí
+ * nad parcelu, šipka otevře parcelu v Nahlížení do KN (vlastníci, list vlastnictví).
  */
 import { useState } from 'react'
-import { Building2, Download, Eye, EyeOff, Hexagon, Image, Loader2, MapPin, RotateCcw, Ruler, Trash2, X } from 'lucide-react'
+import { Building2, Download, ExternalLink, Eye, EyeOff, Hexagon, Image, Loader2, MapPin, RotateCcw, Ruler, Trash2, X } from 'lucide-react'
 import { ENABLE_GOOGLE_3D } from '../config'
 import { fmtArea } from '../measure'
+import { knUrl } from '../katastr'
 import type { ParcelsTool } from '../useParcels'
 import type { MapLayers } from '../useMapLayers'
 import type { ExportsApi } from '../useExports'
@@ -36,6 +40,7 @@ export function ParcelsPanel({ parcels, layers, outputs, runner }: {
           <Trash2 size={14} />
         </button>
       </div>
+      <ParcelList parcels={parcels} />
       {cutoutBusy ? (
         <div className="flex items-center gap-2">
           <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-gray-700">
@@ -145,5 +150,46 @@ function ParcelsImage({ outputs }: { outputs: ExportsApi }) {
         <Image size={13} /> Obrázek výběru ({p?.fmtName ?? 'PNG'})
       </button>
     </Card>
+  )
+}
+
+/** Výměra do úzkého sloupce: do hektaru v m², nad něj v ha. */
+const fmtShortArea = (m2: number) => (m2 >= 10000
+  ? `${(m2 / 10000).toLocaleString('cs-CZ', { maximumFractionDigits: 2 })} ha`
+  : `${m2.toLocaleString('cs-CZ', { maximumFractionDigits: 0 })} m²`)
+
+/** Vybrané parcely po jedné. Výběr oblastí jich umí přidat stovky, proto se jich ukáže jen pár. */
+function ParcelList({ parcels }: { parcels: ParcelsTool }) {
+  const [all, setAll] = useState(false)
+  const list = [...parcels.parcelsRef.current.entries()]
+  const LIMIT = 6
+  const shown = all ? list : list.slice(0, LIMIT)
+  return (
+    <div className="flex flex-col">
+      {shown.map(([pid, p]) => (
+        <div key={pid} className={`flex items-center gap-1 rounded px-1 py-0.5 hover:bg-gray-800/60 ${p.hidden ? 'opacity-50' : ''}`}>
+          <button onClick={() => void parcels.flyToParcel(pid)} title="Přeletět nad parcelu" className="flex min-w-0 flex-1 items-baseline gap-1.5 text-left">
+            <span className="shrink-0 text-xs font-medium text-gray-100">{p.label || '?'}</span>
+            <span className="min-w-0 truncate text-[10px] text-gray-500">{p.ku ?? ''}</span>
+          </button>
+          {p.knArea > 0 && <span className="shrink-0 text-[10px] tabular-nums text-gray-400">{fmtShortArea(p.knArea)}</span>}
+          {p.iskn
+            ? (
+              <a href={knUrl(p.iskn)} target="_blank" rel="noreferrer" title="Otevřít v Nahlížení do katastru — vlastníci, list vlastnictví" className="shrink-0 rounded p-0.5 text-gray-500 hover:bg-gray-700 hover:text-gray-200">
+                <ExternalLink size={12} />
+              </a>
+            )
+            : <span className="w-4 shrink-0" />}
+          <button onClick={() => parcels.removeParcel(pid)} title="Odebrat z výběru" className="shrink-0 rounded p-0.5 text-gray-500 hover:bg-gray-700 hover:text-red-300">
+            <X size={12} />
+          </button>
+        </div>
+      ))}
+      {list.length > LIMIT && (
+        <button onClick={() => setAll(a => !a)} className="self-start px-1 text-[10px] text-gray-500 hover:text-gray-300">
+          {all ? 'zobrazit méně' : `zobrazit všech ${list.length}`}
+        </button>
+      )}
+    </div>
   )
 }

@@ -6,7 +6,9 @@ import { ChevronLeft, ChevronRight, Eye, EyeOff, Layers, Loader2, Sparkles, Tras
 import { ION_TOKEN, NEEDS_ION, SHARP_KEY } from './config'
 import { geoidN } from './geoid'
 import { perfSettings, readPerfChoice, resolvePerf, savePerfChoice, type PerfChoice } from './perfProfile'
-import { tilesBounds } from './tiles'
+import { readOrtoDetail, saveOrtoDetail, type OrtoDetail } from './imagery'
+import { tilesBounds, wgsOf } from './tiles'
+import type { ParcelHit } from './katastr'
 import { loadGeoRaster, disposeRasterSrc, type CrsId } from './worldRaster'
 import { parseDrawingFile } from './drawingClient'
 import { renderNow } from './snapshot'
@@ -132,6 +134,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const [sharpness, setSharpness] = useState(() => {
     try { const v = Number(localStorage.getItem(SHARP_KEY)); return v >= 1 && v <= 2 ? v : 1 } catch { return 1 }
   })
+  // Detail ortofota (imagery.ts): standardní, nebo o úroveň jemnější za víc stahování.
+  const [ortoDetail, setOrtoDetailState] = useState<OrtoDetail>(readOrtoDetail)
+  const setOrtoDetail = (d: OrtoDetail) => { saveOrtoDetail(d); setOrtoDetailState(d) }
   // Profil výkonu (perfProfile.ts): úsporný pro integrovanou grafiku, kvalitní = jak to bylo.
   const [perfChoice, setPerfChoiceState] = useState<PerfChoice>(readPerfChoice)
   const perfLevel = resolvePerf(perfChoice)
@@ -147,7 +152,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // Hook vieweru je první schválně: jeho efekt staví viewer a ostatní efekty (i jejich úklid)
   // musí jít až po něm — viz poznámka u chvění kamery v `useCameraMotion`.
   const viewer = useCesiumViewer({
-    containerRef, sceneRef, perf, sharpness,
+    containerRef, sceneRef, perf, sharpness, ortoDetail,
     clipCollections: () => sec.secClipRef.current.values(),
     // Záchranná brzda: když vykreslování spadne, Cesium se zastaví a zbyde bílé okno. Ořez
     // modelu je nejpravděpodobnější příčina, tak ho shodíme a zkusíme kreslit dál.
@@ -173,6 +178,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     viewerRef,
     showAdmin: (units, parts) => { region.setRegionChoices(units); region.setRegionParts(parts) },
     pickSingleUnit: u => region.isolateRegion(u),
+    pickParcel: h => pickParcelHit(h),
   })
   const { query, setQuery, runSearch, searching, placeHits, setPlaceHits, searchOpen, setSearchOpen, flyToPlace } = search
   // ── zvýraznění správního území: stav i obsluha žijí v `useRegionTool` ──
@@ -396,6 +402,19 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   }, [clickOwner])
 
   /** Jen JEDEN zdroj výběru naráz — maže DATA. Režimy klikání řeší `claimMapClick`. */
+  /**
+   * Parcela z vyhledávání: přidá se k výběru stejně jako klikem (ruší dlaždice a území jako nástroj
+   * parcel) a kamera přeletí nad ni. Národní číslo v `id` je stejné jako u kliknuté, takže se
+   * táž parcela nevybere dvakrát.
+   */
+  function pickParcelHit(h: ParcelHit) {
+    setSearchOpen(false)
+    if (!parcelsRef.current.size) exclusiveSelect('parcel')
+    const toCart = (r: number[][]) => r.map(([x, y]) => { const [lo, la] = wgsOf(x, y); return Cesium.Cartesian3.fromDegrees(lo, la) })
+    parcels.addParcelSel({ id: h.id, label: h.label, knArea: h.knArea, iskn: h.iskn, ku: h.ku, positions: toCart(h.ring), holes: h.holes.map(toCart) })
+    void parcels.flyToParcel(h.id)
+  }
+
   function exclusiveSelect(keep: 'parcel' | 'tile' | 'region') {
     if (keep !== 'parcel') { clearAllParcels(); clearArea() }
     // Území dlaždice NERUŠÍ: kraj se do nich právě převádí (addRegionTiles) a víc krajů se má
@@ -546,14 +565,15 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   /**
    * Soustředění panelu na zapnutý nástroj: jeho sekce se rozbalí a obarví barvou nástroje
    * (`toolColors.ts`), ostatní se sbalí, ať je hned po ruce, co k nástroji patří. Začne, až
-   * sekce existuje (parcely s první vybranou, dlaždice s první dlaždicí, území s vybraným
-   * územím), a skončí vypnutím nástroje — panel se pak vrátí, jak byl (viz `SectionFocus`).
+   * sekce existuje (parcely s první vybranou, území s vybraným územím), a skončí vypnutím
+   * nástroje — panel se pak vrátí, jak byl (viz `SectionFocus`). Dlaždice drží do první
+   * vybrané sekci s velikostí a mřížkou, pak sekci Dlaždice s exporty.
    * Nástroje berou mapu výhradně (`claimMapClick`), takže zapnutý je vždy nanejvýš jeden.
    */
   const focusTarget: { id: string; tool: ToolId } | null =
     parcelMode ? (parcelCount > 0 ? { id: 'parcely', tool: 'parcel' } : null)
     : areaMode ? { id: 'vyber', tool: 'area' }
-    : tileMode ? (tileCount > 0 ? { id: 'dlazdice', tool: 'tiles' } : null)
+    : tileMode ? { id: tileCount > 0 ? 'dlazdice' : 'vyber', tool: 'tiles' }
     : region.regionMode ? (region.regionName ? { id: 'uzemi', tool: 'region' } : null)
     : rulerMode ? { id: 'mereni', tool: 'ruler' }
     : coordsMode ? { id: 'souradnice', tool: 'coords' }
@@ -602,11 +622,13 @@ export function MapView({ scene }: { scene: ScenePersist }) {
         units={region.regionChoices}
         parts={region.regionParts}
         places={placeHits}
+        parcels={search.parcelHits}
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
         onOpen={() => setSearchOpen(true)}
         onPickUnit={u => { setSearchOpen(false); region.isolateRegion(u) }}
         onPickPlace={flyToPlace}
+        onPickParcel={pickParcelHit}
         onExpandParts={region.loadParts}
         pickMode={region.regionMode}
         onTogglePickMode={toggleRegionMode}
@@ -678,6 +700,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           `bottom-6` míjí pruh s popiskami zdrojů, který si Cesium kreslí úplně dole. */}
       <div className={`pointer-events-none absolute bottom-6 right-0 z-20 flex justify-center transition-[left] ${panelOpen ? 'left-80' : 'left-0'}`}>
         <MapTools
+          viewer={viewerReady ? viewerRef.current : null}
           layers={layers}
           parcels={parcels}
           tiles={tiles}
@@ -759,7 +782,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           <Section id="podklad" title="Podklad a překryvy" dflt={true} open={openSec} onToggle={toggleSec}>
             <BasePanel
               layers={layers} districts={districts} perfChoice={perfChoice} setPerfChoice={setPerfChoice} perfLevel={perfLevel}
-              sharpness={sharpness} setSharpness={setSharpness} viewerReady={viewerReady} viewerRef={viewerRef}
+              sharpness={sharpness} setSharpness={setSharpness} ortoDetail={ortoDetail} setOrtoDetail={setOrtoDetail}
+              viewerReady={viewerReady} viewerRef={viewerRef}
             />
           </Section>
           {rasterList.length > 0 && (
@@ -778,12 +802,13 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             </div>
           </Section>
           )}
-          <Section id="vyber" title="Výběr v mapě" dflt={true} open={openSec} onToggle={toggleSec}>
-            <SelectionPanel
-              parcels={parcels} tiles={tiles} region={region} parcelMode={parcelMode} areaMode={areaMode} tileMode={tileMode}
-              toggleParcel={toggleParcel} toggleAreaMode={toggleAreaMode} toggleRegionMode={toggleRegionMode}
-            />
+          {/* Nastavení zapnutého výběru — jen u oblasti a dlaždic, ostatní nástroje žádné nemají.
+              Zapínají se v liště dole nebo klávesou. */}
+          {(areaMode || tileMode) && (
+          <Section id="vyber" title={areaMode ? 'Výběr oblasti' : 'Výběr dlaždic'} dflt={true} open={openSec} onToggle={toggleSec}>
+            <SelectionPanel parcels={parcels} tiles={tiles} areaMode={areaMode} toggleAreaMode={toggleAreaMode} />
           </Section>
+          )}
           {/* Souřadnice pro přenos do Maxu / SynthEyes. Vlastní sekce, protože je to jiná práce
               než měření: tam jde o vzdálenosti, tady o absolutní polohu bodu. */}
           <Section id="souradnice" title="Souřadnice" dflt={false} badge={coordPts.length} open={openSec} onToggle={toggleSec}>

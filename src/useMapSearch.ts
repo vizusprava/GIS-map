@@ -1,12 +1,14 @@
 /**
- * Vyhledávání v liště nahoře uprostřed — území z RÚIAN i místa z geokodéru naráz (mapSearch.tsx).
+ * Vyhledávání v liště nahoře uprostřed — území z RÚIAN i místa z geokodéru naráz (mapSearch.tsx),
+ * a když dotaz vypadá jako číslo parcely („95/1 České Budějovice 1", „st. 866 Mrač", samotné
+ * „1234" = v k.ú. uprostřed obrazovky), i parcely.
  *
  * Stav je tady, protože do téže rozbalovací nabídky píše i výběr území klikem do mapy.
  */
 import { useState } from 'react'
 import * as Cesium from 'cesium'
 import { toast } from 'sonner'
-import { ruianQuery, type AdminUnit } from './katastr'
+import { findParcels, parseParcelQuery, ruianAtPoint, ruianQuery, type AdminUnit, type ParcelHit } from './katastr'
 import type { PlaceHit } from './mapSearch'
 
 export type MapSearchTool = ReturnType<typeof useMapSearch>
@@ -17,11 +19,14 @@ export function useMapSearch(deps: {
   showAdmin: (units: AdminUnit[], parts: AdminUnit[]) => void
   /** právě jedno nalezené území se rovnou zvýrazní */
   pickSingleUnit: (u: AdminUnit) => Promise<void>
+  /** nalezená parcela → do výběru a přelet nad ni */
+  pickParcel: (h: ParcelHit) => void
 }) {
-  const { viewerRef, showAdmin, pickSingleUnit } = deps
+  const { viewerRef, showAdmin, pickSingleUnit, pickParcel } = deps
 
   const [searching, setSearching] = useState(false)
   const [placeHits, setPlaceHits] = useState<PlaceHit[]>([])
+  const [parcelHits, setParcelHits] = useState<ParcelHit[]>([])
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
 
@@ -53,6 +58,28 @@ export function useMapSearch(deps: {
     } catch { return [] } // geokodér je doplněk; když neodpoví, RÚIAN výsledky stačí
   }
 
+  /**
+   * Parcely podle čísla. Bez názvu k.ú. se hledá v tom, které je uprostřed obrazovky — kdo se
+   * dívá na obec a píše jen číslo, myslí parcelu tady. Chyba služby se neohlásí: parcely jsou
+   * jen jedna ze skupin výsledků.
+   */
+  async function searchParcels(pq: NonNullable<ReturnType<typeof parseParcelQuery>>): Promise<ParcelHit[]> {
+    try {
+      if (pq.ku) return await findParcels(pq.num, { name: pq.ku }, pq.explicitKind)
+      const v = viewerRef.current
+      if (!v || v.isDestroyed()) return []
+      const c = v.scene.canvas
+      const p = v.scene.globe.pick(v.camera.getPickRay(new Cesium.Cartesian2(c.clientWidth / 2, c.clientHeight / 2))!, v.scene)
+      if (!p) return []
+      const cc = Cesium.Cartographic.fromCartesian(p)
+      const ku = await ruianAtPoint(7, Cesium.Math.toDegrees(cc.longitude), Cesium.Math.toDegrees(cc.latitude))
+      return ku ? await findParcels(pq.num, { kod: ku.kod, name: ku.nazev }, pq.explicitKind) : []
+    } catch (e) {
+      console.warn('Hledání parcely selhalo:', e)
+      return []
+    }
+  }
+
   // Jedno hledání pro obojí. Dřív se uživatel musel dopředu rozhodnout, jestli chce „najít místo"
   // (přelet) nebo „vybrat území" (výběr) — a psal do obou stejný název. Teď se ptáme jednou a
   // obě sady výsledků nabídneme vedle sebe; co je co, rozliší skupina v nabídce.
@@ -62,12 +89,23 @@ export function useMapSearch(deps: {
     setSearching(true)
     setSearchOpen(true)
     try {
+      // Samotné číslo je jen parcela — území ani místo podle čísla hledat nemá smysl.
+      const pq = parseParcelQuery(q)
+      const onlyParcel = !!pq && !pq.ku
       // souběžně: RÚIAN je pomalejší (čtyři vrstvy), ať na něj geokodér nečeká
-      const [admin, places] = await Promise.all([searchAdminUnits(q), searchPlaces(q)])
+      const [admin, places, parcelsFound] = await Promise.all([
+        onlyParcel ? { units: [], parts: [] } : searchAdminUnits(q),
+        onlyParcel ? [] : searchPlaces(q),
+        pq ? searchParcels(pq) : [],
+      ])
       showAdmin(admin.units, admin.parts)
       setPlaceHits(places)
+      setParcelHits(parcelsFound)
       // právě jedna možnost → rovnou ji zobraz, ať se nekliká do nabídky o jedné položce
-      if (admin.units.length === 1 && !admin.parts.length && !places.length) {
+      if (parcelsFound.length === 1 && !admin.units.length && !admin.parts.length) {
+        setSearchOpen(false)
+        pickParcel(parcelsFound[0])
+      } else if (admin.units.length === 1 && !admin.parts.length && !places.length && !parcelsFound.length) {
         setSearchOpen(false)
         await pickSingleUnit(admin.units[0])
       }
@@ -94,11 +132,13 @@ export function useMapSearch(deps: {
 
   return {
     flyToPlace,
+    parcelHits,
     placeHits,
     query,
     runSearch,
     searchOpen,
     searching,
+    setParcelHits,
     setPlaceHits,
     setQuery,
     setSearchOpen,

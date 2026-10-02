@@ -13,7 +13,9 @@ import { wgsOf } from './tiles'
 import { toolTheme } from './toolColors'
 import { pointInRing, ringCentroid } from './rings'
 import { MEASURE_MAX_EDGES, MEASURE_MIN_EDGE, measureRing, fmtArea, type ParcelMeasure } from './measure'
-import { fetchParcelAt, fetchParcelsInBbox } from './katastr'
+import { fetchParcelAt, fetchParcelsInBbox, kuNames, parcelIskns, splitParcelId } from './katastr'
+import { fetchElevSampler } from './elevation'
+import { geoidN } from './geoid'
 import type { MapClickOwner, Parcel, ParcelEntry, SceneObj } from './types'
 import type { SavedParcel } from './lib/types'
 import type { ScenePersist } from './lib/scenePersist'
@@ -156,7 +158,7 @@ export function useParcels(deps: {
           return Cesium.Cartesian3.fromDegrees(lo, la)
         })
         addParcelSel({
-          id: parcel.id, label: parcel.label, knArea: parcel.knArea,
+          id: parcel.id, label: parcel.label, knArea: parcel.knArea, iskn: parcel.iskn, ku: parcel.ku,
           positions: toCart(parcel.ring), holes: parcel.holes.map(toCart),
         })
       }
@@ -202,7 +204,7 @@ export function useParcels(deps: {
       show: parcelHl,
       polyline: { positions: [...h, h[0]], width: 2, material: PARCEL_COLOR.withAlpha(0.7), clampToGround: true },
     }))
-    parcelsRef.current.set(pid, { positions: parcel.positions, ring, holes, knArea: parcel.knArea ?? 0, label: parcel.label ?? '', ents: [fill, border, ...holeBorders] })
+    parcelsRef.current.set(pid, { positions: parcel.positions, ring, holes, knArea: parcel.knArea ?? 0, label: parcel.label ?? '', iskn: parcel.iskn, ku: parcel.ku, ents: [fill, border, ...holeBorders] })
     upsertObj({ id: `parcel-${pid}`, kind: 'parcel', name: `Parcela ${parcel.label || parcel.id || ''}`.trim(), visible: true })
     setParcelCount(parcelsRef.current.size)
     if (save) saveParcels()
@@ -216,6 +218,7 @@ export function useParcels(deps: {
   function saveParcels() {
     const list: SavedParcel[] = [...parcelsRef.current.entries()].map(([pid, p]) => ({
       pid, label: p.label, knArea: p.knArea,
+      ...(p.iskn ? { iskn: p.iskn } : {}), ...(p.ku ? { ku: p.ku } : {}),
       ring: p.ring as [number, number][],
       holes: p.holes as [number, number][][],
     }))
@@ -227,8 +230,67 @@ export function useParcels(deps: {
     const toCart = (r: [number, number][]) => r.map(([lo, la]) => Cesium.Cartesian3.fromDegrees(lo, la))
     for (const p of list) {
       if (!p.ring?.length) continue
-      addParcelSel({ id: p.pid, label: p.label, knArea: p.knArea, positions: toCart(p.ring), holes: (p.holes ?? []).map(toCart) }, false)
+      addParcelSel({ id: p.pid, label: p.label, knArea: p.knArea, iskn: p.iskn, ku: p.ku, positions: toCart(p.ring), holes: (p.holes ?? []).map(toCart) }, false)
     }
+  }
+
+  /**
+   * Parcely uložené dřív, než se k nim ukládal název k.ú. a identifikátor v katastru, si je
+   * dohledají v RÚIAN (nové je mají rovnou z WFS). Jen do paměti — ukládat odvoditelný údaj
+   * do scény nemá cenu. Každá parcela se zkouší jednou, i kdyby ji RÚIAN neznal.
+   */
+  const [, setInfoVer] = useState(0)
+  const enrichTriedRef = useRef(new Set<string>())
+  useEffect(() => {
+    const missing = [...parcelsRef.current.entries()].filter(([pid, p]) => (!p.iskn || !p.ku) && !enrichTriedRef.current.has(pid))
+    if (!missing.length) return
+    for (const [pid] of missing) enrichTriedRef.current.add(pid)
+    void (async () => {
+      try {
+        const codes = missing.flatMap(([pid]) => { const sp = splitParcelId(pid); return sp ? [sp.kuKod] : [] })
+        const [names, iskns] = await Promise.all([
+          codes.length ? kuNames(codes) : new Map<number, string>(),
+          parcelIskns(missing.filter(([, p]) => !p.iskn).map(([pid]) => pid)),
+        ])
+        let changed = false
+        for (const [pid] of missing) {
+          const cur = parcelsRef.current.get(pid)
+          if (!cur) continue
+          const kod = splitParcelId(pid)?.kuKod
+          if (!cur.ku && kod != null && names.has(kod)) { cur.ku = names.get(kod); changed = true }
+          if (!cur.iskn && iskns.has(pid)) { cur.iskn = iskns.get(pid); changed = true }
+        }
+        if (changed) setInfoVer(v => v + 1) // překreslit seznam parcel v panelu
+      } catch (e) { console.warn('Doplnění údajů parcel z RÚIAN selhalo:', e) }
+    })()
+  }, [parcelCount])
+
+  /**
+   * Přelet kolmo nad parcelu. Její body leží na elipsoidu, takže výška terénu se vezme z načtené
+   * dlaždice, a když tam ještě není, z ČÚZK (Bpv + kvazigeoid) — jinak by kamera skončila pod zemí.
+   */
+  async function flyToParcel(pid: string) {
+    const v = viewerRef.current
+    const p = parcelsRef.current.get(pid)
+    if (!v || v.isDestroyed() || !p?.ring.length) return
+    const lons = p.ring.map(r => r[0]), lats = p.ring.map(r => r[1])
+    const w = Math.min(...lons), e = Math.max(...lons), s = Math.min(...lats), n = Math.max(...lats)
+    const lon = (w + e) / 2, lat = (s + n) / 2
+    const diag = Cesium.Cartesian3.distance(Cesium.Cartesian3.fromDegrees(w, s), Cesium.Cartesian3.fromDegrees(e, n))
+    let ground = v.scene.globe.getHeight(Cesium.Cartographic.fromDegrees(lon, lat))
+    if (ground == null) {
+      try {
+        const at = await fetchElevSampler('dmr5g', w, s, e, n, 3)
+        const h = at(lon, lat)
+        if (h != null) ground = h + geoidN(lon, lat)
+      } catch { /* bez výšky se letí výš, viz níž */ }
+    }
+    if (v.isDestroyed()) return
+    v.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(lon, lat, (ground ?? 600) + Math.max(120, diag * 1.8)),
+      orientation: { heading: v.camera.heading, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+      duration: 1.2,
+    })
   }
 
   function removeParcel(pid: string) {
@@ -364,6 +426,7 @@ export function useParcels(deps: {
     clearAllParcels,
     clearArea,
     finalizeArea,
+    flyToParcel,
     measureSum,
     parcelCount,
     parcelHl,

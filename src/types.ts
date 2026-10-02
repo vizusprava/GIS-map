@@ -40,10 +40,12 @@ export type GroundHit = { lon: number; lat: number; height: number }
 // `holes` = vykrojené parcely uvnitř (typicky stavební parcela v zahradě). Bez jejich
 // odečtení vychází výměra pozemku větší, než má katastr — proto je vedeme zvlášť.
 // `label` = číslo parcely z KN („354“), `knArea` = výměra zapsaná v KN (0 = neznámá).
-export type Parcel = { id: string; label?: string; knArea?: number; positions: Cesium.Cartesian3[]; holes?: Cesium.Cartesian3[][] }
+// `id` = národní číslo parcely (`621919-95/1`), `iskn` = identifikátor v katastru (odkaz do Nahlížení
+// do KN), `ku` = název katastrálního území
+export type Parcel = { id: string; label?: string; knArea?: number; iskn?: number; ku?: string; positions: Cesium.Cartesian3[]; holes?: Cesium.Cartesian3[][] }
 // Vybraná parcela v mapě: prstence v lon/lat (`ring`, `holes`) kvůli uložení do scény a výpočtům,
 // `ents` = její zvýraznění. `hidden` = vypnutá v panelu Scéna (výběr i ořez ji dál počítají).
-export type ParcelEntry = { positions: Cesium.Cartesian3[]; ring: number[][]; holes: number[][][]; knArea: number; label: string; ents: Cesium.Entity[]; hidden?: boolean }
+export type ParcelEntry = { positions: Cesium.Cartesian3[]; ring: number[][]; holes: number[][][]; knArea: number; label: string; iskn?: number; ku?: string; ents: Cesium.Entity[]; hidden?: boolean }
 export type Anchor = { lon: number; lat: number; h: number }
 
 /** Kdo smí zpracovat klik do mapy. Vždycky nejvýš jeden — proto jeden stav, ne osm. */

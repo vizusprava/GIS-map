@@ -14,7 +14,7 @@
  * po tom ruka natáhne sama. Levý panel zůstává na nastavení, ne na hledání.
  */
 import { Search, Loader2, Landmark, MapPin, X, ChevronDown, Crosshair } from 'lucide-react'
-import type { AdminUnit } from './katastr'
+import type { AdminUnit, ParcelHit } from './katastr'
 import { toolTheme } from './toolColors'
 
 /** Místo z geokodéru (Nominatim). `bbox` je [jih, sever, západ, východ] jako v jejich odpovědi. */
@@ -36,12 +36,15 @@ type Props = {
   /** Katastrální území rozbalené obce — vlastní skupina, bývá jich i pár desítek. */
   parts: AdminUnit[]
   places: PlaceHit[]
+  /** Parcely podle čísla (dotaz „95/1 České Budějovice 1"). */
+  parcels: ParcelHit[]
   open: boolean
   onClose: () => void
   /** Vrátí nabídku po výběru — v jednom hledání jich bývá k vyzkoušení víc (obec × k.ú. × kraj). */
   onOpen: () => void
   onPickUnit: (u: AdminUnit) => void
   onPickPlace: (p: PlaceHit) => void
+  onPickParcel: (h: ParcelHit) => void
   onExpandParts: (obecKod: number) => void
   /** Režim „vyber klikem do mapy" — tentýž stav, jaký zapíná tlačítko v panelu. */
   pickMode: boolean
@@ -53,7 +56,7 @@ type Props = {
 
 export function MapSearch(p: Props) {
   const obec = p.units.find(u => u.level === 'Obec')
-  const hasResults = p.units.length > 0 || p.parts.length > 0 || p.places.length > 0
+  const hasResults = p.units.length > 0 || p.parts.length > 0 || p.places.length > 0 || p.parcels.length > 0
 
   return (
     // `pointer-events-none` na obalu, `auto` na vnitřcích: mimo lištu a nabídku musí klik projít
@@ -72,7 +75,8 @@ export function MapSearch(p: Props) {
             // Esc v poli si musí poradit sám: globální posluchač vstupní pole přeskakuje,
             // aby nebral Escape rozepsanému textu jinde v appce.
             onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); p.onClose() } }}
-            placeholder="Najít obec, kraj, k.ú. nebo místo…"
+            placeholder="Najít obec, k.ú., místo nebo parcelu (95/1 Liberec)…"
+            title="Obec, kraj, okres, katastrální území, adresa či místo — nebo parcela: „95/1 Liberec“, „st. 866 Mrač“, samotné číslo hledá v k.ú. uprostřed obrazovky"
             className="min-w-0 flex-1 bg-transparent text-sm text-gray-100 placeholder-gray-500 outline-none"
           />
           {p.query && (
@@ -123,6 +127,20 @@ export function MapSearch(p: Props) {
 
         {p.open && hasResults && (
           <div className="mt-1.5 max-h-[60vh] overflow-y-auto rounded-xl border border-gray-700 bg-gray-900/95 py-1 shadow-xl">
+            {p.parcels.length > 0 && (
+              <Group title="Parcely">
+                {p.parcels.map(h => (
+                  <Row
+                    key={h.id}
+                    onClick={() => p.onPickParcel(h)}
+                    icon={<MapPin size={14} className={toolTheme('parcel').text} />}
+                    label={`${h.label} · ${h.ku ?? ''}`}
+                    note={h.obec ?? `${Math.round(h.knArea).toLocaleString('cs-CZ')} m²`}
+                  />
+                ))}
+              </Group>
+            )}
+
             {p.units.length > 0 && (
               <Group title="Správní území">
                 {p.units.map((u, i) => (
