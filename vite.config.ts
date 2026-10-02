@@ -12,11 +12,16 @@ export default defineConfig(({ command }) => ({
   // funguje v kořeni domény i v libovolné podcestě (GitHub Pages /GIS-map/) bez překládání.
   // V dev serveru musí zůstat '/' — relativní base tam Vite stejně ignoruje.
   base: command === 'build' ? './' : '/',
-  plugins: [react(), tailwindcss(), cesium()],
+  // `rebuildCesium`: Cesium se zabalí do bundlu jako obyčejný modul, místo aby ho plugin vložil
+  // do <head> jako blokující <script> (5,8 MB). Tím se dá oddělit do chunku mapy, který se
+  // stáhne až při otevření scény — přihlášení ani přehled scén na něj nečekají.
+  // Workers/Assets/Widgets plugin kopíruje do `cesium/` dál stejně; CESIUM_BASE_URL nastaví sám.
+  plugins: [react(), tailwindcss(), cesium({ rebuildCesium: true })],
+  // Worker na výkresy (drawingWorker.ts) si DWG převodník natahuje dynamickým importem —
+  // to umí jen modulový worker, výchozí IIFE by ho nerozdělil.
+  worker: { format: 'es' },
   resolve: {
     alias: {
-      // jádro vieweru žije uvnitř projektu (vendorované z react-app/viewer-core) — žádné ../
-      '@core': path.resolve(import.meta.dirname, 'src/viewer-core'),
       '@': path.resolve(import.meta.dirname, 'src'),
     },
   },

@@ -7,13 +7,18 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tiles": "node scripts/tile-server.mjs"
+    "tiles": "node scripts/tile-server.mjs",
+    "test:section": "node --import ./scripts/ts-resolve.mjs scripts/test-section.mjs",
+    "test:terrain": "node --import ./scripts/ts-resolve.mjs scripts/test-terrain.mjs",
+    "test:dxf": "node --import ./scripts/ts-resolve.mjs scripts/test-dxf.mjs",
+    "test:savequeue": "node --import ./scripts/ts-resolve.mjs scripts/test-savequeue.mjs",
+    "test:export": "node --import ./scripts/ts-resolve.mjs scripts/test-export.mjs",
+    "test:perf": "node --import ./scripts/ts-resolve.mjs scripts/test-perf.mjs",
+    "test:geoid": "node --import ./scripts/ts-resolve.mjs scripts/test-geoid.mjs",
+    "test": "npm run test:section && npm run test:terrain && npm run test:dxf && npm run test:savequeue && npm run test:export && npm run test:perf && npm run test:geoid"
   },
   "dependencies": {
     "@mlightcad/libredwg-web": "^0.7.9",
-    "@react-three/drei": "^10.7.7",
-    "@react-three/fiber": "^9.6.1",
-    "@react-three/postprocessing": "^3.0.4",
     "@supabase/supabase-js": "^2.105.4",
     "@tanstack/react-query": "^5.100.10",
     "cdt2d": "^1.0.0",
@@ -28,7 +33,6 @@
     "react-router-dom": "^7.15.1",
     "sonner": "^2.0.7",
     "three": "^0.184.0",
-    "utif": "^3.1.0",
     "vite-plugin-cesium": "^1.2.23",
     "zustand": "^5.0.13"
   },

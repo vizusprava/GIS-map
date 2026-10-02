@@ -17,8 +17,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "@core": ["./src/viewer-core/index.ts"],
-      "@core/*": ["./src/viewer-core/*"],
       "@/*": ["./src/*"]
     }
   },
