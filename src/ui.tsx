@@ -5,7 +5,7 @@
  * sekci otevřít i zvenčí (např. po zapnutí funkce skočit na její nastavení).
  */
 import { createContext, useContext, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight, Map as MapIcon, Mountain } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { toolTheme, type ToolId } from './toolColors'
 
 /**
@@ -76,29 +76,6 @@ export function Section({ id, title, dflt, badge, open, onToggle, children }: {
 }
 
 export type CamProj = 'persp' | 'ortho'
-
-/**
- * Přepínač projekce kamery: perspektiva ↔ pohled shora bez perspektivy (ortho).
- *
- * Jedno segmentové tlačítko, ne dvě samostatná — přepíná se mezi dvěma stavy a je potřeba vidět,
- * ve kterém zrovna jsi. Sedí nahoře v panelu Kamera v liště dole (CameraMenu.tsx); totéž přepíná
- * klávesa T.
- */
-export function ProjSwitch({ mode, onPersp, onOrtho }: { mode: CamProj; onPersp: () => void; onOrtho: () => void }) {
-  const cls = (on: boolean) => `flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors ${
-    on ? 'bg-sky-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
-  }`
-  return (
-    <div className="flex items-center gap-0.5">
-      <button onClick={onPersp} title="Perspektivní pohled — běžná 3D kamera" className={cls(mode === 'persp')}>
-        <Mountain size={15} /> Perspektiva
-      </button>
-      <button onClick={onOrtho} title="Pohled shora bez perspektivy (ortho) — jako půdorys nebo plán" className={cls(mode === 'ortho')}>
-        <MapIcon size={15} /> Shora
-      </button>
-    </div>
-  )
-}
 
 /** Přepínací tlačítko; `tool` ho v zapnutém stavu obarví barvou nástroje (`toolColors.ts`). */
 export function ToggleBtn({ active, onClick, icon, label, tool }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; tool?: ToolId }) {

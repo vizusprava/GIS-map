@@ -1,5 +1,5 @@
 /**
- * Lišta dole nad mapou: podklad, výběr, nástroje, kamera a prezentace — každé jako jedna skupina.
+ * Lišta dole nad mapou: podklad, výběr, nástroje, pohled, kamera a prezentace — každé jako jedna skupina.
  *
  * Skupina se rozbalí najetím myší (na dotykové obrazovce ťuknutím) a její tlačítko ukazuje, co je
  * v ní zrovna zapnuté, takže lišta zůstává úzká a stav je vidět i zavřený. Je to schválně jen rychlá
@@ -25,7 +25,7 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type * as Cesium from 'cesium'
-import { Building2, Check, ChevronUp, Crosshair, Eye, EyeOff, Grid3x3, Hexagon, Image, Keyboard, Landmark, Layers, Loader2, Map as MapIcon, MapPin, MousePointerClick, Move, PencilRuler, Ruler, Video, X } from 'lucide-react'
+import { Building2, Check, ChevronUp, Crosshair, Eye, EyeOff, Grid3x3, Hexagon, Image, Keyboard, Landmark, Layers, Loader2, Map as MapIcon, MapPin, Mountain, MousePointerClick, Move, PencilRuler, Ruler, Video, X } from 'lucide-react'
 import { ENABLE_GOOGLE_3D } from './config'
 import { TILE_SIZES, type TileSize } from './tiles'
 import type { CamProj } from './ui'
@@ -62,7 +62,7 @@ type Props = {
   onMove: () => void
   /** je vybraný model, který jde posouvat? */
   canMove: boolean
-  // kamera a prezentace
+  // pohled, kamera a prezentace
   camProj: CamProj
   onPersp: () => void
   onOrtho: () => void
@@ -76,7 +76,7 @@ type Props = {
   calloutMode: boolean
 }
 
-type GroupId = 'podklad' | 'vyber' | 'nastroje' | 'kamera' | 'prezentace'
+type GroupId = 'podklad' | 'vyber' | 'nastroje' | 'pohled' | 'kamera' | 'prezentace'
 
 /** Klávesová zkratka: písmeno (malé), případně se Shiftem, a co udělá. */
 type Shortcut = { key: string; shift?: boolean; label: string; run: () => void; when?: boolean; note?: string }
@@ -222,9 +222,20 @@ export function MapTools(p: Props) {
         </Group>
 
         <Group
-          {...group} id="kamera" panel title="Kamera: perspektiva / shora, uložené pohledy a vzhled"
-          icon={p.camProj === 'ortho' ? <MapIcon size={15} /> : <Video size={15} />}
-          label={p.camProj === 'ortho' ? 'Shora' : 'Kamera'} badge={p.viewCount ? String(p.viewCount) : undefined}
+          {...group} id="pohled" title="Perspektiva, nebo pohled shora bez perspektivy"
+          icon={p.camProj === 'ortho' ? <MapIcon size={15} /> : <Mountain size={15} />}
+          label={p.camProj === 'ortho' ? 'Shora' : 'Perspektiva'}
+        >
+          <Item icon={<Mountain size={13} />} label="Perspektiva" active={p.camProj === 'persp'} onClick={pick(p.onPersp)} />
+          <Item icon={<MapIcon size={13} />} label="Shora (půdorys)" active={p.camProj === 'ortho'} onClick={pick(p.onOrtho)} />
+          <Sep />
+          <div className="px-2.5 pb-0.5 text-[10px] text-gray-500">Přepnout klávesou <Kbd>T</Kbd></div>
+        </Group>
+
+        <Group
+          {...group} id="kamera" panel title="Kamera: uložené pohledy a vzhled"
+          icon={<Video size={15} />}
+          label="Kamera" badge={p.viewCount ? String(p.viewCount) : undefined}
         >
           {p.cameraMenu}
         </Group>

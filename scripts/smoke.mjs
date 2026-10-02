@@ -109,7 +109,7 @@ async function shot(name) {
   writeFileSync(join(work, 'snimky', `${name}.png`), Buffer.from(r.result.data, 'base64'))
 }
 const COLORS = 'emerald|orange|cyan|violet|amber|blue|sky|rose|lime|fuchsia|teal'
-/** Popisek a barva tlačítka skupiny v liště (0 podklad, 1 výběr, 2 nástroje, 3 kamera, 4 prezentace). */
+/** Popisek a barva tlačítka skupiny v liště (0 podklad, 1 výběr, 2 nástroje, 3 pohled, 4 kamera, 5 prezentace). */
 const group = i => ev(`(() => { const b = document.querySelectorAll('button[aria-haspopup="menu"]')[${i}]; const m = b.className.match(/bg-(${COLORS})-600/); return { label: b.innerText.trim(), color: m ? m[1] : null } })()`)
 /** Sekce panelu: existuje? rozbalená? obarvená? */
 const section = id => ev(`(() => { const d = document.querySelector('[data-sec="${id}"]'); if (!d) return null; const m = d.className.match(/border-(${COLORS})-500/); return { open: d.children.length > 1, color: m ? m[1] : null, title: d.querySelector('button')?.innerText.trim() } })()`)
@@ -174,7 +174,7 @@ async function main() {
 
   console.log('▸ kontroly')
   await check('mapa se rozjede a kreslí', async () => {
-    await waitFor(`!!window.__scene && document.querySelectorAll('button[aria-haspopup="menu"]').length === 5`, SOFT ? 120_000 : 60_000, 'scéna Cesia a lišta nástrojů')
+    await waitFor(`!!window.__scene && document.querySelectorAll('button[aria-haspopup="menu"]').length === 6`, SOFT ? 120_000 : 60_000, 'scéna Cesia a lišta nástrojů')
     const c = await ev(`(() => { const c = window.__scene.canvas; return [c.width, c.height] })()`)
     expect(c[0] > 0 && c[1] > 0, `plátno má nulovou velikost ${c}`)
     return `plátno ${c[0]}×${c[1]}`
@@ -231,18 +231,28 @@ async function main() {
     for (const id of ['pohledy', 'kamera', 'prezentace']) expect(!(await section(id)), `sekce ${id} je pořád v panelu`)
   })
 
-  await check('panel Kamera: projekce, uložení pohledu, vzhled bez bloomu, zůstane otevřený', async () => {
-    await openGroup(3)
+  await check('skupina Pohled: perspektiva a shora (klávesa T přepíná)', async () => {
+    expect((await group(3)).label === 'Perspektiva', `ve skupině je „${(await group(3)).label}"`)
+    // shora se přepne až po krátkém doletu kamery kolmo dolů
+    const label = `document.querySelectorAll('button[aria-haspopup="menu"]')[3].innerText.trim()`
+    await press('t')
+    await waitFor(`${label} === 'Shora'`, 5000, 'přepnutí klávesou T na pohled shora')
+    await press('t')
+    await waitFor(`${label} === 'Perspektiva'`, 5000, 'přepnutí klávesou T zpátky na perspektivu')
+  })
+
+  await check('panel Kamera: uložení pohledu, vzhled bez bloomu, zůstane otevřený', async () => {
+    await openGroup(4)
     await waitFor(`!!document.querySelector('[data-panel="kamera"]')`, 5000, 'panel Kamera')
     let t = await panelText('kamera')
-    expect(t.includes('Perspektiva') && t.includes('Shora'), 'chybí přepínač projekce')
+    expect(!t.includes('Perspektiva'), 'perspektiva / shora má být ve vlastní skupině, ne v Kameře')
     expect(await clickText(`document.querySelector('[data-panel="kamera"]')`, 'Uložit aktuální pohled'), 'chybí Uložit aktuální pohled')
     await sleep(600)
     await press('Escape') // nový pohled se otevře k přejmenování — Esc zruší jen přejmenování
     t = await panelText('kamera')
     await shot('panel-kamera')
     expect(t && /1\./.test(t), 'uložený pohled není v seznamu (nebo Esc v poli zavřel panel)')
-    expect((await group(3)).label.includes('1') || (await ev(`document.querySelectorAll('button[aria-haspopup="menu"]')[3].innerText`)).includes('1'), 'na tlačítku Kamera chybí počet pohledů')
+    expect((await group(4)).label.includes('1'), 'na tlačítku Kamera chybí počet pohledů')
     expect(await clickText(`document.querySelector('[data-panel="kamera"]')`, 'Vzhled'), 'chybí záložka Vzhled')
     await sleep(300)
     t = await panelText('kamera')
@@ -263,7 +273,7 @@ async function main() {
   })
 
   await check('panel Prezentace: vypínač a popisky, bez pulzu parcel', async () => {
-    await openGroup(4)
+    await openGroup(5)
     await waitFor(`!!document.querySelector('[data-panel="prezentace"]')`, 5000, 'panel Prezentace')
     let t = await panelText('prezentace')
     expect(t.includes('Prezentace zapnutá') && t.includes('Přidat popisek'), 'chybí vypínač nebo popisky')

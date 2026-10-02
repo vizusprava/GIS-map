@@ -1,6 +1,6 @@
 /**
- * Vzhled kamery — zorný úhel, rozostření okrajů, chvění a kroužení. Záložka „Vzhled" v nabídce
- * Kamera v liště dole (CameraMenu.tsx); projekci přepíná nabídka sama nad záložkami.
+ * Vzhled kamery — zorný úhel, rozostření okrajů, chvění a kroužení. Záložka „Vzhled" v panelu
+ * Kamera v liště dole (CameraMenu.tsx); projekci přepíná skupina Pohled v liště.
  *
  * Jen ovládání; co se s tím děje ve scéně, drží `useLookTool` a `useCameraMotion`.
  */
