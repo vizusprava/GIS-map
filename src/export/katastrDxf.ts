@@ -7,7 +7,7 @@
  * Výstup sedí na terén i na exportované OBJ dlaždice bez přepočtu: WFS vrací parcely rovnou
  * v EPSG:5514 (stejná soustava jako vrcholy dlaždic) a DMR výšky jsou Bpv (stejné jako Z terénu).
  */
-import { wgsOf } from '../tiles'
+import { wgsOf, type Offset } from '../tiles'
 import { fetchParcelsInBbox } from '../katastr'
 import { fetchElevSampler } from '../elevation'
 import { pointInRing, ringCentroid } from '../rings'
@@ -52,8 +52,16 @@ export async function fetchKatastrPolylines(minX: number, minY: number, maxX: nu
   return { polylines, count: polylines.length, sampleZ }
 }
 
-export async function fetchKatastrDxf(minX: number, minY: number, maxX: number, maxY: number): Promise<{ dxf: string; count: number } | null> {
+/**
+ * Katastr jako hotový DXF. `off` se od souřadnic ODEČÍTÁ — stejná konvence jako u dlaždic
+ * terénu, takže při exportu posunutém k počátku leží křivky pořád přesně na terénu.
+ */
+export async function fetchKatastrDxf(minX: number, minY: number, maxX: number, maxY: number, off?: Offset): Promise<{ dxf: string; count: number } | null> {
   const r = await fetchKatastrPolylines(minX, minY, maxX, maxY)
-  return r ? { dxf: buildDxf(r.polylines), count: r.count } : null
+  if (!r) return null
+  const polylines = off
+    ? r.polylines.map(pl => pl.map(([x, y, z]) => [x - off.x, y - off.y, z - off.z] as [number, number, number]))
+    : r.polylines
+  return { dxf: buildDxf(polylines), count: r.count }
 }
 

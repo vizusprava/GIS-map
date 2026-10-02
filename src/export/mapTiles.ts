@@ -2,20 +2,21 @@
  * 2D mapa vybraných dlaždic — každá dlaždice jako samostatný georeferencovaný obrázek.
  *
  * Proč ne jeden velký obrázek: kraj v nativních 20 cm/px má 79 miliard pixelů. Do canvasu se
- * nevejde (strop je ~268 Mpx) a `stitchMapsCore` proto u velkých území TIŠE zmenší měřítko —
- * z 20 cm se stane 3,4 m a nikdo se to nedozví. Dlaždicový výstup drží zvolené rozlišení
- * bez ohledu na velikost území; QGIS i ArcGIS si z takové sady složí mozaiku.
+ * nevejde (strop je ~268 Mpx) a ani zápis po pruzích (geotiff.ts) to nezachrání — takový soubor
+ * neotevře žádný program. Dlaždicový výstup drží zvolené rozlišení bez ohledu na velikost
+ * území; QGIS i ArcGIS si z takové sady složí mozaiku.
  *
  * Paměť je plochá: v jednu chvíli se drží jedna dlaždice (canvas + JPEG). Zip se skládá
  * streamovaně a chunky odcházejí rovnou do cíle — na disk, kde to prohlížeč umí, jinak do
  * paměti ke stažení. Proto projde i výstup, který se do RAM nevejde.
  */
 import { Zip, ZipDeflate, ZipPassThrough, strToU8 } from 'three/examples/jsm/libs/fflate.module.js'
-import { type Tile, type MapLayer, tileBounds, tileName, pickTopoTier, mapBboxUrl, concatBytes } from '../tiles'
+import { type Tile, type MapLayer, tileBounds, tileName, pickTopoTier, mapBboxUrl, katastrBboxUrl, concatBytes } from '../tiles'
 import { download } from '../exportUtils'
 import { pointInRing } from '../rings'
 import { type ExportCtx, throwIfAborted } from './ctx'
-import { loadMapChunk } from './maps'
+import { loadMapChunk, loadOverlayChunk } from './maps'
+import type { MapOverlay } from './drawOverlay'
 
 /** Nabízená rozlišení v metrech na pixel. 20 cm je nativní ortofoto ČÚZK — pod tím už jen zvětšuje. */
 export const MAP_RES = [0.2, 0.5, 1, 2, 5] as const
@@ -154,7 +155,13 @@ function memSink(name: string): Sink {
 
 export async function exportMapTiles(
   tiles: Tile[],
-  o: { tileSize: number; res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][] },
+  o: {
+    tileSize: number; res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][]
+    /** dokreslení výkresů — volá se pro každou dlaždici s její obálkou */
+    overlay?: MapOverlay
+    /** přes podklad dokreslit katastrální mapu ČÚZK */
+    katastr?: boolean
+  },
   ctx: ExportCtx,
 ): Promise<string> {
   if (!tiles.length) throw new Error('Nejsou vybrané žádné dlaždice')
@@ -218,8 +225,15 @@ export async function exportMapTiles(
         const { bmp } = await loadMapChunk(mapBboxUrl(bx0, by0, bx1, by1, px1 - px0, py1 - py0, o.layer, tier), ctx.signal, true)
         g.drawImage(bmp, px0, py0)
         bmp.close?.()
+        if (o.katastr) {
+          const kn = await loadOverlayChunk(katastrBboxUrl(bx0, by0, bx1, by1, px1 - px0, py1 - py0), ctx.signal)
+          g.drawImage(kn, px0, py0)
+          kn.close?.()
+        }
       }
     }
+    // ještě uvnitř ořezu, ať se kresba ořízne na tvar území spolu s mapou
+    o.overlay?.(g, side, side, { minX: b.x0, minY: b.y0, maxX: b.x1, maxY: b.y1 })
 
     if (edgeTile) g.restore()
 

@@ -13,7 +13,7 @@ import * as THREE from 'three'
 import polygonClipping from 'polygon-clipping'
 import { Zip, ZipDeflate, ZipPassThrough, strToU8 } from 'three/examples/jsm/libs/fflate.module.js'
 import { sjtskOf, concatBytes, buildMaxScriptFiles } from '../tiles'
-import { GEOID_CZ } from '../config'
+import { geoidN } from '../geoid'
 import { pointInRing } from '../rings'
 import { getGltfLoader, glbBin, gltfImage, textureImageIndex, type GltfJson, type GltfParser } from '../model3d'
 import { download } from '../exportUtils'
@@ -96,7 +96,7 @@ export async function exportGoogleMesh(tiles: GoogleTile[], polys: [number, numb
         const lon = Cesium.Math.toDegrees(carto.longitude), lat = Cesium.Math.toDegrees(carto.latitude)
         const sj = sjtskOf(lon, lat) as number[]
         // glTF má počátek UV vlevo NAHOŘE, OBJ vlevo DOLE → V se překlápí
-        return [sj[0], sj[1], carto.height - GEOID_CZ, uv ? uv.getX(i) : 0, uv ? 1 - uv.getY(i) : 0]
+        return [sj[0], sj[1], carto.height - geoidN(lon, lat), uv ? uv.getX(i) : 0, uv ? 1 - uv.getY(i) : 0]
       }
       for (let t = 0; t < nTri; t++) {
         const a = idx ? idx.getX(t * 3) : t * 3, b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1, c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2

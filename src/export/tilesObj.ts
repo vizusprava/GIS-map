@@ -24,6 +24,8 @@ import type { CoordPoint } from '../lib/types'
 
 export type TilesObjOpts = {
   tileSize: TileSize; meshStep: MeshStep; texSize: TexSize
+  /** s ortofotem jako texturou (jinak čistý šedý terén — rychlejší a menší) */
+  ortho: boolean
   /** přibalit budovy ČÚZK jako samostatný objekt „budovy" */
   buildings: boolean
   /** přibalit hranice parcel jako katastr.dxf v témže S-JTSK rámci */
@@ -84,7 +86,10 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
   ctx.report(0, `0/${tiles.length}`)
   let done = 0
   const fetched = await pool(tiles, 3, async tile => {
-    const [grid, jpg] = await Promise.all([fetchTileHeights(tile, o.meshStep, ctx.signal), fetchTileOrtho(tile, o.texSize, ctx.signal)])
+    const [grid, jpg] = await Promise.all([
+      fetchTileHeights(tile, o.meshStep, ctx.signal),
+      o.ortho ? fetchTileOrtho(tile, o.texSize, ctx.signal) : Promise.resolve(null),
+    ])
     done++
     ctx.report(done / tiles.length, `${done}/${tiles.length}`)
     return { tile, grid, jpg }
@@ -127,7 +132,8 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
   if (o.buildings) {
     ctx.report(-1, 'budovy…')
     try {
-      const bch = await buildingsObjChunk(minX, minY, maxX, maxY, vBase, ctx.signal)
+      // tentýž posun jako terén — jinak by budovy při exportu k počátku zůstaly stovky km opodál
+      const bch = await buildingsObjChunk(minX, minY, maxX, maxY, vBase, ctx.signal, off)
       if (bch.obj) { objF.push(strToU8(bch.obj), false); check(); vBase += bch.vCount; hasBuildings = true }
       buildingsLine = bch.line
     } catch (e) {
@@ -139,6 +145,7 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
   check()
 
   for (const f of fetched) {
+    if (!f.jpg) continue
     const jf = new ZipPassThrough(`${tileName(f.tile)}.jpg`) // JPEG už komprimovaný je
     zip.add(jf)
     jf.push(f.jpg, true)
@@ -151,8 +158,9 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
     d.push(strToU8(text), true)
     check()
   }
-  addText('teren.mtl', buildMtl(tiles) + (hasBuildings ? '\n' + BUILDING_MTL : ''))
-  addText('vray_material.ms', buildMaxScript(tiles))
+  addText('teren.mtl', buildMtl(tiles, o.ortho) + (hasBuildings ? '\n' + BUILDING_MTL : ''))
+  // skript přepíná na VRayMtl s ortofotem — bez ortofota nemá co dělat
+  if (o.ortho) addText('vray_material.ms', buildMaxScript(tiles))
   // Body jdou VEDLE materiálového skriptu, ne do něj: kdo chce jen přepnout materiály, nemá
   // důvod si nechat do scény nasypat helpery.
   if (o.points?.length) {
@@ -165,7 +173,7 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
   if (o.katastr) {
     ctx.report(-1, 'katastr…')
     try {
-      const k = await fetchKatastrDxf(minX, minY, maxX, maxY)
+      const k = await fetchKatastrDxf(minX, minY, maxX, maxY, off)
       throwIfAborted(ctx.signal)
       if (k) { addText('katastr.dxf', k.dxf); katastrLine = `Katastr: katastr.dxf (${k.count} parcel, hranice jako 3D křivky)` }
       else katastrLine = 'Katastr: v oblasti nenalezeny žádné parcely'
@@ -176,7 +184,7 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
   }
 
   addText('info.txt', [
-    'Terén DMR 5G + ortofoto (ČÚZK)',
+    o.ortho ? 'Terén DMR 5G + ortofoto (ČÚZK)' : 'Terén DMR 5G (ČÚZK), bez ortofota',
     '',
     'Souřadnice: S-JTSK / Křovák East North (EPSG:5514), výšky Bpv.',
     (shift[0] || shift[1] || shift[2])
@@ -184,11 +192,13 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
       : 'Žádný posun — vrcholy jsou na skutečných souřadnicích, tak jak leží.',
     '',
     'Import do 3ds Max:',
-    '  1) File > Import > teren.obj (textury natáhne teren.mtl)',
-    '  2) Chceš-li V-Ray: označ dlaždice (nebo neoznač nic — najde si je sám)',
-    '     a spusť Scripting > Run Script > vray_material.ms',
-    '     → označeným objektům vymění materiál za VRayMtl s ortofotem v diffuse.',
-    '     (VRayMtl nejde uložit do .mtl — Wavefront formát renderery nezná.)',
+    o.ortho ? '  1) File > Import > teren.obj (textury natáhne teren.mtl)' : '  1) File > Import > teren.obj',
+    ...(o.ortho ? [
+      '  2) Chceš-li V-Ray: označ dlaždice (nebo neoznač nic — najde si je sám)',
+      '     a spusť Scripting > Run Script > vray_material.ms',
+      '     → označeným objektům vymění materiál za VRayMtl s ortofotem v diffuse.',
+      '     (VRayMtl nejde uložit do .mtl — Wavefront formát renderery nezná.)',
+    ] : ['     Každá dlaždice má vlastní šedý materiál — texturu jde doplnit později.']),
     ...(o.points?.length ? [
       `  3) Odečtené body (${o.points.length}): Scripting > Run Script > body.ms`,
       '     → vyrobí Point helpery přesně tam, kde jsi je odečetl v mapě.',
@@ -200,7 +210,9 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
     '',
     `Dlaždic: ${tiles.length} × ${o.tileSize} m`,
     `Mřížka terénu: ${stepOf(tiles[0], fetched[0].grid.n).toFixed(3)} m (zdrojový DMR 5G má body po ~2,8 m)`,
-    `Textura: ${o.texSize} px na dlaždici = ${(o.tileSize / o.texSize * 100).toFixed(1)} cm/px (ortofoto ČÚZK má nativně 20 cm/px)`,
+    o.ortho
+      ? `Textura: ${o.texSize} px na dlaždici = ${(o.tileSize / o.texSize * 100).toFixed(1)} cm/px (ortofoto ČÚZK má nativně 20 cm/px)`
+      : 'Textura: bez ortofota',
     katastrLine,
     buildingsLine,
     'Budovy (je-li): objekt „budovy" = půdorysy ČÚZK, výška z DMP1G−DMR5G, střecha',
@@ -208,7 +220,7 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
     'Y je mřížkový sever Křováku, ne pravý sever (meridiánová konvergence ~7°).',
     '',
     'katastr.dxf (je-li): hranice parcel jako uzavřené 3D křivky (DXF R12), stejný S-JTSK',
-    'rámec i výšky jako terén → v Maxu lícuje. Import: File > Import > katastr.dxf.',
+    'rámec, výšky i posun jako terén → v Maxu lícuje. Import: File > Import > katastr.dxf.',
     '',
     `Vygenerováno: ${new Date().toLocaleString('cs-CZ')}`,
   ].join('\n'))
@@ -216,5 +228,5 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
   zip.end()
   check()
   download(concatBytes(chunks), `teren_sjtsk_${Math.round((minX + maxX) / 2)}_${Math.round((minY + maxY) / 2)}.zip`, 'application/zip')
-  return `Vyvezeno ${tiles.length}× dlaždice ${o.tileSize} m s ortofotem`
+  return `Vyvezeno ${tiles.length}× dlaždice ${o.tileSize} m ${o.ortho ? 's ortofotem' : 'bez ortofota'}`
 }

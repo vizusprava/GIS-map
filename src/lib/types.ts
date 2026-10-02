@@ -99,12 +99,80 @@ export type SceneState = {
   rulers?: Ruler[]
   parcels?: SavedParcel[]
   base?: Base
-  bgMode?: string
+  bgMode?: string    // pozadí ploché mapy
+  bgMode3d?: string  // pozadí 3D reality (pamatuje se zvlášť — v mapě obloha nedává smysl)
   bgCustom?: string
   camera?: SavedCamera
-  splat?: { on: boolean; placement?: Placement }
   /** Odečtené body a posun terénu (viz „Souřadnice" v panelu) — přežijí zavření scény. */
   coords?: { pts: CoordPoint[]; shift?: [number, number, number] }
+  /** Pojmenované řezy modelem — dají se přepínat a přežijí zavření scény. */
+  sections?: SavedSection[]
+  /**
+   * Vybrané dlaždice pro export.
+   *
+   * Ukládají se proto, že výkres se mění, ale území ne: po opravě výkresu je potřeba vyjet
+   * PŘESNĚ tytéž dlaždice, a skládat je znovu ručně by znamenalo, že se výřez pokaždé o kus
+   * liší. `size` je hrana čtverce v metrech (viz `TILE_SIZES`), `cells` jsou indexy mřížky
+   * S-JTSK — tedy totéž, čím je dlaždice jednoznačně daná.
+   */
+  tiles?: { size: number; cells: [number, number][] }
+  /**
+   * Nastavení exportů — ze stejného důvodu jako dlaždice: po opravě výkresu se vyjíždí znovu
+   * a má to vyjet stejně. Posun terénu je v `coords.shift` (sdílí ho i panel Souřadnice).
+   */
+  exportOpts?: ExportOpts
+}
+
+/**
+ * Uložené volby exportu. Typy jsou schválně volné — přicházejí z JSONu scény a `useExports`
+ * je při načtení porovná s povolenými hodnotami; co neprojde, nahradí výchozí.
+ */
+export type ExportOpts = {
+  meshStep?: number
+  texSize?: number
+  /** 3D export s ortofotem jako texturou */
+  ortho?: boolean
+  katastr?: boolean
+  buildings?: boolean
+  mapLayer?: string
+  mapRes?: number
+  mapFormat?: string
+  /** dokreslit do 2D exportu viditelné výkresy */
+  drawings?: boolean
+  /** dokreslit do 2D exportu katastrální mapu (`katastr` výš je DXF hranic u 3D exportu) */
+  mapKatastr?: boolean
+}
+
+/**
+ * Uložený řez.
+ *
+ * Čára se ukládá v LOKÁLNÍ soustavě modelu, ne ve světové. Kdyby se model ve scéně posunul
+ * nebo pootočil, světové souřadnice by ukazovaly vedle — takhle jde řez s ním. Zbytek jsou
+ * čísla z panelu, aby se řez obnovil přesně tak, jak byl zadaný.
+ */
+export type SavedSection = {
+  id: string
+  name: string
+  /** který model se řeže; podle jména, protože id souboru se při novém nahrání změní */
+  model: string
+  /** konce čáry v lokální soustavě modelu (X=východ, Y=sever, Z=nahoru) */
+  a: [number, number, number]
+  b: [number, number, number]
+  flip: boolean
+  offset: number
+  /** šířka výkresu; 0 = přes celý model */
+  len: number
+  height: number
+  thick: number
+  depth: number
+  both: boolean
+  /** k tomu i půdorys a v jaké výšce nad středem čáry */
+  plan?: boolean
+  planZ?: number
+  viewLines: boolean
+  occlusion: boolean
+  edgeAngle: number
+  clipMap: boolean
 }
 
 /**
@@ -116,7 +184,7 @@ export type CoordPoint = {
   /** Křovák EPSG:5514 */
   x: number
   y: number
-  /** výška Bpv (ne nad elipsoidem — ta je o GEOID_CZ vyšší) */
+  /** výška Bpv (ne nad elipsoidem — ta je o kvazigeoid `geoidN` vyšší) */
   z: number
   lon: number
   lat: number

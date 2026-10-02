@@ -8,7 +8,7 @@
  *
  * Modul je bez Cesia/Reactu/DOMu (jen fetch + string parsing + math), aby šel testovat i v Node.
  */
-import { fetchRetry } from './tiles'
+import { fetchRetry, type Offset } from './tiles'
 
 /** Půdorys budovy v S-JTSK (EPSG:5514): vnější obrys + volitelné vnitřní dvory. */
 export type Footprint = { outer: [number, number][]; holes: [number, number][][] }
@@ -220,8 +220,11 @@ export function buildBuildingMesh(fp: Footprint, ground: Sampler, surface: Sampl
 /**
  * Všechny budovy → jeden OBJ objekt „budovy" (bez UV, jedna barva). Indexy jsou globální 1-based
  * s offsetem vBase (index, který dostane první zde vypsaný `v`). Vrací i statistiku typů střech.
+ *
+ * `off` se od vrcholů ODEČÍTÁ — stejná konvence jako `buildTileObj`, takže budovy jdou s terénem,
+ * když je v exportu zadaný posun k počátku.
  */
-export function buildBuildingsObj(fps: Footprint[], ground: Sampler, surface: Sampler, vBase: number):
+export function buildBuildingsObj(fps: Footprint[], ground: Sampler, surface: Sampler, vBase: number, off: Offset = { x: 0, y: 0, z: 0 }):
   { verts: string[]; faces: string[]; vCount: number; count: number; stats: Record<RoofType, number> } {
   const verts: string[] = [], faces: string[] = []
   let vc = 0, count = 0
@@ -231,7 +234,7 @@ export function buildBuildingsObj(fps: Footprint[], ground: Sampler, surface: Sa
     if (!m) continue
     const base = vBase + vc
     for (let i = 0; i < m.positions.length; i += 3)
-      verts.push(`v ${m.positions[i].toFixed(3)} ${m.positions[i + 1].toFixed(3)} ${m.positions[i + 2].toFixed(3)}`)
+      verts.push(`v ${(m.positions[i] - off.x).toFixed(3)} ${(m.positions[i + 1] - off.y).toFixed(3)} ${(m.positions[i + 2] - off.z).toFixed(3)}`)
     for (let i = 0; i < m.indices.length; i += 3)
       faces.push(`f ${base + m.indices[i]} ${base + m.indices[i + 1]} ${base + m.indices[i + 2]}`)
     vc += m.positions.length / 3

@@ -5,6 +5,7 @@
  */
 import { fetchBuildings, buildBuildingsObj } from './buildings'
 import { fetchElevSamplerSJTSK } from './elevation'
+import type { Offset } from './tiles'
 import type { Anchor } from './types'
 
 /**
@@ -23,16 +24,10 @@ export function download(data: BlobPart, filename: string, mime: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-export function anchorFilename(anchor: Anchor, ext: string): string {
-  const lon = Math.round(anchor.lon * 1e6)
-  const lat = Math.round(anchor.lat * 1e6)
-  const h = Math.round(anchor.h * 100)
-  return `geo_${lon}_${lat}_${h}.${ext}`
-}
-
 /**
  * Uzavřené 3D polyliny do DXF (R12) — importuje se do 3ds Max/CAD jako editovatelné splajny/tvary.
- * Souřadnice v lokálním ENU (X=východ, Y=sever, Z=nahoru), stejný rámec jako OBJ export terénu.
+ * Souřadnice se zapisují tak, jak přijdou; appka sem posílá vždy S-JTSK (EPSG:5514) a výšku Bpv,
+ * tedy stejný rámec jako OBJ export terénu.
  */
 export function buildDxf(polylines: [number, number, number][][], layer = 'PARCELY'): string {
   return buildDxfLayers([{ layer, polylines }])
@@ -58,8 +53,9 @@ export function buildDxfLayers(groups: { layer: string; polylines: [number, numb
 /**
  * Budovy ČÚZK pro S-JTSK obdélník → OBJ objekt „budovy" (výška i tvar střechy z DMR5G/DMP1G).
  * Vrací kus OBJ textu k připojení, počet přidaných vrcholů a řádek do info.txt.
+ * `off` = posun, který se odečte od vrcholů (stejně jako u dlaždic terénu).
  */
-export async function buildingsObjChunk(minX: number, minY: number, maxX: number, maxY: number, vBase: number, signal: AbortSignal): Promise<{ obj: string; vCount: number; line: string }> {
+export async function buildingsObjChunk(minX: number, minY: number, maxX: number, maxY: number, vBase: number, signal: AbortSignal, off?: Offset): Promise<{ obj: string; vCount: number; line: string }> {
   const span = Math.max(maxX - minX, maxY - minY)
   const long = Math.min(2048, Math.max(64, Math.ceil(span / 2))) // ~2 m/px, strop 2048
   const sw = Math.max(2, Math.round(long * (maxX - minX) / span))
@@ -71,7 +67,7 @@ export async function buildingsObjChunk(minX: number, minY: number, maxX: number
   ])
   if (signal.aborted) throw new DOMException('Zrušeno', 'AbortError')
   if (!fps.length) return { obj: '', vCount: 0, line: 'Budovy: v oblasti žádné' }
-  const bo = buildBuildingsObj(fps, ground, surface, vBase)
+  const bo = buildBuildingsObj(fps, ground, surface, vBase, off)
   if (!bo.count) return { obj: '', vCount: 0, line: 'Budovy: nevznikly (chybí DMP1G data?)' }
   const obj = 'o budovy\ng budovy\nusemtl budovy\n' + bo.verts.join('\n') + '\n' + bo.faces.join('\n') + '\n'
   return { obj, vCount: bo.vCount, line: `Budovy: ${bo.count} (plochých ${bo.stats.flat}, sedlových ${bo.stats.gable}, valbových ${bo.stats.hip})` }

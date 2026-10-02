@@ -13,11 +13,12 @@
  * Georeference: ModelPixelScale + ModelTiepoint + EPSG:5514 (S-JTSK). QGIS i ArcGIS si ji přečtou,
  * Photoshopu a AE nevadí (ignorují neznámé tagy).
  */
-import { type MapLayer, pickTopoTier, mapBboxUrl, concatBytes } from '../tiles'
+import { type MapLayer, pickTopoTier, mapBboxUrl, katastrBboxUrl, concatBytes } from '../tiles'
 import { download } from '../exportUtils'
 import { type ExportCtx, throwIfAborted } from './ctx'
-import { loadMapChunk } from './maps'
+import { loadMapChunk, loadOverlayChunk } from './maps'
 import { openPng, worldFile } from './pngStream'
+import type { MapOverlay } from './drawOverlay'
 
 /** Strop ČÚZK REST na jeden požadavek. */
 const CHUNK_PX = 4096
@@ -157,7 +158,7 @@ const CANVAS_MAX = 16384
  */
 async function exportOneJpeg(
   b: { x0: number; y0: number; x1: number; y1: number },
-  o: { res: number; layer: MapLayer; clip?: number[][][]; name: string; dir?: OutDir },
+  o: { res: number; layer: MapLayer; clip?: number[][][]; name: string; dir?: OutDir; overlay?: MapOverlay; katastr?: boolean },
   plan: TiffPlan,
   ctx: ExportCtx,
 ): Promise<string> {
@@ -200,10 +201,16 @@ async function exportOneJpeg(
       if (blank) blanks++
       g.drawImage(bmp, x0, y0)
       bmp.close?.()
+      if (o.katastr) {
+        const kn = await loadOverlayChunk(katastrBboxUrl(bx0, by0, bx1, by1, x1 - x0, y1 - y0), ctx.signal)
+        g.drawImage(kn, x0, y0)
+        kn.close?.()
+      }
       done++
       ctx.report(done / (nCols * nRows), `${done}/${nCols * nRows} bloků`)
     }
   }
+  o.overlay?.(g, W, H, { minX: b.x0, minY: b.y0, maxX: b.x1, maxY: b.y1 })
   if (o.clip) g.restore()
 
   ctx.report(-1, 'kóduji JPEG…')
@@ -224,7 +231,13 @@ async function exportOneJpeg(
 
 export async function exportGeoTiff(
   b: { x0: number; y0: number; x1: number; y1: number },
-  o: { res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][]; name: string; format: 'tiff' | 'png' | 'jpeg'; dir?: OutDir },
+  o: {
+    res: number; layer: MapLayer; toDisk: boolean; clip?: number[][][]; name: string; format: 'tiff' | 'png' | 'jpeg'; dir?: OutDir
+    /** dokreslení výkresů — volá se pro každý blok s jeho obálkou */
+    overlay?: MapOverlay
+    /** přes podklad dokreslit katastrální mapu ČÚZK (hranice, čísla parcel, budovy) */
+    katastr?: boolean
+  },
   ctx: ExportCtx,
 ): Promise<string> {
   const plan = planGeoTiff(b.x1 - b.x0, b.y1 - b.y0, o.res, o.format !== 'jpeg' && !!o.clip)
@@ -234,7 +247,10 @@ export async function exportGeoTiff(
   if (!png && !plan.tiffOk) throw new Error(`Vyšlo by ${(plan.bytes / 1e9).toFixed(1)} GB, klasický TIFF má strop 4 GB. Zvol hrubší detail nebo PNG.`)
   const { W, H, samples } = plan
 
-  const rowsPerStrip = Math.max(1, Math.min(H, Math.floor(STRIP_BUDGET / (W * samples))))
+  // Pruh nesmí být vyšší než CHUNK_PX: blok pruhu se stahuje jedním dotazem a ČÚZK (ortofoto
+  // i katastr) víc než 4096 px na stranu nedá. U úzkého a vysokého území by jinak rozpočet
+  // paměti pustil pruh přes deset tisíc řádků.
+  const rowsPerStrip = Math.max(1, Math.min(H, CHUNK_PX, Math.floor(STRIP_BUDGET / (W * samples))))
   const pngOut = png ? openPng(W, H, samples) : null
   const nStrips = Math.ceil(H / rowsPerStrip)
   const head = pngOut ? pngOut.head : buildHeader(plan, o.res, b.x0, b.y1, rowsPerStrip).head
@@ -316,6 +332,12 @@ export async function exportGeoTiff(
       if (blank) blanks++
       g.drawImage(bmp, 0, 0)
       bmp.close?.()
+      if (o.katastr) {
+        const kn = await loadOverlayChunk(katastrBboxUrl(bx0, by0, bx1, by1, cw, rows), ctx.signal)
+        g.drawImage(kn, 0, 0)
+        kn.close?.()
+      }
+      o.overlay?.(g, cw, rows, { minX: bx0, minY: by0, maxX: bx1, maxY: by1 })
       if (o.clip) g.restore()
 
       const px = g.getImageData(0, 0, cw, rows).data

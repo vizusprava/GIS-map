@@ -11,6 +11,7 @@
  * Modul je záměrně bez Cesia i Reactu (jen proj4 + geotiff), aby šel testovat i mimo prohlížeč.
  */
 import proj4 from 'proj4'
+import polygonClipping from 'polygon-clipping'
 import { fromArrayBuffer } from 'geotiff'
 import { cacheGet, cachePut } from './cache'
 
@@ -52,6 +53,25 @@ export function pickTopoTier(spanM: number): string {
   return 'ZTM250'
 }
 
+/** Katastrální mapa ČÚZK (WMS) — v mapě překryv, v 2D exportu volitelně dokreslená. */
+export const KATASTR_WMS = 'https://services.cuzk.cz/wms/wms.asp'
+export const KATASTR_LAYERS = 'hranice_parcel,parcelni_cisla,obrazy_parcel,DEF_BUDOVY'
+/**
+ * Nejhrubší detail (m/px), do kterého ČÚZK katastr ještě kreslí. Služba ho ukazuje jen
+ * v podrobných měřítkách — při 1 m/px kresba je, při 2 m/px vrátí prázdný obrázek (ověřeno).
+ */
+export const KATASTR_MAX_RES = 1
+
+/**
+ * Katastr jako průhledný PNG přes obálku v S-JTSK. Služba vydá nejvýš 4096 px na stranu.
+ * Ve WMS 1.3.0 se u EPSG:5514 píše obálka východ–sever, tedy stejně jako u ortofota (ověřeno
+ * dotazem: obrácené pořadí vrátí prázdný obrázek).
+ */
+export function katastrBboxUrl(x0: number, y0: number, x1: number, y1: number, w: number, h: number): string {
+  return `${KATASTR_WMS}?service=WMS&request=GetMap&version=1.3.0&layers=${KATASTR_LAYERS}&styles=&crs=EPSG:5514`
+    + `&bbox=${x0},${y0},${x1},${y1}&width=${w}&height=${h}&format=image/png&transparent=true`
+}
+
 /** REST export URL pro libovolný S-JTSK obdélník (px šířka×výška). Stylovanou topo mapu
  *  bereme po velkých blocích, ne po dlaždicích — jinak ČÚZK ořezává popisky na každém švu. */
 export function mapBboxUrl(x0: number, y0: number, x1: number, y1: number, w: number, h: number, layer: MapLayer, tier: string): string {
@@ -67,8 +87,16 @@ export type TileGrid = { n: number; h: Float32Array }
 export const tileKey = (t: Tile) => `${t.size}/${t.ix}/${t.iy}`
 export const tileName = (t: Tile) => `dlazdice_${t.ix}_${t.iy}`
 
-export const sjtskOf = (lon: number, lat: number) => proj4('EPSG:4326', 'EPSG:5514', [lon, lat]) as [number, number]
-export const wgsOf = (x: number, y: number) => proj4('EPSG:5514', 'EPSG:4326', [x, y]) as [number, number]
+/**
+ * Převodník WGS84 ↔ S-JTSK, postavený JEDNOU.
+ *
+ * `proj4(from, to, bod)` si při každém volání znovu sestaví obě projekce včetně inicializace
+ * Křováku — a tenhle převod jede pro každý vrchol výkresu, Google meshe i georeferencovaného
+ * modelu, tedy klidně milionkrát. Hotový převodník počítá totéž bit po bitu, jen bez té režie.
+ */
+const KROVAK = proj4('EPSG:4326', 'EPSG:5514')
+export const sjtskOf = (lon: number, lat: number) => KROVAK.forward([lon, lat]) as [number, number]
+export const wgsOf = (x: number, y: number) => KROVAK.inverse([x, y]) as [number, number]
 
 /** Mřížka je zarovnaná na S-JTSK → dlaždice jsou skutečné čtverce a vždy na sebe navazují. */
 export function tileAt(lon: number, lat: number, size: number): Tile {
@@ -89,6 +117,27 @@ export function tilesBounds(tiles: Tile[]) {
     minY = Math.min(minY, b.y0); maxY = Math.max(maxY, b.y1)
   }
   return { minX, minY, maxX, maxY }
+}
+
+/**
+ * Obrys výběru dlaždic v S-JTSK — prstence sjednocených čtverců (vnější i díry), pro ořez
+ * exportu „přesně do tvaru výběru". `undefined`, když výběr vyplňuje celý obdélník své obálky:
+ * pak není co ořezávat a export zůstane bez průhlednosti (menší soubor).
+ */
+export function tilesOutline(tiles: Tile[]): [number, number][][] | undefined {
+  if (!tiles.length) return undefined
+  const b = tilesBounds(tiles)
+  const size = tiles[0].size
+  const cells = Math.round((b.maxX - b.minX) / size) * Math.round((b.maxY - b.minY) / size)
+  if (tiles.length >= cells) return undefined
+  const squares = tiles.map(t => {
+    const q = tileBounds(t)
+    return [[[q.x0, q.y0], [q.x1, q.y0], [q.x1, q.y1], [q.x0, q.y1], [q.x0, q.y0]]] as [number, number][][]
+  })
+  // Sjednocení místo prostého seznamu čtverců: ořez je pak pár čistých prstenců a na švech mezi
+  // sousedními dlaždicemi nevzniká vyhlazený (poloprůhledný) proužek.
+  const merged = polygonClipping.union(squares[0], ...squares.slice(1))
+  return merged.flat() as [number, number][][]
 }
 
 /** Obrys dlaždice ve WGS84 — hrany zhuštěné, protože přímka v Křováku je ve WGS84 mírně zakřivená. */
@@ -251,11 +300,14 @@ export function buildTileObj(t: Tile, grid: TileGrid, off: Offset, fallbackH: nu
 }
 
 /** MTL: každá dlaždice vlastní materiál s vlastní ortofoto texturou vedle v zipu. */
-export function buildMtl(tiles: Tile[]): string {
+/** Materiál na dlaždici. Bez ortofota šedý bez textury — materiály zůstávají po dlaždicích, ať jde textura doplnit později. */
+export function buildMtl(tiles: Tile[], textured = true): string {
   const L: string[] = []
   for (const t of tiles) {
     const nm = tileName(t)
-    L.push(`newmtl ${nm}`, 'Ka 0.000 0.000 0.000', 'Kd 1.000 1.000 1.000', 'Ks 0.000 0.000 0.000', 'd 1.0', 'illum 1', `map_Kd ${nm}.jpg`, '')
+    L.push(`newmtl ${nm}`, 'Ka 0.000 0.000 0.000', textured ? 'Kd 1.000 1.000 1.000' : 'Kd 0.650 0.650 0.650', 'Ks 0.000 0.000 0.000', 'd 1.0', 'illum 1')
+    if (textured) L.push(`map_Kd ${nm}.jpg`)
+    L.push('')
   }
   return L.join('\n')
 }
@@ -447,8 +499,8 @@ fn geoApplyVRay tf = (
         if n == 0 and report.count < 8 do (
             local m = obj.material
             local mn = if m == undefined then "(bez materialu)" else (m.name + " [" + (classOf m) as string + "]")
-            local bm = geoTileBitmap m
-            local bn = if bm == undefined then "(bez textury)" else filenameFromPath bm.filename
+            local tp = geoTexFile (geoDiffuseTex m)
+            local bn = if tp == undefined then "(bez textury)" else filenameFromPath tp
             append report ("  " + obj.name + "\\n      mat: " + mn + "\\n      tex: " + bn)
         )
     )
