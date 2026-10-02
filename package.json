@@ -15,6 +15,7 @@
     "test:export": "node --import ./scripts/ts-resolve.mjs scripts/test-export.mjs",
     "test:perf": "node --import ./scripts/ts-resolve.mjs scripts/test-perf.mjs",
     "test:geoid": "node --import ./scripts/ts-resolve.mjs scripts/test-geoid.mjs",
+    "smoke": "node scripts/smoke.mjs",
     "test": "npm run test:section && npm run test:terrain && npm run test:dxf && npm run test:savequeue && npm run test:export && npm run test:perf && npm run test:geoid"
   },
   "dependencies": {

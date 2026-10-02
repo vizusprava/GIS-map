@@ -14,6 +14,17 @@ cp .env.example .env.local   # a vyplnit hodnoty (viz níž)
 npm run dev
 ```
 
+## Testy
+
+```bash
+npm test                    # výpočty v Node: řez, terén, DXF, ukládání, exporty, výkon, kvazigeoid
+npm run smoke               # appka v headless Chrome: rozjede se, nástroje, zkratky, žádné výjimky
+npm run smoke -- --full     # navíc hledání parcely a 2D export (potřebuje síť k ČÚZK)
+```
+
+Obojí běží i při nasazení (`npm run smoke` se softwarovou grafikou). Kouřový test si
+najde Chrome nebo Edge sám, jinak mu cestu řekni v `CHROME_PATH`.
+
 ## Nastavení
 
 Do `.env.local` patří:

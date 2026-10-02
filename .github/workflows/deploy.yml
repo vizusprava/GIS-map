@@ -36,6 +36,13 @@ jobs:
       - name: Test
         run: npm test
 
+      # Kouřový test v headless Chrome se softwarovou grafikou (scripts/smoke.mjs): appka se
+      # rozjede, nástroje jdou zapnout klávesou i v liště a v konzoli není výjimka. Chytá chyby
+      # typu „černá obrazovka", které unit testy ani typová kontrola neuvidí. Chrome je na
+      # runneru předinstalovaný.
+      - name: Smoke
+        run: npm run smoke
+
       # `npm run build` = tsc --noEmit + vite build. Typová chyba tedy shodí deploy,
       # což je záměr: rozbitý build se nemá dostat na web.
       # Hodnoty VITE_* se zapékají do bundlu → musí být jako repository secrets
