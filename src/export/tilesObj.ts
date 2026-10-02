@@ -15,9 +15,8 @@ import {
   tileName, tilesBounds, pool, fetchTileHeights, fetchTileOrtho, buildTileObj, buildMtl, buildMaxScript,
   medianHeight, stepOf, concatBytes,
 } from '../tiles'
-import { BUILDING_MTL } from '../buildings'
 import { isAbortError } from '../config'
-import { download, buildingsObjChunk } from '../exportUtils'
+import { download } from '../exportUtils'
 import { fetchKatastrDxf } from './katastrDxf'
 import { throwIfAborted, type ExportCtx } from './ctx'
 import type { CoordPoint } from '../lib/types'
@@ -26,8 +25,6 @@ export type TilesObjOpts = {
   tileSize: TileSize; meshStep: MeshStep; texSize: TexSize
   /** s ortofotem jako texturou (jinak čistý šedý terén — rychlejší a menší) */
   ortho: boolean
-  /** přibalit budovy ČÚZK jako samostatný objekt „budovy" */
-  buildings: boolean
   /** přibalit hranice parcel jako katastr.dxf v témže S-JTSK rámci */
   katastr: boolean
   /**
@@ -126,21 +123,6 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
       await new Promise(r => setTimeout(r, 0)) // pustit UI k slovu
     }
   }
-  // volitelně: budovy ČÚZK (výška i tvar střechy z DMR5G/DMP1G) jako samostatný objekt „budovy"
-  let buildingsLine = 'Budovy: ne'
-  let hasBuildings = false
-  if (o.buildings) {
-    ctx.report(-1, 'budovy…')
-    try {
-      // tentýž posun jako terén — jinak by budovy při exportu k počátku zůstaly stovky km opodál
-      const bch = await buildingsObjChunk(minX, minY, maxX, maxY, vBase, ctx.signal, off)
-      if (bch.obj) { objF.push(strToU8(bch.obj), false); check(); vBase += bch.vCount; hasBuildings = true }
-      buildingsLine = bch.line
-    } catch (e) {
-      if (isAbortError(e)) throw e
-      console.error('Budovy do exportu selhaly:', e); buildingsLine = 'Budovy: stažení selhalo (viz konzole)'
-    }
-  }
   objF.push(new Uint8Array(0), true)
   check()
 
@@ -158,7 +140,7 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
     d.push(strToU8(text), true)
     check()
   }
-  addText('teren.mtl', buildMtl(tiles, o.ortho) + (hasBuildings ? '\n' + BUILDING_MTL : ''))
+  addText('teren.mtl', buildMtl(tiles, o.ortho))
   // skript přepíná na VRayMtl s ortofotem — bez ortofota nemá co dělat
   if (o.ortho) addText('vray_material.ms', buildMaxScript(tiles))
   // Body jdou VEDLE materiálového skriptu, ne do něj: kdo chce jen přepnout materiály, nemá
@@ -214,9 +196,6 @@ export async function exportTilesObj(tiles: Tile[], o: TilesObjOpts, ctx: Export
       ? `Textura: ${o.texSize} px na dlaždici = ${(o.tileSize / o.texSize * 100).toFixed(1)} cm/px (ortofoto ČÚZK má nativně 20 cm/px)`
       : 'Textura: bez ortofota',
     katastrLine,
-    buildingsLine,
-    'Budovy (je-li): objekt „budovy" = půdorysy ČÚZK, výška z DMP1G−DMR5G, střecha',
-    'rozpoznaná (plochá/sedlová/valbová) jako čistá low-poly hmota, hnědý materiál bez textury.',
     'Y je mřížkový sever Křováku, ne pravý sever (meridiánová konvergence ~7°).',
     '',
     'katastr.dxf (je-li): hranice parcel jako uzavřené 3D křivky (DXF R12), stejný S-JTSK',

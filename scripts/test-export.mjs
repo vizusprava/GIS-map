@@ -5,13 +5,11 @@
  *    Na něm stojí poloha všeho, co jde ven, a rozdíl by se ukázal až v Maxu.
  *  - V-Ray skript: každá `geo…` funkce, kterou skript volá, v něm musí být nadefinovaná.
  *    MAXScript to zjistí až za běhu — a jen v té větvi, která se zrovna vykoná.
- *  - Budovy: zadaný posun se musí odečíst stejně jako u terénu, jinak se rozjedou.
  *
  * Spustit: `npm run test:export`
  */
 import proj4 from 'proj4'
 import { sjtskOf, wgsOf, buildMaxScriptFiles, tilesOutline } from '../src/tiles.ts'
-import { buildBuildingsObj } from '../src/buildings.ts'
 import { drawOverlayToCanvas } from '../src/export/drawOverlay.ts'
 
 let fails = 0
@@ -50,29 +48,6 @@ console.log('\n── V-Ray skript volá jen funkce, které sám definuje ──
   const missing = [...used].filter(n => !defined.has(n))
   ok(defined.size > 5, `skript definuje své funkce (${defined.size})`)
   ok(missing.length === 0, missing.length ? `nedefinované funkce: ${missing.join(', ')}` : 'žádná volaná funkce nechybí')
-}
-
-console.log('\n── budovy jdou s posunem stejně jako terén ──')
-{
-  // obdélník 12 × 8 m v Křováku, terén vodorovně 300 m, střecha plochá na 306 m
-  const X = -680000, Y = -990000
-  const fp = { outer: [[X, Y], [X + 12, Y], [X + 12, Y + 8], [X, Y + 8]], holes: [] }
-  const ground = () => 300
-  const surface = () => 306
-  const plain = buildBuildingsObj([fp], ground, surface, 1)
-  // stejná konvence jako buildTileObj: offset se ODEČÍTÁ, takže „k počátku" = roh budovy
-  const off = { x: X, y: Y, z: 300 }
-  const moved = buildBuildingsObj([fp], ground, surface, 1, off)
-  ok(plain.count === 1 && moved.count === 1, 'budova vznikla v obou případech')
-  const nums = line => line.split(' ').slice(1).map(Number)
-  let worst = 0
-  plain.verts.forEach((v, i) => {
-    const a = nums(v), b = nums(moved.verts[i])
-    worst = Math.max(worst, Math.abs(a[0] - off.x - b[0]), Math.abs(a[1] - off.y - b[1]), Math.abs(a[2] - off.z - b[2]))
-  })
-  ok(worst < 1e-3, `každý vrchol je posunutý přesně o zadaný posun (odchylka ${worst.toFixed(4)} m)`)
-  const first = nums(moved.verts[0])
-  ok(Math.abs(first[0]) < 20 && Math.abs(first[1]) < 20, `po posunu leží budova u počátku (${first.map(n => n.toFixed(1)).join(', ')})`)
 }
 
 console.log('\n── výkres dokreslený do exportu mapy po kusech ──')

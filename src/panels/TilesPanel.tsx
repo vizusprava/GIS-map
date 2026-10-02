@@ -7,7 +7,7 @@
  * opakovaný export po opravě výkresu vyjede stejně.
  */
 import { useState } from 'react'
-import { ArrowDownToLine, Box, Building2, Download, Grid3x3, Image, Layers, Trash2, X } from 'lucide-react'
+import { ArrowDownToLine, Box, Download, Grid3x3, Image, Layers, Trash2, X } from 'lucide-react'
 import { LOCAL_TILES } from '../imagery'
 import { estimateMapTiles, fmtBytes } from '../export/mapTiles'
 import { MESH_STEPS, TEX_SIZES, estimateObjBytes, gridSize, tilesBounds } from '../tiles'
@@ -80,7 +80,7 @@ function Export3D({ outputs, tileCount, tileSize, coordShift, coordPts, persistC
   persistCoords: (pts: CoordPoint[], shift: [number, number, number]) => void
   bounds: ReturnType<typeof tilesBounds> | null
 }) {
-  const { meshStep, setMeshStep, exportOrtho, setExportOrtho, texSize, setTexSize, exportKatastr, setExportKatastr, exportBuildings, setExportBuildings } = outputs
+  const { meshStep, setMeshStep, exportOrtho, setExportOrtho, texSize, setTexSize, exportKatastr, setExportKatastr } = outputs
   const n = gridSize({ ix: 0, iy: 0, size: tileSize }, meshStep)
   const tris = tileCount * 2 * (n - 1) ** 2
   const objMb = estimateObjBytes(tileCount, tileSize, meshStep) / 1e6
@@ -109,7 +109,6 @@ function Export3D({ outputs, tileCount, tileSize, coordShift, coordPts, persistC
       )}
       <Row label="Přibalit">
         <Toggle on={exportKatastr} onClick={() => setExportKatastr(v => !v)} icon={<Layers size={13} />} label="Katastr" title="Hranice parcel jako 3D křivky (katastr.dxf) ve stejném rámci jako terén" />
-        <Toggle on={exportBuildings} onClick={() => setExportBuildings(v => !v)} icon={<Building2 size={13} />} label="Budovy" title="Budovy z ČÚZK — výška a tvar střechy z výškových modelů, low-poly" />
       </Row>
       {/* Tentýž posun jako v sekci Souřadnice — jedna hodnota uložená ve scéně, dvě místa. */}
       <ShiftEditor

@@ -1,11 +1,8 @@
 /**
- * Pomocníci pro export do souborů: stažení blobu, jméno podle kotvy, zápis DXF a OBJ budov.
+ * Pomocníci pro export do souborů: stažení blobu, jméno podle kotvy a zápis DXF.
  *
  * Pozor na jména: `dxf.ts` DXF ČTE (import výkresu), tenhle modul ho PÍŠE (export parcel a území).
  */
-import { fetchBuildings, buildBuildingsObj } from './buildings'
-import { fetchElevSamplerSJTSK } from './elevation'
-import type { Offset } from './tiles'
 import type { Anchor } from './types'
 
 /**
@@ -48,27 +45,4 @@ export function buildDxfLayers(groups: { layer: string; polylines: [number, numb
   }
   g(0, 'ENDSEC'); g(0, 'EOF')
   return L.join('\n')
-}
-
-/**
- * Budovy ČÚZK pro S-JTSK obdélník → OBJ objekt „budovy" (výška i tvar střechy z DMR5G/DMP1G).
- * Vrací kus OBJ textu k připojení, počet přidaných vrcholů a řádek do info.txt.
- * `off` = posun, který se odečte od vrcholů (stejně jako u dlaždic terénu).
- */
-export async function buildingsObjChunk(minX: number, minY: number, maxX: number, maxY: number, vBase: number, signal: AbortSignal, off?: Offset): Promise<{ obj: string; vCount: number; line: string }> {
-  const span = Math.max(maxX - minX, maxY - minY)
-  const long = Math.min(2048, Math.max(64, Math.ceil(span / 2))) // ~2 m/px, strop 2048
-  const sw = Math.max(2, Math.round(long * (maxX - minX) / span))
-  const sh = Math.max(2, Math.round(long * (maxY - minY) / span))
-  const [ground, surface, fps] = await Promise.all([
-    fetchElevSamplerSJTSK('dmr5g', minX, minY, maxX, maxY, sw, sh, signal), // terén = spodek zdí
-    fetchElevSamplerSJTSK('dmp1g', minX, minY, maxX, maxY, sw, sh, signal), // povrch = tvar střechy
-    fetchBuildings(minX, minY, maxX, maxY, signal),
-  ])
-  if (signal.aborted) throw new DOMException('Zrušeno', 'AbortError')
-  if (!fps.length) return { obj: '', vCount: 0, line: 'Budovy: v oblasti žádné' }
-  const bo = buildBuildingsObj(fps, ground, surface, vBase, off)
-  if (!bo.count) return { obj: '', vCount: 0, line: 'Budovy: nevznikly (chybí DMP1G data?)' }
-  const obj = 'o budovy\ng budovy\nusemtl budovy\n' + bo.verts.join('\n') + '\n' + bo.faces.join('\n') + '\n'
-  return { obj, vCount: bo.vCount, line: `Budovy: ${bo.count} (plochých ${bo.stats.flat}, sedlových ${bo.stats.gable}, valbových ${bo.stats.hip})` }
 }

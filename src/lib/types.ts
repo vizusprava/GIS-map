@@ -135,7 +135,7 @@ export type ExportOpts = {
   /** 3D export s ortofotem jako texturou */
   ortho?: boolean
   katastr?: boolean
-  buildings?: boolean
+  // `buildings` (přibalit budovy) se zrušilo — ve starších scénách klíč zůstal a ignoruje se
   mapLayer?: string
   mapRes?: number
   mapFormat?: string

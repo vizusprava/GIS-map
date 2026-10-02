@@ -94,10 +94,9 @@ export function useExports(deps: {
   const [mapKatastr, setMapKatastr] = useState(() => flag(saved.mapKatastr, false))
   // 3D export: přibalit hranice parcel jako DXF křivky
   const [exportKatastr, setExportKatastr] = useState(() => flag(saved.katastr, false))
-  const [exportBuildings, setExportBuildings] = useState(() => flag(saved.buildings, false))
 
   // Zapisuje se jen skutečná změna — otevření scény samo nic neukládá.
-  const opts: ExportOpts = { meshStep, texSize, ortho: exportOrtho, katastr: exportKatastr, buildings: exportBuildings, mapLayer, mapRes, mapFormat, drawings: mapDrawings, mapKatastr }
+  const opts: ExportOpts = { meshStep, texSize, ortho: exportOrtho, katastr: exportKatastr, mapLayer, mapRes, mapFormat, drawings: mapDrawings, mapKatastr }
   const optsJson = JSON.stringify(opts)
   const savedJsonRef = useRef(optsJson)
   useEffect(() => {
@@ -115,7 +114,7 @@ export function useExports(deps: {
     const tiles = [...tilesRef.current.values()]
     if (!tiles.length) return
     await runner.runExport(runner.tileUi, 'Export dlaždic selhal', ctx =>
-      exportTilesObjCore(tiles, { tileSize, meshStep, texSize, ortho: exportOrtho, buildings: exportBuildings, katastr: exportKatastr, shift: coordShift, points: coordPts }, ctx))
+      exportTilesObjCore(tiles, { tileSize, meshStep, texSize, ortho: exportOrtho, katastr: exportKatastr, shift: coordShift, points: coordPts }, ctx))
   }
 
   /**
@@ -602,7 +601,6 @@ export function useExports(deps: {
   return {
     exporting,
     exportAllRegions,
-    exportBuildings,
     exportGoogleMesh,
     exportKatastr,
     exportMapTiles2D,
@@ -627,7 +625,6 @@ export function useExports(deps: {
     mapLayer,
     mapRes,
     meshStep,
-    setExportBuildings,
     setExportKatastr,
     setExportOrtho,
     setMapDrawings,
