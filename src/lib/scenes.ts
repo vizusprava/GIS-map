@@ -4,23 +4,40 @@
  * Stav scény (pohledy kamery, popisky, měření, parcely…) je jeden JSON blob. Ukládá se
  * ODLOŽENĚ (debounce): při tahání sliderem nebo posunu popisku by jinak letěl request na
  * každý pixel. Před zavřením/refreshem se rozpracované uložení ještě dopíše (`flushScene`).
+ *
+ * Posílají se jen klíče, které se změnily (`patch_scene_state` je vmíchá do uloženého stavu) —
+ * sdílenou scénu můžou mít otevřenou dva lidi naráz a celý stav by si navzájem přepisovali.
+ * Bez migrace 003 se posílá celý stav jako dřív.
  */
 import { supabase } from './supabase'
 import { removeFiles, uploadFile } from './storage'
 import { createSaveQueue } from './saveQueue'
-import type { AssetRow, SceneRow, SceneState } from './types'
+import { createDirtyKeys, pickPatch } from './dirtyKeys'
+import { myMemberships } from './sharing'
+import { useAuthStore } from '../stores/authStore'
+import type { AssetRow, SceneItem, SceneRow, SceneState } from './types'
 
 /** Kolik čekat od poslední změny, než se stav pošle na server. */
 const SAVE_DEBOUNCE_MS = 1200
 
-export async function listScenes(): Promise<SceneRow[]> {
-  const { data, error } = await supabase
-    .from('geo_scenes')
-    .select('*')
-    .order('opened_at', { ascending: false, nullsFirst: false })
-    .order('updated_at', { ascending: false })
+/**
+ * Moje scény i ty, které se mnou někdo nasdílel. U sdílené scény se „naposledy otevřeno" bere
+ * z mého otevření, ne z vlastníkova — jinak by mi v přehledu poskakovala podle cizí práce.
+ */
+export async function listScenes(): Promise<SceneItem[]> {
+  const uid = useAuthStore.getState().user?.id
+  const { data, error } = await supabase.from('geo_scenes').select('*')
   if (error) throw new Error(`Seznam scén se nepodařilo načíst: ${error.message}`)
-  return (data ?? []) as SceneRow[]
+  const rows = (data ?? []) as SceneRow[]
+  const mine = rows.some(r => r.owner !== uid) ? await myMemberships() : new Map()
+  const items: SceneItem[] = rows.map(r => {
+    if (r.owner === uid) return { ...r, role: 'owner' }
+    const m = mine.get(r.id)
+    return { ...r, role: m?.role ?? 'viewer', opened_at: m?.openedAt ?? null }
+  })
+  // naposledy otevřené první, nikdy neotevřené podle poslední změny
+  const t = (iso: string | null) => (iso ? Date.parse(iso) : -Infinity)
+  return items.sort((a, b) => t(b.opened_at) - t(a.opened_at) || t(b.updated_at) - t(a.updated_at))
 }
 
 export async function getScene(id: string): Promise<SceneRow | null> {
@@ -46,9 +63,13 @@ export async function renameScene(id: string, name: string, note?: string | null
   if (error) throw new Error(`Přejmenování selhalo: ${error.message}`)
 }
 
-/** Označí scénu jako právě otevřenou — přehled podle toho řadí. */
+/** Chybí v databázi funkce (migrace ještě neběžela)? */
+const isMissingFn = (e: { code?: string; message: string }) => e.code === 'PGRST202' || /could not find the function/i.test(e.message)
+
+/** Označí scénu jako právě otevřenou — přehled podle toho řadí (u sdílené scény jen mně). */
 export async function touchScene(id: string): Promise<void> {
-  await supabase.from('geo_scenes').update({ opened_at: new Date().toISOString() }).eq('id', id)
+  const { error } = await supabase.rpc('touch_scene', { p_scene: id })
+  if (error && isMissingFn(error)) await supabase.from('geo_scenes').update({ opened_at: new Date().toISOString() }).eq('id', id)
 }
 
 /**
@@ -84,17 +105,34 @@ export async function saveSceneThumb(sceneId: string, ownerId: string, img: Blob
 // Slučování, pořadí zápisů i opakování po chybě řeší `createSaveQueue`. Uživateli se o chybě
 // neříká při každém zaškobrtnutí sítě — zápis se zopakuje sám a před zavřením okna se
 // prohlížeč zeptá, pokud pořád něco čeká (viz ScenePage).
+const dirty = createDirtyKeys()
+/** Umí databáze ukládat po klíčích? (null = ještě nevíme, zjistí se prvním zápisem) */
+let canPatch: boolean | null = null
+
 const sceneSaves = createSaveQueue<SceneState>({
   debounceMs: SAVE_DEBOUNCE_MS,
   label: 'Uložení stavu scény',
   send: async (sceneId, state) => {
+    const snap = dirty.take(sceneId)
+    if (!snap.size) return
+    if (canPatch !== false) {
+      const { error } = await supabase.rpc('patch_scene_state', { p_scene: sceneId, p_patch: pickPatch(state, snap.keys()) })
+      if (!error) { canPatch = true; dirty.done(sceneId, snap); return }
+      if (!isMissingFn(error)) throw error
+      canPatch = false
+    }
     const { error } = await supabase.from('geo_scenes').update({ state }).eq('id', sceneId)
     if (error) throw error
+    dirty.done(sceneId, snap)
   },
 })
 
-/** Naplánuje uložení stavu scény (sloučí rychlé změny do jednoho zápisu). */
-export function saveSceneState(sceneId: string, state: SceneState): void {
+/**
+ * Naplánuje uložení stavu scény (sloučí rychlé změny do jednoho zápisu). `keys` = které klíče
+ * stavu se touhle změnou pohnuly; na server půjdou jen ty.
+ */
+export function saveSceneState(sceneId: string, state: SceneState, keys: string[]): void {
+  dirty.mark(sceneId, keys)
   sceneSaves.save(sceneId, state)
 }
 

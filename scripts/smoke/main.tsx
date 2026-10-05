@@ -4,13 +4,18 @@
  *
  * Pro test si vystavuje dvě věci: `window.__errors` (výjimky, odmítnuté sliby i chyby Reactu)
  * a `window.__scene` (scéna Cesia, ať jde ověřit, že se mapa opravdu kreslí).
+ *
+ * `?access=viewer|editor` otevře scénu jako cizí (sdílenou); jinak je moje a jde sdílet —
+ * okno sdílení mluví s podvrženým REST API (fakeRest.ts), ne se Supabase.
  */
+import './fakeRest' // první: klient Supabase si fetch bere hned při načtení
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Cesium from 'cesium'
 import { AppToaster } from '../../src/appToaster'
 import { DialogHost } from '../../src/dialog'
 import { IonKeyHost, openIonKeyDialog } from '../../src/ionKeyDialog'
+import { ShareHost, openShareDialog } from '../../src/shareDialog'
 import '../../src/index.css'
 import { MapView } from '../../src/MapView'
 import type { ScenePersist } from '../../src/lib/scenePersist'
@@ -41,9 +46,12 @@ const assets: ScenePersist['assets'] = localDxf ? [{
   file_name: 'mimo-uloziste.dxf', file_path: 'local:smoke-local-1/file', sidecar_path: null, sidecar_name: null,
   size_bytes: Number(localDxf), config: {}, sort_order: 0, created_at: '', updated_at: '',
 }] : []
+const access = q.get('access') === 'viewer' ? 'viewer' : q.get('access') === 'editor' ? 'editor' : 'owner'
 const start = Cesium.Cartesian3.fromDegrees(Number(q.get('lon') ?? 14.4746), Number(q.get('lat') ?? 48.9745), Number(q.get('h') ?? 1500))
 const scene: ScenePersist = {
   sceneId: 'smoke', sceneName: 'Kouřový test', ownerId: 'nikdo',
+  access, ownerName: access === 'owner' ? null : 'Jana',
+  share: access === 'owner' ? () => openShareDialog({ sceneId: 'smoke', sceneName: 'Kouřový test' }) : undefined,
   initial: { camera: { dest: [start.x, start.y, start.z], h: 0, p: Cesium.Math.toRadians(-89.9), r: 0 } } as unknown as ScenePersist['initial'],
   assets,
   patchState: () => {},
@@ -78,4 +86,4 @@ const page = q.get('page') === 'account'
   : <MapView scene={scene} />
 
 createRoot(document.getElementById('root')!, { onUncaughtError: note, onCaughtError: note })
-  .render(<StrictMode>{page}<AppToaster /><DialogHost /><IonKeyHost /></StrictMode>)
+  .render(<StrictMode>{page}<AppToaster /><ShareHost /><DialogHost /><IonKeyHost /></StrictMode>)

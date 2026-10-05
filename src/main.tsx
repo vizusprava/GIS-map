@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppToaster } from './appToaster'
 import { DialogHost } from './dialog'
 import { IonKeyHost } from './ionKeyDialog'
+import { ShareHost } from './shareDialog'
 import './index.css'
 import App from './App.tsx'
 
@@ -36,6 +37,8 @@ createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
       <App />
       <AppToaster />
+      {/* před DialogHost: potvrzení (odebrat člověka) se musí kreslit NAD oknem sdílení */}
+      <ShareHost />
       <DialogHost />
       <IonKeyHost />
     </QueryClientProvider>

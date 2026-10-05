@@ -35,7 +35,19 @@ let showing = false
  * Je okno otevřené? Kdo poslouchá klávesy v zachytávací fázi (Esc u panelů lišty, přehled zkratek),
  * musí ho nechat být — jinak by Esc zavřel panel pod oknem a okno by ho vůbec nedostalo.
  */
-export const isDialogOpen = () => showing
+export const isDialogOpen = () => showing || modals > 0
+
+/** Je otevřené právě tohle okno (ask/askText)? Pro větší okna, nad kterými se může objevit. */
+export const isAskOpen = () => showing
+
+let modals = 0
+/**
+ * Větší vlastní okno (sdílení scény): dokud je otevřené, hlásí se v `isDialogOpen`, ať mu
+ * lišta mapy nesebere Esc.
+ */
+export function useModal() {
+  useEffect(() => { modals++; return () => { modals-- } }, [])
+}
 
 function enqueue(r: Req) {
   queue.push(r)

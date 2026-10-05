@@ -37,6 +37,7 @@ export async function listAssets(sceneId: string): Promise<AssetRow[]> {
  */
 export async function createAsset(opts: {
   sceneId: string
+  /** vlastník scény (ve sdílené scéně to nemusí být přihlášený) — do jeho složky jde soubor */
   ownerId: string
   kind: AssetKind
   name: string
@@ -51,7 +52,8 @@ export async function createAsset(opts: {
   const { data: row, error } = await supabase
     .from('geo_assets')
     .insert({
-      scene_id: sceneId, kind, name,
+      // vlastník SCÉNY, ne přihlášený: i soubor nahraný kolegou patří vlastníkovi (sql/003_sharing.sql)
+      scene_id: sceneId, owner: ownerId, kind, name,
       file_name: file.name,
       // dočasně; skutečné cesty dopíšeme, jak známe id (to je součást cesty)
       file_path: 'pending',

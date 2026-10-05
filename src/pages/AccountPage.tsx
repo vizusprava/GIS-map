@@ -163,6 +163,10 @@ function DeleteCard({ onDeleted }: { onDeleted: () => void }) {
         Smaže se účet a s ním <b>všechny scény</b>, <b>nahrané soubory</b> (v úložišti i ty uložené jen v tomhle
         počítači), pohledy, měření a nastavení. <span className="text-red-300">Nejde to vzít zpátky.</span>
       </div>
+      <div className="text-xs leading-relaxed text-gray-400">
+        Scény, které sdílíš s kolegy, zmizí i jim. Ze scén, které s tebou sdílí někdo jiný, jen odejdeš —
+        jejich vlastníkům zůstanou i se soubory, které jsi do nich nahrál(a).
+      </div>
       <form className="flex flex-col gap-2" onSubmit={async e => {
         e.preventDefault(); if (!ready) return
         setBusy(true); setErr(null)

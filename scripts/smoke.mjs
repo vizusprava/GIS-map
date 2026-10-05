@@ -451,7 +451,54 @@ async function main() {
     await shot('nastaveni-uctu')
   })
 
-  await check('žádné chyby po znovuotevření scény', async () => {
+  // ── sdílení scény: okno s lidmi a pozvánkami (podvržené REST API, viz smoke/fakeRest.ts) ──
+  const setInput = (sel, v) => ev(`(() => {
+    const el = document.querySelector(${JSON.stringify(sel)})
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(v)})
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await check('sdílení: lidé, pozvánka, odebrání s potvrzením, Esc po vrstvách', async () => {
+    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html` })
+    await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa vlastní scény')
+    expect(!(await ev(`!!document.querySelector('[data-access]')`)), 'vlastní scéna má štítek cizí scény')
+    await ev(`document.querySelector('[data-share-open]').click()`)
+    await waitFor(`!!document.querySelector('[data-share-member="jana@example.cz"]') && !!document.querySelector('[data-share-invite="novy@example.cz"]')`, 10_000, 'členka a pozvánka v okně')
+      .catch(async e => { throw new Error(`${e.message}; okno: „${await ev(`document.querySelector('[data-share-dialog]')?.innerText.slice(0, 300)`)}"; REST: ${JSON.stringify(await ev('window.__rest'))}`) })
+    // pozvat nový e-mail (výchozí role „může upravovat")
+    await setInput('[data-share-dialog] input[type="email"]', 'Kolega@Example.cz')
+    await ev(`document.querySelector('[data-share-dialog] form').requestSubmit()`)
+    await waitFor(`!!document.querySelector('[data-share-invite="kolega@example.cz"]')`, 10_000, 'nová pozvánka v seznamu')
+    const call = (await ev('window.__rest')).find(c => c.path === 'rpc/share_scene')
+    expect(call?.body?.p_email === 'kolega@example.cz' && call.body.p_role === 'editor', `share_scene dostal ${JSON.stringify(call?.body)}`)
+    expect((await ev(`document.querySelector('[data-share-dialog]').innerText`)).includes('zatím nemá účet'), 'chybí hláška o čekající pozvánce')
+    await shot('sdileni')
+    // odebrat Janu → potvrzení; Esc zavře jen potvrzení, okno sdílení zůstane
+    await ev(`document.querySelector('[data-share-member="jana@example.cz"] button[title="Odebrat přístup"]').click()`)
+    await waitFor(`!!document.querySelector('[data-dialog]')`, 5_000, 'potvrzení odebrání')
+    await press('Escape')
+    expect(!(await ev(`!!document.querySelector('[data-dialog]')`)), 'Esc nezavřel potvrzení')
+    expect(await ev(`!!document.querySelector('[data-share-member="jana@example.cz"]')`), 'zrušené odebrání stejně odebralo nebo zavřelo okno')
+    await ev(`document.querySelector('[data-share-member="jana@example.cz"] button[title="Odebrat přístup"]').click()`)
+    await waitFor(`!!document.querySelector('[data-dialog-ok]')`, 5_000, 'potvrzení podruhé')
+    await ev(`document.querySelector('[data-dialog-ok]').click()`)
+    await waitFor(`!document.querySelector('[data-share-member="jana@example.cz"]')`, 10_000, 'odebrání Jany')
+    // Esc s fokusem mimo okno zavře okno — a nic pod ním (nástroj se nezapne, lišta zůstane)
+    await ev(`document.activeElement?.blur()`)
+    await press('Escape')
+    expect(!(await ev(`!!document.querySelector('[data-share-dialog]')`)), 'Esc nezavřel okno sdílení')
+    const errs = await ev('window.__errors')
+    expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
+  })
+
+  await check('sdílená scéna „jen prohlížet": štítek s vlastníkem, bez tlačítka Sdílet', async () => {
+    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?access=viewer` })
+    await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa cizí scény')
+    const badge = await ev(`document.querySelector('[data-access="viewer"]')?.innerText ?? ''`)
+    expect(badge.includes('Jen prohlížíš') && badge.includes('Jana'), `štítek: „${badge}"`)
+    expect(!(await ev(`!!document.querySelector('[data-share-open]')`)), 'kdo jen prohlíží, nemá tlačítko Sdílet')
+  })
+
+  await check('žádné chyby po znovuotevření scén a sdílení', async () => {
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
     expect(!dialogs.length, `systémové okno: ${dialogs.join(' | ')}`)

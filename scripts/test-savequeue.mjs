@@ -8,6 +8,7 @@
  * Spustit: `npm run test:savequeue`
  */
 import { createSaveQueue } from '../src/lib/saveQueue.ts'
+import { createDirtyKeys, pickPatch } from '../src/lib/dirtyKeys.ts'
 
 let fails = 0
 const ok = (cond, what) => {
@@ -116,6 +117,75 @@ console.log('\n── klíče se navzájem neblokují a cancel zahodí čekajíc
   q.save('c', 3)
   await q.flush()
   ok(sent.includes('c=3'), 'flush bez klíče dopíše všechno')
+}
+
+console.log('\n── sdílená scéna: posílají se jen změněné klíče ──')
+{
+  // dva lidi ve stejné scéně: server vmíchává patch (jako `state || patch` v databázi)
+  let server = { camViews: ['jeho pohled'], rulers: [] }
+  const dirty = createDirtyKeys()
+  const q = createSaveQueue({
+    debounceMs: 10, label: 'test',
+    send: async (k, state) => {
+      const snap = dirty.take(k)
+      server = { ...server, ...pickPatch(state, snap.keys()) }
+      dirty.done(k, snap)
+    },
+  })
+  // můj stav o jeho pohledu neví — kdyby šel celý, pohled by zmizel
+  const mine = { camViews: [], rulers: ['moje měření'] }
+  dirty.mark('s', ['rulers']); q.save('s', mine)
+  await q.flush('s')
+  ok(server.camViews[0] === 'jeho pohled', 'cizí změna jiného klíče zůstala')
+  ok(server.rulers[0] === 'moje měření', 'moje změna se uložila')
+  ok(dirty.take('s').size === 0, 'po zápisu nic nečeká')
+}
+
+console.log('\n── klíč změněný během zápisu se nezapomene ──')
+{
+  const restore = quiet()
+  const dirty = createDirtyKeys()
+  const sent = []
+  let attempts = 0
+  const q = createSaveQueue({
+    debounceMs: 10, label: 'test', retryMs: [30],
+    send: async (k, state) => {
+      const snap = dirty.take(k)
+      attempts++
+      await sleep(20)
+      if (attempts === 1) throw new Error('síť spadla')
+      sent.push(pickPatch(state, snap.keys()))
+      dirty.done(k, snap)
+    },
+  })
+  dirty.mark('s', ['camera']); q.save('s', { camera: 1 })
+  await sleep(15)                           // první zápis běží (a selže)
+  dirty.mark('s', ['base']); q.save('s', { camera: 1, base: 'orto' })
+  await sleep(150)
+  restore()
+  const last = sent[sent.length - 1] ?? {}
+  ok(last.camera === 1 && last.base === 'orto', `po chybě odešly oba klíče (${JSON.stringify(sent)})`)
+  ok(dirty.take('s').size === 0, 'a pak už nic nečeká')
+
+  // během úspěšného zápisu se klíč změní znovu → musí odejít i druhá hodnota
+  const d2 = createDirtyKeys()
+  const got = []
+  const q2 = createSaveQueue({
+    debounceMs: 5, label: 'test',
+    send: async (k, state) => { const snap = d2.take(k); await sleep(20); got.push(pickPatch(state, snap.keys())); d2.done(k, snap) },
+  })
+  d2.mark('s', ['rulers']); q2.save('s', { rulers: 1 })
+  await sleep(12)
+  d2.mark('s', ['rulers']); q2.save('s', { rulers: 2 })
+  await sleep(100)
+  ok(got.length === 2 && got[1].rulers === 2, `druhá změna téhož klíče odešla zvlášť (${JSON.stringify(got)})`)
+  ok(d2.take('s').size === 0, 'nic nezůstalo viset')
+}
+
+console.log('\n── chybějící hodnota jde jako null ──')
+{
+  const p = pickPatch({ a: 1 }, ['a', 'camera'])
+  ok(p.a === 1 && p.camera === null && JSON.stringify(p) === '{"a":1,"camera":null}', 'smazaný klíč se na serveru přepíše')
 }
 
 console.log(fails ? `\n${fails} SELHÁNÍ` : '\nVŠE PROŠLO')

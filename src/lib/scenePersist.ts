@@ -5,12 +5,22 @@
  * „tohle si zapamatuj" (stav scény, nahraný soubor, usazení modelu). Kdo to ukládá a kam,
  * řeší `ScenePage`. Persistence se injektuje, nesahá se na ni z komponenty.
  */
-import type { AssetConfig, AssetKind, AssetRow, SceneState } from './types'
+import type { AssetConfig, AssetKind, AssetRow, SceneRole, SceneState } from './types'
 
 export type ScenePersist = {
   sceneId: string
   sceneName: string
+  /** vlastník scény — do jeho složky v úložišti jdou soubory, i ty nahrané kolegou */
   ownerId: string
+  /**
+   * Moje role ve scéně. `viewer` nic neukládá: všechno se dá vyzkoušet, ale po zavření scéna
+   * zůstane, jak byla (hlášení níž se tiše zahodí, nahrání souboru skončí hláškou).
+   */
+  access: SceneRole
+  /** jméno vlastníka, když scéna není moje (hlavička panelu) */
+  ownerName?: string | null
+  /** Otevři okno sdílení (jen vlastník; jinak chybí). */
+  share?: () => void
   /** stav scény, jak byl při otevření — z něj se plní počáteční hodnoty */
   initial: SceneState
   /** soubory scény při otevření; mapa je po startu naskládá do 3D */

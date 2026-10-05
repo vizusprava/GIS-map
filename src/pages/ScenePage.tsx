@@ -4,6 +4,9 @@
  * Mapa se smí složit teprve tehdy, až je znám stav i seznam souborů: Cesium viewer se staví
  * jednou a počáteční hodnoty (pohledy kamery, popisky, podklad) se z něj už nedají „dosadit
  * zpátky". Proto se do `MapView` jde až po načtení, ne s prázdnými daty.
+ *
+ * Sdílená scéna (sql/003_sharing.sql): editor ukládá jako vlastník, jen soubory jdou do složky
+ * vlastníka scény. Kdo scénu jen prohlíží, může v ní všechno zkoušet, ale nic se neuloží.
  */
 import { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -14,11 +17,13 @@ import { createAsset, deleteAsset, flushAssetConfigs, hasPendingAssetConfigs, li
 import { flushScene, getScene, hasPendingSave, saveSceneState, saveSceneThumb, touchScene } from '../lib/scenes'
 import { MAX_UPLOAD_BYTES, fmtMb, isTooLargeError } from '../lib/storage'
 import { ask } from '../dialog'
+import { profileNames, sceneAccess } from '../lib/sharing'
+import { openShareDialog } from '../shareDialog'
 import { useAuthStore } from '../stores/authStore'
 import type { ScenePersist } from '../lib/scenePersist'
-import type { AssetRow, SceneRow, SceneState } from '../lib/types'
+import type { AssetRow, SceneRole, SceneRow, SceneState } from '../lib/types'
 
-type Loaded = { scene: SceneRow; assets: AssetRow[] }
+type Loaded = { scene: SceneRow; assets: AssetRow[]; access: SceneRole; ownerName: string | null }
 
 function Busy({ text }: { text: string }) {
   return (
@@ -77,7 +82,7 @@ export function ScenePage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const ownerId = useAuthStore(s => s.user?.id)
+  const signedIn = useAuthStore(s => !!s.user)
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -95,10 +100,11 @@ export function ScenePage() {
         const scene = await getScene(id)
         if (!alive) return
         if (!scene) { setError('Scéna neexistuje, nebo k ní nemáš přístup.'); return }
-        const assets = await listAssets(id)
+        const [assets, access] = await Promise.all([listAssets(id), sceneAccess(scene)])
+        const ownerName = access === 'owner' ? null : (await profileNames([scene.owner]))[scene.owner]?.name ?? null
         if (!alive) return
         stateRef.current = scene.state ?? {}
-        setLoaded({ scene, assets })
+        setLoaded({ scene, assets, access, ownerName })
         void touchScene(id)
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : 'Scénu se nepodařilo načíst')
@@ -135,19 +141,46 @@ export function ScenePage() {
     // stav zpátky na server. Porovnává se jen totožnost (u čísel a textů hodnota); objekty
     // chodí vždycky nové, a hloubkové srovnání velkých polí by stálo víc než samotný zápis.
     const cur = stateRef.current as Record<string, unknown>
-    if (Object.entries(patch).every(([k, v]) => cur[k] === v)) return
+    const changed = Object.entries(patch).filter(([k, v]) => cur[k] !== v).map(([k]) => k)
+    if (!changed.length) return
     stateRef.current = { ...stateRef.current, ...patch }
-    saveSceneState(id, stateRef.current)
+    saveSceneState(id, stateRef.current, changed)
   }, [id])
 
   const persist = useMemo<ScenePersist | null>(() => {
-    if (!loaded || !id || !ownerId) return null
-    return {
+    if (!loaded || !id || !signedIn) return null
+    // soubory i náhled patří vlastníkovi scény, i když je nahraje kolega
+    const ownerId = loaded.scene.owner
+    const exit = () => {
+      void flushScene(id)
+      void flushAssetConfigs()
+      navigate('/')
+    }
+    const base = {
       sceneId: id,
       sceneName: loaded.scene.name,
       ownerId,
+      access: loaded.access,
+      ownerName: loaded.ownerName,
       initial: loaded.scene.state ?? {},
       assets: loaded.assets,
+      exit,
+    }
+    // Jen prohlížení: všechno jde vyzkoušet, nic se neuloží (databáze by zápis stejně odmítla).
+    if (loaded.access === 'viewer') {
+      return {
+        ...base,
+        patchState: () => {},
+        uploadAsset: async (opts) => { throw new Error(`Scénu jen prohlížíš — „${opts.file.name}“ se do ní neuloží a po zavření zmizí`) },
+        patchAssetConfig: () => {},
+        renameAsset: async () => {},
+        deleteAsset: async () => {},
+        saveThumb: async () => {},
+      }
+    }
+    return {
+      ...base,
+      share: loaded.access === 'owner' ? () => openShareDialog({ sceneId: id, sceneName: loaded.scene.name }) : undefined,
       patchState,
       // Soubor větší, než úložiště bere: místo chyby se nabídne nechat ho jen v tomhle počítači
       // (localFiles.ts). Platí i pro nižší strop serveru, než s jakým počítá appka.
@@ -176,13 +209,8 @@ export function ScenePage() {
         void qc.invalidateQueries({ queryKey: ['scenes'] })
         void qc.invalidateQueries({ queryKey: ['thumb'] })
       },
-      exit: () => {
-        void flushScene(id)
-        void flushAssetConfigs()
-        navigate('/')
-      },
     }
-  }, [loaded, id, ownerId, patchState, navigate, qc])
+  }, [loaded, id, signedIn, patchState, navigate, qc])
 
   if (error) {
     return (

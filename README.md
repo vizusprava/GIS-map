@@ -63,6 +63,22 @@ v profilu. Bez ní v appce nepůjde jen smazání účtu — změna jména, e-ma
 rovnou přes Supabase Auth. Změna e-mailu posílá potvrzovací odkaz, takže potřebuje funkční
 odesílání pošty (vlastní SMTP, vestavěné e-maily Supabase jsou jen na zkoušení).
 
+A nakonec `sql/003_sharing.sql` (sdílení scén s kolegy):
+
+- `geo_scene_members` (kdo je ve scéně a s jakou rolí) a `geo_scene_invites` (pozvánky pro
+  e-maily, které ještě nemají účet — po registraci a potvrzení e-mailu se samy promění
+  v členství)
+- role **editor** (mění scénu, nahrává a maže soubory) a **viewer** (jen prohlíží, nic
+  neuloží); sdílet a mazat scénu smí jen vlastník
+- všechno ve scéně patří vlastníkovi — i soubory nahrané editorem leží v jeho složce
+  bucketu, takže když editor smaže účet, scéně nic nezmizí
+- `patch_scene_state()`: stav scény se ukládá po změněných klíčích, ať si dva lidi ve scéně
+  nepřepisují práci (stejný klíč naráz = platí poslední zápis; cizí změny se ukážou po
+  znovuotevření scény)
+
+Bez 003 appka funguje dál jako dřív, jen bez sdílení (okno Sdílet řekne, že migrace chybí).
+Appka sama e-maily o nasdílení neposílá — vlastník kolegovi pošle odkaz na scénu.
+
 Po nasazení na veřejnou adresu je potřeba ji přidat v Supabase do
 **Authentication → URL Configuration** (Site URL i Redirect URLs), jinak nebudou
 fungovat odkazy z potvrzovacích a resetovacích e-mailů.

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { toast } from 'sonner'
-import { ChevronLeft, ChevronRight, Layers, Loader2, Sparkles, Trash2, Upload } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Eye, Layers, Loader2, Sparkles, Trash2, Upload, Users } from 'lucide-react'
 import { ION_TOKEN, NEEDS_ION, SHARP_KEY } from './config'
 import { effectiveIonToken, useUserIonToken } from './lib/ionKey'
 import { openIonKeyDialog } from './ionKeyDialog'
@@ -843,7 +843,23 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           <div className="flex min-w-0 items-center gap-1.5 px-1">
             <Layers size={12} className="shrink-0 text-emerald-500" />
             <span className="truncate text-xs font-medium text-gray-200" title={scene.sceneName}>{scene.sceneName}</span>
+            {scene.share && (
+              <button onClick={scene.share} title="Sdílet scénu s kolegy" data-share-open className="ml-auto flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:bg-gray-800 hover:text-gray-200">
+                <Users size={12} /> Sdílet
+              </button>
+            )}
           </div>
+          {/* Cizí scéna: čí je a jestli se změny ukládají — u „jen prohlížet" by jinak člověk
+              pracoval a po zavření by nic nenašel. */}
+          {scene.access !== 'owner' && (
+            <div data-access={scene.access} className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] ${scene.access === 'viewer' ? 'bg-amber-950/60 text-amber-200' : 'bg-sky-950/60 text-sky-200'}`}>
+              {scene.access === 'viewer' ? <Eye size={12} className="shrink-0" /> : <Users size={12} className="shrink-0" />}
+              <span className="truncate" title={scene.ownerName ? `Scénu sdílí ${scene.ownerName}` : undefined}>
+                {scene.access === 'viewer' ? 'Jen prohlížíš — nic se neuloží' : 'Sdílená scéna — změny se ukládají'}
+                {scene.ownerName ? ` · ${scene.ownerName}` : ''}
+              </span>
+            </div>
+          )}
           {restoring && (
             <div className="flex items-center gap-1.5 px-1 text-[11px] text-gray-400">
               <Loader2 size={12} className="shrink-0 animate-spin" />

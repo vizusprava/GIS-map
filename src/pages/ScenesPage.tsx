@@ -2,21 +2,24 @@
  * Přehled scén — první, co uživatel po přihlášení vidí.
  *
  * Scéna je jedna zakázka: drží svoje modely, výkresy, rastry, pohledy kamery, popisky
- * i měření. Tady se zakládá, přejmenovává a maže; otevření vede do mapy.
+ * i měření. Tady se zakládá, přejmenovává, sdílí a maže; otevření vede do mapy. Scény, které
+ * se mnou nasdílel někdo jiný, mají vlastní oddíl — ty smazat nejde, jen z nich odejít.
  */
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Globe2, Plus, Trash2, Pencil, LogOut, Loader2, Layers, Clock, Image as ImageIcon, Check, X, KeyRound, UserRound } from 'lucide-react'
+import { Globe2, Plus, Trash2, Pencil, LogOut, Loader2, Layers, Clock, Image as ImageIcon, Check, X, KeyRound, UserRound, Users, UserMinus } from 'lucide-react'
 import { openIonKeyDialog } from '../ionKeyDialog'
+import { openShareDialog } from '../shareDialog'
 import { useUserIonToken } from '../lib/ionKey'
 import { toast } from 'sonner'
 import { ask } from '../dialog'
 import { createScene, deleteScene, listScenes, renameScene } from '../lib/scenes'
+import { ROLE_LABEL, leaveScene, sharingOverview } from '../lib/sharing'
 import { signedUrlOrNull } from '../lib/storage'
 import { supabase } from '../lib/supabase'
 import { useAuthStore } from '../stores/authStore'
-import type { SceneRow } from '../lib/types'
+import type { SceneItem } from '../lib/types'
 
 /** Kolik souborů která scéna má — jeden dotaz pro celý přehled, ne N dotazů po řádcích. */
 function useAssetCounts(sceneIds: string[]) {
@@ -57,6 +60,8 @@ function fmtDate(iso: string | null): string {
   return new Date(iso).toLocaleString('cs-CZ', { day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+const iconBtn = 'p-1.5 rounded-lg text-gray-400 hover:text-gray-100 hover:bg-gray-800'
+
 export function ScenesPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -66,7 +71,16 @@ export function ScenesPage() {
   const [draftName, setDraftName] = useState('')
 
   const { data: scenes, isLoading, error } = useQuery({ queryKey: ['scenes'], queryFn: listScenes })
-  const { data: counts } = useAssetCounts((scenes ?? []).map(s => s.id))
+  const ids = (scenes ?? []).map(s => s.id)
+  const { data: counts } = useAssetCounts(ids)
+  // s kým je která moje scéna sdílená a čí jsou ty cizí (bez migrace 003 prázdné)
+  const { data: sharing } = useQuery({
+    queryKey: ['sharing', ids.join(',')],
+    enabled: ids.length > 0,
+    queryFn: () => sharingOverview(scenes ?? []),
+  })
+  const own = (scenes ?? []).filter(s => s.role === 'owner')
+  const shared = (scenes ?? []).filter(s => s.role !== 'owner')
 
   const create = useMutation({
     mutationFn: () => createScene(`Nová scéna ${new Date().toLocaleDateString('cs-CZ')}`),
@@ -84,10 +98,121 @@ export function ScenesPage() {
   })
 
   const remove = useMutation({
-    mutationFn: (scene: SceneRow) => deleteScene(scene),
+    mutationFn: (scene: SceneItem) => deleteScene(scene),
     onSuccess: () => { toast.success('Scéna smazána'); void qc.invalidateQueries({ queryKey: ['scenes'] }) },
     onError: (e: Error) => toast.error(e.message),
   })
+
+  const leave = useMutation({
+    mutationFn: (scene: SceneItem) => leaveScene(scene.id),
+    onSuccess: () => { toast.success('Scéna ti zmizela z přehledu'); void qc.invalidateQueries({ queryKey: ['scenes'] }) },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  function share(scene: SceneItem) {
+    openShareDialog({ sceneId: scene.id, sceneName: scene.name, onChange: () => void qc.invalidateQueries({ queryKey: ['sharing'] }) })
+  }
+
+  function card(scene: SceneItem) {
+    const sharedWith = sharing?.counts[scene.id] ?? 0
+    const ownerName = sharing?.owners[scene.owner]
+    const canRename = scene.role !== 'viewer'
+    return (
+      <div
+        key={scene.id}
+        data-scene-card={scene.role}
+        className="group rounded-2xl border border-gray-800 bg-gray-900/50 p-3 hover:border-emerald-500/40 transition-colors"
+      >
+        <button onClick={() => navigate(`/scene/${scene.id}`)} className="block w-full text-left">
+          <SceneThumb path={scene.thumb_path} />
+        </button>
+
+        <div className="mt-3 flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            {renaming === scene.id ? (
+              <form
+                onSubmit={e => { e.preventDefault(); if (draftName.trim()) rename.mutate({ id: scene.id, name: draftName.trim() }) }}
+                className="flex items-center gap-1"
+              >
+                <input
+                  autoFocus value={draftName} onChange={e => setDraftName(e.target.value)}
+                  className="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 outline-none focus:border-emerald-500/70"
+                />
+                <button type="submit" className="p-1 text-emerald-400 hover:text-emerald-300"><Check size={15} /></button>
+                <button type="button" onClick={() => setRenaming(null)} className="p-1 text-gray-500 hover:text-gray-300"><X size={15} /></button>
+              </form>
+            ) : (
+              <button
+                onClick={() => navigate(`/scene/${scene.id}`)}
+                className="block w-full text-left text-sm font-medium text-gray-100 truncate hover:text-emerald-300"
+              >
+                {scene.name}
+              </button>
+            )}
+            <div className="mt-1 flex items-center gap-3 text-[11px] text-gray-500">
+              <span className="flex items-center gap-1"><Layers size={11} /> {counts?.[scene.id] ?? 0}</span>
+              <span className="flex items-center gap-1 truncate"><Clock size={11} /> {fmtDate(scene.opened_at ?? scene.updated_at)}</span>
+              {sharedWith > 0 && (
+                <span className="flex items-center gap-1 text-sky-400/80" title={`Sdíleno s ${sharedWith} ${sharedWith === 1 ? 'člověkem' : 'lidmi'}`}>
+                  <Users size={11} /> {sharedWith}
+                </span>
+              )}
+            </div>
+            {scene.role !== 'owner' && (
+              <div className="mt-1 truncate text-[11px] text-sky-300/80">
+                {ownerName ? `Sdílí ${ownerName}` : 'Sdílená scéna'} · {ROLE_LABEL[scene.role]}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+            {scene.role === 'owner' && (
+              <button onClick={() => share(scene)} title="Sdílet s kolegy" className={iconBtn}>
+                <Users size={14} />
+              </button>
+            )}
+            {canRename && (
+              <button onClick={() => { setRenaming(scene.id); setDraftName(scene.name) }} title="Přejmenovat" className={iconBtn}>
+                <Pencil size={14} />
+              </button>
+            )}
+            {scene.role === 'owner' ? (
+              <button
+                onClick={async () => {
+                  if (!(await ask({
+                    title: `Smazat scénu „${scene.name}"?`,
+                    message: 'Smaže se i se všemi nahranými soubory. Tohle nejde vzít zpět.'
+                      + (sharedWith > 0 ? '\n\nZmizí i lidem, se kterými ji sdílíš.' : ''),
+                    okLabel: 'Smazat', danger: true,
+                  }))) return
+                  remove.mutate(scene)
+                }}
+                title="Smazat scénu"
+                className="p-1.5 rounded-lg text-gray-400 hover:text-red-300 hover:bg-gray-800"
+              >
+                <Trash2 size={14} />
+              </button>
+            ) : (
+              <button
+                onClick={async () => {
+                  if (!(await ask({
+                    title: `Odejít ze scény „${scene.name}"?`,
+                    message: 'Zmizí ti z přehledu; vlastníkovi i ostatním zůstane. Zpátky se dostaneš, jen když ji s tebou nasdílí znovu.',
+                    okLabel: 'Odejít', danger: true,
+                  }))) return
+                  leave.mutate(scene)
+                }}
+                title="Odejít ze sdílené scény"
+                className="p-1.5 rounded-lg text-gray-400 hover:text-red-300 hover:bg-gray-800"
+              >
+                <UserMinus size={14} />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="h-full overflow-y-auto">
@@ -154,10 +279,10 @@ export function ScenesPage() {
           </div>
         )}
 
-        {scenes && scenes.length === 0 && (
+        {scenes && own.length === 0 && (
           <div className="rounded-2xl border-2 border-dashed border-gray-800 p-12 text-center">
             <Layers size={28} className="mx-auto mb-3 text-gray-600" />
-            <p className="text-sm text-gray-300 font-medium">Zatím tu nic není</p>
+            <p className="text-sm text-gray-300 font-medium">{shared.length ? 'Zatím nemáš vlastní scénu' : 'Zatím tu nic není'}</p>
             <p className="text-xs text-gray-500 mt-1.5">
               Scéna je jedna zakázka — nahrané modely, výkresy, pohledy a měření na jednom místě.
             </p>
@@ -170,71 +295,21 @@ export function ScenesPage() {
           </div>
         )}
 
+        {shared.length > 0 && own.length > 0 && <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500">Moje scény</h2>}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {(scenes ?? []).map(scene => (
-            <div
-              key={scene.id}
-              className="group rounded-2xl border border-gray-800 bg-gray-900/50 p-3 hover:border-emerald-500/40 transition-colors"
-            >
-              <button onClick={() => navigate(`/scene/${scene.id}`)} className="block w-full text-left">
-                <SceneThumb path={scene.thumb_path} />
-              </button>
-
-              <div className="mt-3 flex items-start gap-2">
-                <div className="min-w-0 flex-1">
-                  {renaming === scene.id ? (
-                    <form
-                      onSubmit={e => { e.preventDefault(); if (draftName.trim()) rename.mutate({ id: scene.id, name: draftName.trim() }) }}
-                      className="flex items-center gap-1"
-                    >
-                      <input
-                        autoFocus value={draftName} onChange={e => setDraftName(e.target.value)}
-                        className="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 outline-none focus:border-emerald-500/70"
-                      />
-                      <button type="submit" className="p-1 text-emerald-400 hover:text-emerald-300"><Check size={15} /></button>
-                      <button type="button" onClick={() => setRenaming(null)} className="p-1 text-gray-500 hover:text-gray-300"><X size={15} /></button>
-                    </form>
-                  ) : (
-                    <button
-                      onClick={() => navigate(`/scene/${scene.id}`)}
-                      className="block w-full text-left text-sm font-medium text-gray-100 truncate hover:text-emerald-300"
-                    >
-                      {scene.name}
-                    </button>
-                  )}
-                  <div className="mt-1 flex items-center gap-3 text-[11px] text-gray-500">
-                    <span className="flex items-center gap-1"><Layers size={11} /> {counts?.[scene.id] ?? 0}</span>
-                    <span className="flex items-center gap-1 truncate"><Clock size={11} /> {fmtDate(scene.opened_at ?? scene.updated_at)}</span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    onClick={() => { setRenaming(scene.id); setDraftName(scene.name) }}
-                    title="Přejmenovat"
-                    className="p-1.5 rounded-lg text-gray-400 hover:text-gray-100 hover:bg-gray-800"
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <button
-                    onClick={async () => {
-                      if (!(await ask({
-                        title: `Smazat scénu „${scene.name}"?`,
-                        message: 'Smaže se i se všemi nahranými soubory. Tohle nejde vzít zpět.',
-                        okLabel: 'Smazat', danger: true,
-                      }))) return
-                      remove.mutate(scene)
-                    }}
-                    title="Smazat scénu"
-                    className="p-1.5 rounded-lg text-gray-400 hover:text-red-300 hover:bg-gray-800"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
+          {own.map(card)}
         </div>
+
+        {shared.length > 0 && (
+          <>
+            <h2 className="mb-3 mt-8 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-gray-500">
+              <Users size={12} /> Sdílené se mnou
+            </h2>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {shared.map(card)}
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

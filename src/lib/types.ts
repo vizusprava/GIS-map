@@ -28,6 +28,14 @@ export type SceneRow = {
   opened_at: string | null
 }
 
+/** Moje role ve scéně: vlastník, nebo kolega, se kterým je nasdílená (sql/003_sharing.sql). */
+export type SceneRole = 'owner' | 'editor' | 'viewer'
+/** Role, kterou vlastník dává kolegům. */
+export type MemberRole = Exclude<SceneRole, 'owner'>
+
+/** Scéna v přehledu — s mou rolí (sdílené scény mají `opened_at` podle mého otevření). */
+export type SceneItem = SceneRow & { role: SceneRole }
+
 export type AssetKind = 'model' | 'drawing' | 'raster'
 
 export type AssetRow = {
