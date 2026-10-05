@@ -157,6 +157,65 @@ async function cachedDownload(key: string, path: string, fileName: string): Prom
   return file
 }
 
+// ── Přesun mezi cloudem a tímhle počítačem ─────────────────────────────────────
+// Pořadí je vždycky stejné: nejdřív zapsat na nové místo, pak přepsat cestu v řádku, a teprve
+// pak smazat ze starého. Kdyby cokoliv spadlo uprostřed (výpadek sítě, plné úložiště), soubor
+// pořád leží tam, kam ukazuje řádek — nic se neztratí, nanejvýš zůstane kopie navíc.
+
+async function getAsset(assetId: string): Promise<AssetRow> {
+  const { data, error } = await supabase.from('geo_assets').select('*').eq('id', assetId).single()
+  if (error || !data) throw new Error(`Soubor scény se nepodařilo načíst: ${error?.message ?? 'nenalezen'}`)
+  return data as AssetRow
+}
+
+async function setPaths(asset: AssetRow, filePath: string, sidecarPath: string | null): Promise<AssetRow> {
+  const { data, error } = await supabase.from('geo_assets')
+    .update({ file_path: filePath, sidecar_path: sidecarPath })
+    .eq('id', asset.id).select('*').single()
+  if (error || !data) throw new Error(`Zápis nového umístění selhal: ${error?.message ?? 'bez odpovědi'}`)
+  return data as AssetRow
+}
+
+/** Stáhne soubor z cloudu sem (do tohoto počítače) a z cloudu ho smaže. */
+export async function moveAssetToLocal(assetId: string): Promise<AssetRow> {
+  const asset = await getAsset(assetId)
+  if (isLocalAsset(asset)) return asset
+  const file = await fetchAssetFile(asset)
+  const side = await fetchAssetSidecar(asset)
+  void requestPersistence()
+  const fp = localPath(asset.id, 'file'), sp = side ? localPath(asset.id, 'sidecar') : null
+  await localPut(fp, file)
+  if (side && sp) await localPut(sp, side)
+  let moved: AssetRow
+  try { moved = await setPaths(asset, fp, sp) } catch (e) { await removeFiles([fp, sp]); throw e }
+  await removeFiles([asset.file_path, asset.sidecar_path]).catch(() => { /* v cloudu zůstane kopie — nevadí */ })
+  return moved
+}
+
+/**
+ * Nahraje soubor z tohoto počítače do cloudu a místní kopii smaže. Soubor musí být tady
+ * (jinak `MissingLocalFile`) a vejít se do úložiště (jinak chyba s velikostí).
+ */
+export async function moveAssetToCloud(assetId: string, ownerId: string): Promise<AssetRow> {
+  const asset = await getAsset(assetId)
+  if (!isLocalAsset(asset)) return asset
+  const file = await localGet(asset.file_path)
+  if (!file) throw new MissingLocalFile('file')
+  const side = isLocalPath(asset.sidecar_path) ? await localGet(asset.sidecar_path) : null
+  if (isLocalPath(asset.sidecar_path) && !side) throw new MissingLocalFile('sidecar')
+  const fp = `${ownerId}/${asset.scene_id}/${asset.id}${extOf(asset.file_name)}`
+  const sp = side ? `${ownerId}/${asset.scene_id}/${asset.id}${extOf(asset.sidecar_name ?? '')}` : null
+  // uploadFile sám zkontroluje velikost a řekne ji v chybě
+  await uploadFile(fp, file)
+  try {
+    if (side && sp) await uploadFile(sp, side)
+  } catch (e) { await removeFiles([fp]); throw e }
+  let moved: AssetRow
+  try { moved = await setPaths(asset, fp, sp) } catch (e) { await removeFiles([fp, sp]); throw e }
+  await removeFiles([asset.file_path, asset.sidecar_path])   // místní kopie (local:…)
+  return moved
+}
+
 /** Smaže soubor scény i jeho binárky. Cesty si dohledá sám, stačí id. */
 export async function deleteAsset(assetId: string): Promise<void> {
   cancelConfigSave(assetId)

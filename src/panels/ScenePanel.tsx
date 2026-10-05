@@ -3,15 +3,37 @@
  * a u výkresů jejich hladiny (výška, průhlednost, hledání a hromadné přepínání).
  */
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Crosshair, Eye, EyeOff, Pencil, Search, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Cloud, Crosshair, Eye, EyeOff, HardDrive, Pencil, Search, Trash2 } from 'lucide-react'
 import { EMPTY_NAMESET } from '../config'
 import type { SceneObj } from '../types'
+import type { FileStorage } from '../lib/types'
 import type { DrawingsTool } from '../useDrawings'
 
 export type ScenePanelUi = ReturnType<typeof useScenePanelUi>
 
 /** ikonové tlačítko v řádku — na dotyku větší, ať se trefí prstem */
 const rowBtn = 'shrink-0 rounded p-0.5 text-gray-400 pointer-coarse:p-1.5'
+
+/**
+ * Kde leží soubor (sdílí to i panel Vlastní ortofoto). „Jen v tomto počítači" je vidět vždycky
+ * — je to důležité vědět (jinde ani kolegům se soubor neotevře); „v cloudu" jen při najetí.
+ * Klik soubor přesune na druhé místo (s potvrzením, viz MapView).
+ */
+export function FileAt({ at, onMove }: { at: FileStorage | null; onMove?: (to: FileStorage) => void }) {
+  if (!at) return null
+  const local = at === 'local'
+  const title = local
+    ? `Jen v tomto počítači${onMove ? ' — klikni a nahraje se do cloudu' : ''}`
+    : `V cloudu${onMove ? ' — klikni a zůstane jen v tomto počítači' : ''}`
+  const cls = `${rowBtn} ${local ? 'text-amber-400/90' : 'opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100'} ${onMove ? (local ? 'hover:text-amber-200' : 'hover:text-sky-300') : 'cursor-default'}`
+  const icon = local ? <HardDrive size={13} /> : <Cloud size={13} />
+  if (!onMove) return <span title={title} data-file-at={at} className={cls}>{icon}</span>
+  return (
+    <button data-file-at={at} title={title} onClick={e => { e.stopPropagation(); onMove(local ? 'cloud' : 'local') }} className={cls}>
+      {icon}
+    </button>
+  )
+}
 
 /**
  * Stav seznamu — co je rozbalené, výběr hladin, rozepsané jméno. Žije o patro výš než panel:
@@ -70,7 +92,7 @@ export function useScenePanelUi() {
   }
 }
 
-export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, locateObject, toggleVisible, deleteObject, onRename, readOnly }: {
+export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, locateObject, toggleVisible, deleteObject, onRename, readOnly, fileAt, onMoveFile }: {
   ui: ScenePanelUi
   objects: SceneObj[]
   selectedId: string | null
@@ -83,6 +105,10 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
   onRename: (id: string, name: string) => void
   /** veřejný prohlížeč: bez mazání a přejmenování */
   readOnly?: boolean
+  /** kde leží soubor objektu (cloud / jen tento počítač), null = objekt bez souboru */
+  fileAt?: (o: SceneObj) => FileStorage | null
+  /** přesun souboru jinam; chybí = přesouvat nejde (jen prohlížení) */
+  onMoveFile?: (o: SceneObj, to: FileStorage) => void
 }) {
   const {
     clearLayerSel, dragOverLayer, expandedDrawings, layerFilter, layerSel, renameDraft, renamingId,
@@ -132,6 +158,7 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
               title={o.name}
             >{o.name}</span>
           )}
+          <FileAt at={fileAt?.(o) ?? null} onMove={onMoveFile && !readOnly ? to => onMoveFile(o, to) : undefined} />
           {/* přejmenování i tlačítkem — dvojklik na dotykové obrazovce nefunguje */}
           {o.kind === 'model' && !readOnly && renamingId !== o.id && (
             <button onClick={e => { e.stopPropagation(); setRenamingId(o.id); setRenameDraft(o.name) }} title="Přejmenovat (nebo dvojklik na název)" className={`${rowBtn} hover:text-gray-100 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100`}>

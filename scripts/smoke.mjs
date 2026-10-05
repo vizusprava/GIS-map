@@ -450,6 +450,35 @@ async function main() {
     expect(!(await ev(`!!document.querySelector('[data-sec="chybi"]')`)), 'podruhé se znovu ptá, kde soubor je')
   })
 
+  // ── kam se ukládají soubory: přepínač ve scéně a přesun stávajících ──
+  await check('soubory: přepínač cloud / tento počítač, přesun stávajících i jednoho souboru', async () => {
+    const dxfSize = statSync(join(work, 'mimo-uloziste.dxf')).size
+    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?localdxf=${dxfSize}` })
+    await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa se souborem v počítači')
+    await waitFor(`!!document.querySelector('[data-sec="scena"] [data-file-at="local"]')`, 20_000, 'výkres se štítkem „jen v tomto počítači"')
+    // sekce Import → přepínač (výchozí cloud)
+    await ev(`document.querySelector('[data-sec="import"] button').click()`)
+    await waitFor(`!!document.querySelector('[data-file-storage="cloud"]')`, 5_000, 'přepínač ukládání (cloud)')
+    // na „tento počítač": jediný soubor už tam je → nic se nepřesouvá, nic se neptá
+    await clickText(`document.querySelector('[data-file-storage]')`, 'Tento počítač')
+    await waitFor(`!!document.querySelector('[data-file-storage="local"]')`, 5_000, 'přepnutí na tento počítač')
+    expect(!(await ev(`!!document.querySelector('[data-dialog]')`)), 'ptá se na přesun, i když není co přesouvat')
+    expect((await ev('window.__patches')).some(p => p.fileStorage === 'local'), 'volba se neuložila do scény')
+    // zpátky na cloud: soubor je jinde → zeptá se a po potvrzení ho přesune
+    await clickText(`document.querySelector('[data-file-storage]')`, 'Cloud')
+    await waitFor(`(document.querySelector('[data-dialog]')?.innerText ?? '').includes('Přesunout i stávající soubory (1)')`, 5_000, 'dotaz na přesun stávajícího souboru')
+    await ev(`document.querySelector('[data-dialog-ok]').click()`)
+    await waitFor(`!!document.querySelector('[data-sec="scena"] [data-file-at="cloud"]') && !document.querySelector('[data-sec="scena"] [data-file-at="local"]')`, 10_000, 'soubor přesunutý do cloudu')
+    // jeden soubor zpátky do počítače kliknutím na jeho štítek
+    await ev(`document.querySelector('[data-sec="scena"] [data-file-at="cloud"]').click()`)
+    await waitFor(`!!document.querySelector('[data-dialog-ok]')`, 5_000, 'potvrzení přesunu souboru')
+    await ev(`document.querySelector('[data-dialog-ok]').click()`)
+    await waitFor(`!!document.querySelector('[data-sec="scena"] [data-file-at="local"]')`, 10_000, 'soubor zpátky v počítači')
+    const moves = await ev('window.__moves')
+    expect(JSON.stringify(moves) === JSON.stringify([['smoke-local-1', 'cloud'], ['smoke-local-1', 'local']]), `přesuny: ${JSON.stringify(moves)}`)
+    await shot('soubory-uloziste')
+  })
+
   // ── Nastavení účtu s podvrženým uživatelem (bez Supabase — jen formuláře a jejich kontroly) ──
   await check('nastavení účtu: bloky, kontrola hesel, pojistka mazání', async () => {
     await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?page=account` })

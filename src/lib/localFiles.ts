@@ -1,6 +1,7 @@
 /**
  * Soubory scény uložené JEN V TOMHLE POČÍTAČI — ty, které se nevešly do úložiště Supabase
- * (bere jen do `MAX_UPLOAD_BYTES` na soubor, viz storage.ts).
+ * (bere jen do `MAX_UPLOAD_BYTES` na soubor, viz storage.ts), a ty, které má uživatel u sebe
+ * schválně (přepínač „Cloud / Tento počítač" u scény, přesun souboru — viz assets.ts).
  *
  * Scéna o nich ví: v `geo_assets` mají normální řádek, jen cesta místo bucketu začíná `local:`.
  * Bajty leží v trvalém úložišti prohlížeče (vlastní IndexedDB) — ne v cache dlaždic, kterou maže

@@ -5,7 +5,7 @@
  * „tohle si zapamatuj" (stav scény, nahraný soubor, usazení modelu). Kdo to ukládá a kam,
  * řeší `ScenePage`. Persistence se injektuje, nesahá se na ni z komponenty.
  */
-import type { AssetConfig, AssetKind, AssetRow, SceneRole, SceneState } from './types'
+import type { AssetConfig, AssetKind, AssetRow, FileStorage, SceneRole, SceneState } from './types'
 
 export type ScenePersist = {
   sceneId: string
@@ -27,6 +27,11 @@ export type ScenePersist = {
   guest?: boolean
   /** Otevři okno sdílení (jen vlastník; jinak chybí). */
   share?: () => void
+  /**
+   * Vidí scénu i někdo jiný (kolegové, odkaz pro prohlížení)? Soubor jen v tomhle počítači
+   * by neviděli — mapa na to upozorní.
+   */
+  shared?: boolean
   /** stav scény, jak byl při otevření — z něj se plní počáteční hodnoty */
   initial: SceneState
   /** soubory scény při otevření; mapa je po startu naskládá do 3D */
@@ -40,7 +45,11 @@ export type ScenePersist = {
     file: File
     sidecar?: File | null
     config?: AssetConfig
+    /** nenahrávat do cloudu, nechat jen v tomhle počítači (přepínač ve scéně) */
+    local?: boolean
   }) => Promise<AssetRow>
+  /** Přesuň soubor do cloudu, nebo jen do tohoto počítače. Vrací řádek s novým umístěním. */
+  moveAsset: (assetId: string, to: FileStorage) => Promise<AssetRow>
   /** Zapamatuj si nastavení souboru (usazení modelu, výška výkresu, alfa rastru). */
   patchAssetConfig: (assetId: string, config: AssetConfig) => void
   /** Přejmenuj soubor scény (jméno, pod kterým se ukazuje v panelu). */

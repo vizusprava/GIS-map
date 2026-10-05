@@ -13,19 +13,19 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, ArrowLeft, RotateCcw } from 'lucide-react'
 import { MapView } from '../MapView'
-import { createAsset, deleteAsset, flushAssetConfigs, hasPendingAssetConfigs, listAssets, renameAsset, saveAssetConfig } from '../lib/assets'
+import { createAsset, deleteAsset, flushAssetConfigs, hasPendingAssetConfigs, listAssets, moveAssetToCloud, moveAssetToLocal, renameAsset, saveAssetConfig } from '../lib/assets'
 import { flushScene, getScene, hasPendingSave, saveSceneState, saveSceneThumb, touchScene } from '../lib/scenes'
 import { MAX_UPLOAD_BYTES, fmtMb, isTooLargeError } from '../lib/storage'
 import { ask } from '../dialog'
-import { profileNames, sceneAccess } from '../lib/sharing'
+import { isSceneShared, profileNames, sceneAccess } from '../lib/sharing'
 import { openShareDialog } from '../shareDialog'
 import { useAuthStore } from '../stores/authStore'
 import type { ScenePersist } from '../lib/scenePersist'
 import type { AssetRow, SceneRole, SceneRow, SceneState } from '../lib/types'
 
-type Loaded = { scene: SceneRow; assets: AssetRow[]; access: SceneRole | 'guest'; ownerName: string | null }
+type Loaded = { scene: SceneRow; assets: AssetRow[]; access: SceneRole | 'guest'; ownerName: string | null; shared: boolean }
 
-type PersistBase = Omit<ScenePersist, 'patchState' | 'uploadAsset' | 'patchAssetConfig' | 'renameAsset' | 'deleteAsset' | 'saveThumb'>
+type PersistBase = Omit<ScenePersist, 'patchState' | 'uploadAsset' | 'moveAsset' | 'patchAssetConfig' | 'renameAsset' | 'deleteAsset' | 'saveThumb'>
 
 /**
  * Scéna jen pro prohlížení: všechno jde vyzkoušet, nic se neuloží (databáze by zápis stejně
@@ -36,6 +36,7 @@ export function viewOnlyPersist(base: PersistBase): ScenePersist {
     ...base,
     patchState: () => {},
     uploadAsset: async (opts) => { throw new Error(`Scénu jen prohlížíš — „${opts.file.name}“ se do ní neuloží a po zavření zmizí`) },
+    moveAsset: async () => { throw new Error('Scénu jen prohlížíš — soubory v ní přesouvat nejde') },
     patchAssetConfig: () => {},
     renameAsset: async () => {},
     deleteAsset: async () => {},
@@ -122,10 +123,13 @@ export function ScenePage() {
         if (!alive) return
         if (!scene) { setError('Scéna neexistuje, nebo k ní nemáš přístup.'); return }
         const [assets, access] = await Promise.all([listAssets(id), sceneAccess(scene)])
-        const ownerName = access === 'owner' ? null : (await profileNames([scene.owner]))[scene.owner]?.name ?? null
+        // cizí scéna je sdílená z podstaty; u vlastní se zjistí, jestli ji někdo další vidí
+        const [ownerName, shared] = access === 'owner'
+          ? [null, await isSceneShared(id)]
+          : [(await profileNames([scene.owner]))[scene.owner]?.name ?? null, true]
         if (!alive) return
         stateRef.current = scene.state ?? {}
-        setLoaded({ scene, assets, access, ownerName })
+        setLoaded({ scene, assets, access, ownerName, shared })
         void touchScene(id)
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : 'Scénu se nepodařilo načíst')
@@ -187,16 +191,23 @@ export function ScenePage() {
       ownerName: loaded.ownerName,
       initial: loaded.scene.state ?? {},
       assets: loaded.assets,
+      shared: loaded.shared,
       exit,
     }
     if (loaded.access === 'viewer' || loaded.access === 'guest') return viewOnlyPersist(base)
     return {
       ...base,
-      share: loaded.access === 'owner' ? () => openShareDialog({ sceneId: id, sceneName: loaded.scene.name }) : undefined,
+      // po změně sdílení se znovu zjistí, jestli scénu vidí i někdo další (upozornění u souborů jen v počítači)
+      share: loaded.access === 'owner' ? () => openShareDialog({
+        sceneId: id, sceneName: loaded.scene.name,
+        onChange: () => void isSceneShared(id).then(s => setLoaded(l => (l && l.shared !== s ? { ...l, shared: s } : l))),
+      }) : undefined,
       patchState,
+      // Scéna ukládá jen do tohoto počítače (přepínač u Importu): rovnou lokálně, bez ptaní.
       // Soubor větší, než úložiště bere: místo chyby se nabídne nechat ho jen v tomhle počítači
       // (localFiles.ts). Platí i pro nižší strop serveru, než s jakým počítá appka.
       uploadAsset: async (opts) => {
+        if (opts.local) return createAsset({ sceneId: id, ownerId, ...opts, local: true })
         const tooBig = opts.file.size > MAX_UPLOAD_BYTES || (opts.sidecar?.size ?? 0) > MAX_UPLOAD_BYTES
         if (!tooBig) {
           try { return await createAsset({ sceneId: id, ownerId, ...opts }) } catch (e) { if (!isTooLargeError(e)) throw e }
@@ -211,6 +222,7 @@ export function ScenePage() {
         if (!keep) throw new Error(`„${opts.file.name}“ se do scény neuložil — po zavření zmizí`)
         return createAsset({ sceneId: id, ownerId, ...opts, local: true })
       },
+      moveAsset: (assetId, to) => (to === 'local' ? moveAssetToLocal(assetId) : moveAssetToCloud(assetId, ownerId)),
       patchAssetConfig: saveAssetConfig,
       renameAsset,
       deleteAsset,

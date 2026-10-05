@@ -131,7 +131,14 @@ export type SceneState = {
    * a má to vyjet stejně. Posun terénu je v `coords.shift` (sdílí ho i panel Souřadnice).
    */
   exportOpts?: ExportOpts
+  /**
+   * Kam se ukládají nově importované soubory: na účet (`cloud`, výchozí) nebo jen do počítače,
+   * kde se importovalo (`local`). Při přepnutí se scéna zeptá, jestli přesunout i stávající.
+   */
+  fileStorage?: FileStorage
 }
+
+export type FileStorage = 'cloud' | 'local'
 
 /**
  * Uložené volby exportu. Typy jsou schválně volné — přicházejí z JSONu scény a `useExports`

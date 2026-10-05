@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { toast } from 'sonner'
-import { ChevronLeft, ChevronRight, Eye, Layers, Loader2, Sparkles, Trash2, Upload, Users } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Cloud, Eye, HardDrive, Layers, Loader2, Sparkles, Trash2, Upload, Users } from 'lucide-react'
 import { NEEDS_ION, SHARP_KEY } from './config'
 import { effectiveIonToken, useUserIonToken } from './lib/ionKey'
 import { openIonKeyDialog } from './ionKeyDialog'
@@ -14,9 +14,9 @@ import type { ParcelHit } from './katastr'
 import { loadGeoRaster, disposeRasterSrc, type CrsId } from './worldRaster'
 import { parseDrawingFile } from './drawingClient'
 import { captureThumb } from './snapshot'
-import { fetchAssetFile, fetchAssetSidecar, relinkLocalAsset } from './lib/assets'
+import { fetchAssetFile, fetchAssetSidecar, isLocalAsset, relinkLocalAsset } from './lib/assets'
 import { MissingLocalFile } from './lib/localFiles'
-import type { AssetRow } from './lib/types'
+import type { AssetRow, FileStorage } from './lib/types'
 import { ask } from './dialog'
 import { MissingFilesPanel } from './panels/MissingFilesPanel'
 import type { MapClickOwner, SceneObj } from './types'
@@ -64,6 +64,12 @@ import { CameraMenu } from './panels/CameraMenu'
 import { PresentationMenu } from './panels/PresentationMenu'
 import { StorageFooter } from './panels/StorageFooter'
 
+/** Kam ukládat soubory v nové scéně: poslední volba uživatele v tomhle prohlížeči, jinak cloud. */
+const STORAGE_KEY = 'geo.fileStorage'
+function readStorageDefault(): FileStorage {
+  try { return localStorage.getItem(STORAGE_KEY) === 'local' ? 'local' : 'cloud' } catch { return 'cloud' }
+}
+
 /**
  * Mapa jedné scény. Co se má pamatovat, hlásí přes `scene` (viz lib/scenePersist.ts) —
  * o Supabase ani o přihlášeném uživateli tady nevíme nic.
@@ -73,11 +79,38 @@ import { StorageFooter } from './panels/StorageFooter'
  * klik do mapy, obnova scény po otevření, Esc a rozložení levého panelu.
  */
 export function MapView({ scene }: { scene: ScenePersist }) {
+  // ── kam se ukládají soubory: cloud, nebo jen tento počítač (přepínač u Importu) ──
+  const [fileStorage, setFileStorage] = useState<FileStorage>(() => scene.initial.fileStorage ?? readStorageDefault())
+  const storageRef = useRef(fileStorage); storageRef.current = fileStorage
+  // kde který soubor scény leží (podle id řádku) — štítky v panelu a přesun při přepnutí
+  const [files, setFiles] = useState<Record<string, { at: FileStorage; name: string }>>(
+    () => Object.fromEntries(scene.assets.map(a => [a.id, { at: isLocalAsset(a) ? 'local' : 'cloud', name: a.name }])),
+  )
+  const warnedShared = useRef(false)
   // Ukládací kanál si držíme v refu: volají ho i callbacky Cesia, které se registrují jednou
-  // při startu a jinak by pořád koukaly na první verzi propu.
-  const sceneRef = useRef(scene); sceneRef.current = scene
+  // při startu a jinak by pořád koukaly na první verzi propu. Nahrání a mazání jde přes obal:
+  // nahrání dostane, kam ukládat, a obojí si poznamená, kde soubor leží.
+  const sceneRef = useRef(scene)
+  sceneRef.current = useMemo<ScenePersist>(() => ({
+    ...scene,
+    uploadAsset: async opts => {
+      const row = await scene.uploadAsset({ ...opts, local: opts.local ?? storageRef.current === 'local' })
+      const local = isLocalAsset(row)
+      setFiles(f => ({ ...f, [row.id]: { at: local ? 'local' : 'cloud', name: row.name } }))
+      if (local && scene.shared && !warnedShared.current) {
+        warnedShared.current = true
+        toast.info(`„${row.name}" zůstal jen v tomto počítači — kolegové ani návštěvníci odkazu ho neuvidí.`, { duration: 9000 })
+      }
+      return row
+    },
+    deleteAsset: async id => {
+      await scene.deleteAsset(id)
+      setFiles(f => { const n = { ...f }; delete n[id]; return n })
+    },
+  }), [scene])
   // veřejný prohlížeč (odkaz bez registrace): bez exportů, importu, výběrů a úprav
   const guest = !!scene.guest
+  const canEditFiles = scene.access !== 'viewer'
   const containerRef = useRef<HTMLDivElement>(null)
   /**
    * Kdo právě vlastní klik do mapy.
@@ -371,6 +404,82 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       console.error(`Dohledaný soubor „${a.name}“ se nepodařilo načíst:`, e)
       toast.error(`„${a.name}“ se nepodařilo načíst`)
     }
+  }
+
+  // ── soubory: cloud, nebo jen tento počítač ──
+  const [movingFiles, setMovingFiles] = useState(false)
+  const placeName = (to: FileStorage) => (to === 'local' ? 'do tohoto počítače' : 'do cloudu')
+  const moveError = (e: unknown) => e instanceof MissingLocalFile
+    ? 'soubor v tomhle počítači není (nahrál se jinde)'
+    : e instanceof Error ? e.message : String(e)
+
+  /** Přesune jeden soubor; vrátí, jestli se to povedlo. */
+  async function moveFile(assetId: string, to: FileStorage): Promise<boolean> {
+    try {
+      const row = await sceneRef.current.moveAsset(assetId, to)
+      setFiles(f => ({ ...f, [assetId]: { at: isLocalAsset(row) ? 'local' : 'cloud', name: row.name } }))
+      return true
+    } catch (e) {
+      console.error('Přesun souboru selhal:', e)
+      throw e
+    }
+  }
+
+  /** Přesun jednoho souboru z panelu (s potvrzením — do počítače se z cloudu smaže). */
+  async function moveOne(assetId: string, to: FileStorage) {
+    const name = files[assetId]?.name ?? 'soubor'
+    const msg = to === 'local'
+      ? 'Stáhne se do tohoto počítače a z cloudu se smaže. Na jiném počítači se pak scéna zeptá, kde soubor je.'
+        + (scene.shared ? '\n\nScénu vidí i další lidé — tenhle soubor pak neuvidí.' : '')
+      : 'Nahraje se do cloudu a tady se smaže — pak půjde otevřít odkudkoliv a uvidí ho i kolegové.'
+    if (!(await ask({ title: `Přesunout „${name}" ${placeName(to)}?`, message: msg, okLabel: 'Přesunout' }))) return
+    const t = toast.loading(`Přesouvám „${name}" ${placeName(to)}…`)
+    try { await moveFile(assetId, to); toast.success(`„${name}" je ${to === 'local' ? 'jen v tomto počítači' : 'v cloudu'}`, { id: t }) } catch (e) { toast.error(`„${name}" se nepřesunul: ${moveError(e)}`, { id: t }) }
+  }
+
+  /**
+   * Přepnutí, kam scéna ukládá soubory. Platí hned pro nové importy; když už scéna nějaké
+   * soubory na druhém místě má, zeptá se, jestli je přesunout taky (jinak zůstanou, kde jsou).
+   */
+  async function changeStorage(to: FileStorage) {
+    if (to === fileStorage || movingFiles) return
+    if (to === 'local' && scene.shared && !(await ask({
+      title: 'Ukládat jen do tohoto počítače?',
+      message: 'Scénu vidí i další lidé (kolegové nebo odkaz pro prohlížení). Soubory, které zůstanou jen tady, neuvidí — u nich se scéna zeptá, kde jsou.',
+      okLabel: 'Přesto jen do počítače',
+    }))) return
+    setFileStorage(to)
+    sceneRef.current.patchState({ fileStorage: to })
+    try { localStorage.setItem(STORAGE_KEY, to) } catch { /* jen výchozí pro nové scény */ }
+    const others = Object.entries(files).filter(([, f]) => f.at !== to).map(([id]) => id)
+    if (!others.length) { toast.success(`Nové soubory se budou ukládat ${placeName(to)}`); return }
+    const move = await ask({
+      title: `Přesunout i stávající soubory (${others.length}) ${placeName(to)}?`,
+      message: to === 'local'
+        ? 'Stáhnou se z cloudu do tohoto počítače a z cloudu se smažou. Na jiném počítači se pak scéna zeptá, kde jsou.'
+        : 'Nahrají se z tohoto počítače do cloudu a tady se smažou. Pak půjdou otevřít odkudkoliv.',
+      okLabel: 'Přesunout', cancelLabel: 'Jen nové soubory',
+    })
+    if (!move) { toast.success(`Nové soubory se budou ukládat ${placeName(to)}, stávající zůstanou, kde jsou`); return }
+    setMovingFiles(true)
+    const t = toast.loading(`Přesouvám soubory ${placeName(to)} (0/${others.length})…`)
+    const failed: string[] = []
+    let done = 0
+    for (const id of others) {
+      try { await moveFile(id, to) } catch (e) { failed.push(`„${files[id]?.name ?? id}": ${moveError(e)}`) }
+      done++
+      toast.loading(`Přesouvám soubory ${placeName(to)} (${done}/${others.length})…`, { id: t })
+    }
+    setMovingFiles(false)
+    if (!failed.length) toast.success(`Přesunuto ${others.length} ${others.length === 1 ? 'soubor' : others.length < 5 ? 'soubory' : 'souborů'} ${placeName(to)}`, { id: t })
+    else toast.warning(`Přesunuto ${others.length - failed.length} z ${others.length}. Nepovedlo se: ${failed.slice(0, 3).join('; ')}${failed.length > 3 ? ' …' : ''}`, { id: t, duration: 15000 })
+  }
+
+  /** Kde leží soubor objektu z panelu Scéna (model, výkres), nebo null (parcela, plocha, nenahraný). */
+  function assetOf(o: SceneObj): string | undefined {
+    if (o.kind === 'model') return modelsRef.current.get(o.id)?.assetId
+    if (o.kind === 'drawing') return drawings.drawingsRef.current.get(o.id.replace('drawing-', ''))?.assetId
+    return undefined
   }
 
   /** Soubor je nenávratně pryč — odebere se ze scény, ať se na něj neptá pořád dokola. */
@@ -913,7 +1022,11 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           </Section>
           {rasterList.length > 0 && (
           <Section id="rastr" title="Vlastní ortofoto" dflt={true} badge={rasterList.length} open={openSec} onToggle={toggleSec}>
-            <RasterPanel rasters={rasters} readOnly={guest} />
+            <RasterPanel
+              rasters={rasters} readOnly={guest}
+              fileAt={id => (id ? files[id]?.at ?? null : null)}
+              onMoveFile={canEditFiles ? (id, to) => void moveOne(id, to) : undefined}
+            />
           </Section>
           )}
           {districtsOn && selectedDistrict && (
@@ -982,6 +1095,36 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           )}
           {!guest && (
           <Section id="import" title="Import" dflt={false} open={openSec} onToggle={toggleSec}>
+            {/* Kam se soubory scény ukládají — platí pro celou scénu a jde přepnout kdykoliv
+                (scéna se pak zeptá, jestli přesunout i stávající soubory). */}
+            {canEditFiles && (() => {
+              const n = Object.values(files)
+              const local = n.filter(f => f.at === 'local').length
+              const opt = (to: FileStorage, icon: React.ReactNode, label: string) => (
+                <button
+                  onClick={() => void changeStorage(to)}
+                  disabled={movingFiles}
+                  aria-pressed={fileStorage === to}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors disabled:opacity-60 pointer-coarse:py-2 ${fileStorage === to ? 'bg-gray-700 text-gray-100' : 'text-gray-400 hover:text-gray-200'}`}
+                >{icon}{label}</button>
+              )
+              return (
+                <div data-file-storage={fileStorage} className="flex flex-col gap-1.5 rounded-lg border border-gray-800 p-2">
+                  <div className="text-[10px] uppercase tracking-wide text-gray-500">Ukládat soubory</div>
+                  <div className="flex gap-1 rounded-lg bg-gray-800/70 p-0.5">
+                    {opt('cloud', <Cloud size={13} />, 'Cloud')}
+                    {opt('local', <HardDrive size={13} />, 'Tento počítač')}
+                  </div>
+                  <div className="text-[10px] leading-snug text-gray-500">
+                    {fileStorage === 'cloud'
+                      ? 'Nahrají se na účet — otevřeš je odkudkoliv a uvidí je i kolegové.'
+                      : 'Zůstanou jen v tomhle počítači a prohlížeči. Jinde se scéna zeptá, kde soubory jsou; kolegové ani odkaz je neuvidí.'}
+                    {n.length > 0 && local > 0 && local < n.length && <> Teď: v cloudu {n.length - local}, jen tady {local}.</>}
+                  </div>
+                  {movingFiles && <div className="flex items-center gap-1.5 text-[10px] text-gray-400"><Loader2 size={11} className="animate-spin" /> Přesouvám soubory…</div>}
+                </div>
+              )
+            })()}
             <button onClick={() => fileRef.current?.click()} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-emerald-600 hover:bg-emerald-500 text-white transition-colors">
               <Upload size={15} /> Import modelu
             </button>
@@ -1007,6 +1150,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
               ui={sceneUi} objects={objects} selectedId={selectedId} drawings={drawings} selectObject={selectObject}
               locateObject={locateObject} toggleVisible={toggleVisible} deleteObject={deleteObject} onRename={renameObject}
               readOnly={guest}
+              fileAt={o => { const id = assetOf(o); return id ? files[id]?.at ?? null : null }}
+              onMoveFile={canEditFiles ? (o, to) => { const id = assetOf(o); if (id) void moveOne(id, to) } : undefined}
             />
           </Section>
           )}

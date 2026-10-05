@@ -51,6 +51,9 @@ const assets: ScenePersist['assets'] = localDxf ? [{
   file_name: 'mimo-uloziste.dxf', file_path: 'local:smoke-local-1/file', sidecar_path: null, sidecar_name: null,
   size_bytes: Number(localDxf), config: {}, sort_order: 0, created_at: '', updated_at: '',
 }] : []
+// co mapa ohlásila ke stavu scény a které soubory přesouvala — pro test přepínače úložiště
+const patches: unknown[] = [], moves: [string, string][] = []
+Object.assign(window, { __patches: patches, __moves: moves })
 const access = q.get('access') === 'viewer' ? 'viewer' : q.get('access') === 'editor' ? 'editor' : 'owner'
 const start = Cesium.Cartesian3.fromDegrees(Number(q.get('lon') ?? 14.4746), Number(q.get('lat') ?? 48.9745), Number(q.get('h') ?? 1500))
 const scene: ScenePersist = {
@@ -59,8 +62,16 @@ const scene: ScenePersist = {
   share: access === 'owner' ? () => openShareDialog({ sceneId: 'smoke', sceneName: 'Kouřový test' }) : undefined,
   initial: { camera: { dest: [start.x, start.y, start.z], h: 0, p: Cesium.Math.toRadians(-89.9), r: 0 } } as unknown as ScenePersist['initial'],
   assets,
-  patchState: () => {},
+  patchState: p => { patches.push(p) },
   uploadAsset: async () => { throw new Error('V kouřovém testu se nenahrává') },
+  // přesun mezi cloudem a počítačem: jen přepíše cestu v řádku a zapíše, co se volalo
+  moveAsset: async (id, to) => {
+    moves.push([id, to])
+    const a = assets.find(x => x.id === id)
+    if (!a) throw new Error('neznámý soubor')
+    a.file_path = to === 'local' ? `local:${id}/file` : `nikdo/smoke/${id}.dxf`
+    return { ...a }
+  },
   patchAssetConfig: () => {},
   renameAsset: async () => {},
   deleteAsset: async () => {},

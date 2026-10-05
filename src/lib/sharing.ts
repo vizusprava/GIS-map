@@ -141,6 +141,16 @@ export async function revokeInvite(sceneId: string, email: string): Promise<void
   if (noRows(data)) throw new Error('Pozvánky spravuje jen vlastník scény.')
 }
 
+/**
+ * Vidí scénu i někdo jiný než vlastník — člen, čekající pozvánka nebo odkaz pro prohlížení?
+ * (Soubory jen v počítači vlastníka by neviděli; mapa na to upozorní.) Bez migrací 003/004 ne.
+ */
+export async function isSceneShared(sceneId: string): Promise<boolean> {
+  const head = (t: string) => supabase.from(t).select('scene_id', { count: 'exact', head: true }).eq('scene_id', sceneId)
+  const rs = await Promise.all([head('geo_scene_members'), head('geo_scene_invites'), head('geo_scene_links')])
+  return rs.some(r => !r.error && (r.count ?? 0) > 0)
+}
+
 /** Odejde ze sdílené scény — zmizí mi z přehledu, vlastníkovi i ostatním zůstane. */
 export async function leaveScene(sceneId: string): Promise<void> {
   const uid = me()
