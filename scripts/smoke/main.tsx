@@ -7,6 +7,9 @@
  *
  * `?access=viewer|editor` otevře scénu jako cizí (sdílenou); jinak je moje a jde sdílet —
  * okno sdílení mluví s podvrženým REST API (fakeRest.ts), ne se Supabase.
+ *
+ * `?page=view#/view/<kód>` je veřejný prohlížeč přesně jako v appce (ViewPage): anonymní
+ * přihlášení i otevření odkazu jdou proti podvrženému API.
  */
 import './fakeRest' // první: klient Supabase si fetch bere hned při načtení
 import { StrictMode } from 'react'
@@ -19,16 +22,17 @@ import { ShareHost, openShareDialog } from '../../src/shareDialog'
 import '../../src/index.css'
 import { MapView } from '../../src/MapView'
 import type { ScenePersist } from '../../src/lib/scenePersist'
-import { HashRouter } from 'react-router-dom'
+import { HashRouter, Route, Routes } from 'react-router-dom'
 import type { User } from '@supabase/supabase-js'
 import { AccountPage } from '../../src/pages/AccountPage'
+import { ViewPage } from '../../src/pages/ViewPage'
 import { useAuthStore } from '../../src/stores/authStore'
 
 const errors: string[] = []
 const note = (e: unknown) => errors.push((e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e)).slice(0, 2000))
 window.addEventListener('error', e => note(e.error ?? e.message))
 window.addEventListener('unhandledrejection', e => note(e.reason))
-Object.assign(window, { __errors: errors, __openIonKey: openIonKeyDialog }) // okno klíče ion bez načítání Google 3D (to by čerpalo kvótu)
+Object.assign(window, { __errors: errors, __openIonKey: openIonKeyDialog, __ion: () => Cesium.Ion.defaultAccessToken }) // okno klíče ion bez načítání Google 3D (to by čerpalo kvótu)
 
 const render = Cesium.Scene.prototype.render
 Cesium.Scene.prototype.render = function (this: Cesium.Scene, ...args: unknown[]) {
@@ -73,8 +77,14 @@ const scene: ScenePersist = {
   exit: () => {},
 }
 
+// `?page=view`: veřejný prohlížeč — přihlášení se obnovuje jako v appce (App.tsx → init)
+const viewPage = () => {
+  useAuthStore.getState().init()
+  return <HashRouter><Routes><Route path="/view/:token" element={<ViewPage />} /></Routes></HashRouter>
+}
+
 // `?page=account`: Nastavení účtu s podvrženým uživatelem — test projde formuláře bez Supabase
-const page = q.get('page') === 'account'
+const page = q.get('page') === 'view' ? viewPage() : q.get('page') === 'account'
   ? (() => {
       useAuthStore.setState({
         user: { id: 'u-smoke', email: 'test@example.cz', user_metadata: {}, app_metadata: {}, aud: 'authenticated', created_at: '' } as unknown as User,

@@ -3,7 +3,7 @@ import * as Cesium from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { toast } from 'sonner'
 import { ChevronLeft, ChevronRight, Eye, Layers, Loader2, Sparkles, Trash2, Upload, Users } from 'lucide-react'
-import { ION_TOKEN, NEEDS_ION, SHARP_KEY } from './config'
+import { NEEDS_ION, SHARP_KEY } from './config'
 import { effectiveIonToken, useUserIonToken } from './lib/ionKey'
 import { openIonKeyDialog } from './ionKeyDialog'
 import { geoidN } from './geoid'
@@ -76,6 +76,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // Ukládací kanál si držíme v refu: volají ho i callbacky Cesia, které se registrují jednou
   // při startu a jinak by pořád koukaly na první verzi propu.
   const sceneRef = useRef(scene); sceneRef.current = scene
+  // veřejný prohlížeč (odkaz bez registrace): bez exportů, importu, výběrů a úprav
+  const guest = !!scene.guest
   const containerRef = useRef<HTMLDivElement>(null)
   /**
    * Kdo právě vlastní klik do mapy.
@@ -705,7 +707,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
         onPickParcel={pickParcelHit}
         onExpandParts={region.loadParts}
         pickMode={region.regionMode}
-        onTogglePickMode={toggleRegionMode}
+        onTogglePickMode={guest ? undefined : toggleRegionMode}
         activeName={region.regionName}
         onClearActive={region.clearRegion}
       />
@@ -749,10 +751,10 @@ export function MapView({ scene }: { scene: ScenePersist }) {
         onChange={e => { const fs = [...(e.target.files ?? [])]; if (fs.length) importRasters(fs); e.target.value = '' }}
       />
 
-      {NEEDS_ION && !ION_TOKEN && !ownIon && layers.base === 'google' && (
+      {NEEDS_ION && !effectiveIonToken() && layers.base === 'google' && (
         <div className="absolute top-16 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-amber-600/50 bg-amber-900/80 px-3 py-1.5 text-xs text-amber-200">
           3D realita potřebuje klíč Cesium ion
-          <button onClick={openIonKeyDialog} className="rounded bg-amber-600 px-2 py-0.5 text-white hover:bg-amber-500">Nastavit</button>
+          {!guest && <button onClick={openIonKeyDialog} className="rounded bg-amber-600 px-2 py-0.5 text-white hover:bg-amber-500">Nastavit</button>}
         </div>
       )}
 
@@ -775,6 +777,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           `bottom-6` míjí pruh s popiskami zdrojů, který si Cesium kreslí úplně dole. */}
       <div className={`pointer-events-none absolute bottom-6 right-0 z-20 flex justify-center transition-[left] ${panelOpen ? 'left-80' : 'left-0'}`}>
         <MapTools
+          guest={guest}
           viewer={viewerReady ? viewerRef.current : null}
           layers={layers}
           parcels={parcels}
@@ -800,13 +803,13 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           onPersp={camPerspective}
           onOrtho={camTopOrtho}
           viewCount={camViews.length}
-          cameraMenu={<CameraMenu views={views} look={look} motion={motion} presentOn={presentOn} />}
+          cameraMenu={<CameraMenu views={views} look={look} motion={motion} presentOn={presentOn} readOnly={guest} />}
           presentOn={presentOn}
           calloutMode={calloutMode}
           presentationMenu={
             <PresentationMenu
               pres={pres} activeView={activeView} activeViewId={activeViewId} presentOn={presentOn}
-              togglePresent={togglePresent} calloutMode={calloutMode} toggleCallout={toggleCallout}
+              togglePresent={togglePresent} calloutMode={calloutMode} toggleCallout={toggleCallout} readOnly={guest}
             />
           }
         />
@@ -832,9 +835,13 @@ export function MapView({ scene }: { scene: ScenePersist }) {
         <div className="flex shrink-0 flex-col gap-1.5 border-b border-gray-700 p-2">
           {/* Navigace; vypínač prezentace se přestěhoval do lišty dole (panel Prezentace). */}
           <div className="flex items-center gap-1">
-            <button onClick={() => void leaveScene()} title="Zpět na přehled scén" className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-2 py-1 text-xs text-gray-200 transition-colors hover:bg-gray-700">
-              <ChevronLeft size={14} /> Scény
-            </button>
+            {guest ? (
+              <span className="flex items-center gap-1.5 px-1 text-xs font-medium text-gray-300"><Eye size={14} className="text-sky-400" /> Prohlížeč scény</span>
+            ) : (
+              <button onClick={() => void leaveScene()} title="Zpět na přehled scén" className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-2 py-1 text-xs text-gray-200 transition-colors hover:bg-gray-700">
+                <ChevronLeft size={14} /> Scény
+              </button>
+            )}
             <div className="flex-1" />
             <button onClick={() => setPanelOpen(false)} title="Skrýt panel" className="rounded p-0.5 text-gray-500 hover:text-gray-200"><ChevronLeft size={16} /></button>
           </div>
@@ -855,7 +862,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             <div data-access={scene.access} className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] ${scene.access === 'viewer' ? 'bg-amber-950/60 text-amber-200' : 'bg-sky-950/60 text-sky-200'}`}>
               {scene.access === 'viewer' ? <Eye size={12} className="shrink-0" /> : <Users size={12} className="shrink-0" />}
               <span className="truncate" title={scene.ownerName ? `Scénu sdílí ${scene.ownerName}` : undefined}>
-                {scene.access === 'viewer' ? 'Jen prohlížíš — nic se neuloží' : 'Sdílená scéna — změny se ukládají'}
+                {guest ? 'Můžeš se rozhlížet a měřit, nic se neuloží' : scene.access === 'viewer' ? 'Jen prohlížíš — nic se neuloží' : 'Sdílená scéna — změny se ukládají'}
                 {scene.ownerName ? ` · ${scene.ownerName}` : ''}
               </span>
             </div>
@@ -873,7 +880,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             Dlaždice, …) stojí hned pod tím, co je vyrobilo, a revealSection k nim odscrolluje. */}
         <SectionFocusContext.Provider value={sectionFocus}>
         <div ref={panelScrollRef} className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2">
-          {missingFiles.length > 0 && (
+          {missingFiles.length > 0 && !guest && (
           <Section id="chybi" title="Chybějící soubory" dflt={true} badge={missingFiles.length} open={openSec} onToggle={toggleSec}>
             <MissingFilesPanel files={missingFiles} onRelink={(a, picked) => void relinkMissing(a, picked)} onRemove={a => void removeMissing(a)} />
           </Section>
@@ -882,12 +889,12 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             <BasePanel
               layers={layers} districts={districts} perfChoice={perfChoice} setPerfChoice={setPerfChoice} perfLevel={perfLevel}
               sharpness={sharpness} setSharpness={setSharpness} ortoDetail={ortoDetail} setOrtoDetail={setOrtoDetail}
-              viewerReady={viewerReady} viewerRef={viewerRef}
+              viewerReady={viewerReady} viewerRef={viewerRef} guest={guest}
             />
           </Section>
           {rasterList.length > 0 && (
           <Section id="rastr" title="Vlastní ortofoto" dflt={true} badge={rasterList.length} open={openSec} onToggle={toggleSec}>
-            <RasterPanel rasters={rasters} />
+            <RasterPanel rasters={rasters} readOnly={guest} />
           </Section>
           )}
           {districtsOn && selectedDistrict && (
@@ -910,6 +917,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           )}
           {/* Souřadnice pro přenos do Maxu / SynthEyes. Vlastní sekce, protože je to jiná práce
               než měření: tam jde o vzdálenosti, tady o absolutní polohu bodu. */}
+          {!guest && (
           <Section id="souradnice" title="Souřadnice" dflt={false} badge={coordPts.length} open={openSec} onToggle={toggleSec}>
             <CoordsPanel
               pts={coordPts}
@@ -931,27 +939,29 @@ export function MapView({ scene }: { scene: ScenePersist }) {
               onTogglePicking={toggleCoords}
             />
           </Section>
+          )}
 
           <Section id="mereni" title="Měření" dflt={false} badge={rulers.length} open={openSec} onToggle={toggleSec}>
             <RulersPanel rulers={rulerTool} rulerMode={rulerMode} />
           </Section>
-          {parcelCount > 0 && (
+          {parcelCount > 0 && !guest && (
           <Section id="parcely" title="Parcely" dflt={true} badge={parcelCount} open={openSec} onToggle={toggleSec}>
             <ParcelsPanel parcels={parcels} layers={layers} outputs={outputs} runner={runner} />
           </Section>
           )}
-          {tileCount > 0 && (
+          {tileCount > 0 && !guest && (
           <Section id="dlazdice" title="Dlaždice" dflt={true} badge={tileCount} open={openSec} onToggle={toggleSec}>
             <TilesPanel outputs={outputs} runner={runner} tilesRef={tilesRef} tileCount={tileCount} tileSize={tileSize} clearTiles={clearTiles} coordShift={coordShift} coordPts={coordPts} persistCoords={persistCoords} />
           </Section>
           )}
           {/* Nalezená území se vybírají v liště nahoře uprostřed (mapSearch.tsx). Tady zůstává
               jen to, co následuje po výběru: co je zvýrazněné, ztmavení okolí a exporty. */}
-          {region.regionName && (
+          {region.regionName && !guest && (
           <Section id="uzemi" title="Správní území" dflt={true} open={openSec} onToggle={toggleSec}>
             <RegionPanel region={region} outputs={outputs} runner={runner} addRegionTiles={addRegionTiles} tileSize={tileSize} />
           </Section>
           )}
+          {!guest && (
           <Section id="import" title="Import" dflt={false} open={openSec} onToggle={toggleSec}>
             <button onClick={() => fileRef.current?.click()} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-emerald-600 hover:bg-emerald-500 text-white transition-colors">
               <Upload size={15} /> Import modelu
@@ -971,20 +981,22 @@ export function MapView({ scene }: { scene: ScenePersist }) {
               {rasterBusy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} Vlastní ortofoto (snímek + .jgw)
             </button>
           </Section>
+          )}
           {objects.length > 0 && (
           <Section id="scena" title="Scéna" dflt={true} badge={objects.length} open={openSec} onToggle={toggleSec}>
             <ScenePanel
               ui={sceneUi} objects={objects} selectedId={selectedId} drawings={drawings} selectObject={selectObject}
               locateObject={locateObject} toggleVisible={toggleVisible} deleteObject={deleteObject} onRename={renameObject}
+              readOnly={guest}
             />
           </Section>
           )}
-          {placement && (
+          {placement && !guest && (
           <Section id="model" title="Vybraný model" dflt={true} open={openSec} onToggle={toggleSec}>
             <ModelPanel models={models} objects={objects} placement={placement} />
           </Section>
           )}
-          {placement && (
+          {placement && !guest && (
           <Section id="rez" title="Řez modelem" dflt={true} open={openSec} onToggle={toggleSec}>
             <SectionPanel sec={sec} setMoveMode={setMoveMode} />
           </Section>

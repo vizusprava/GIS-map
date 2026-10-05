@@ -23,9 +23,27 @@ import { useAuthStore } from '../stores/authStore'
 import type { ScenePersist } from '../lib/scenePersist'
 import type { AssetRow, SceneRole, SceneRow, SceneState } from '../lib/types'
 
-type Loaded = { scene: SceneRow; assets: AssetRow[]; access: SceneRole; ownerName: string | null }
+type Loaded = { scene: SceneRow; assets: AssetRow[]; access: SceneRole | 'guest'; ownerName: string | null }
 
-function Busy({ text }: { text: string }) {
+type PersistBase = Omit<ScenePersist, 'patchState' | 'uploadAsset' | 'patchAssetConfig' | 'renameAsset' | 'deleteAsset' | 'saveThumb'>
+
+/**
+ * Scéna jen pro prohlížení: všechno jde vyzkoušet, nic se neuloží (databáze by zápis stejně
+ * odmítla). Hlášení mapy se tiše zahodí, nahrání souboru skončí hláškou.
+ */
+export function viewOnlyPersist(base: PersistBase): ScenePersist {
+  return {
+    ...base,
+    patchState: () => {},
+    uploadAsset: async (opts) => { throw new Error(`Scénu jen prohlížíš — „${opts.file.name}“ se do ní neuloží a po zavření zmizí`) },
+    patchAssetConfig: () => {},
+    renameAsset: async () => {},
+    deleteAsset: async () => {},
+    saveThumb: async () => {},
+  }
+}
+
+export function Busy({ text }: { text: string }) {
   return (
     <div className="h-full flex items-center justify-center">
       <div className="flex items-center gap-2 text-sm text-gray-400">
@@ -41,7 +59,7 @@ function Busy({ text }: { text: string }) {
  * při hlášení), a jde to načíst znovu. Uložené je všechno, co se stihlo zapsat: fronta ukládání
  * se dopisuje při odchodu ze stránky (viz efekt s `flushScene` níž).
  */
-class MapErrorBoundary extends Component<{ children: ReactNode; onExit: () => void }, { error: Error | null }> {
+export class MapErrorBoundary extends Component<{ children: ReactNode; onExit?: () => void }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
 
   static getDerivedStateFromError(error: Error) { return { error } }
@@ -65,12 +83,15 @@ class MapErrorBoundary extends Component<{ children: ReactNode; onExit: () => vo
             >
               <RotateCcw size={16} /> Načíst znovu
             </button>
-            <button
-              onClick={this.props.onExit}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 text-sm"
-            >
-              <ArrowLeft size={16} /> Zpět na přehled
-            </button>
+            {/* veřejný prohlížeč přehled scén nemá */}
+            {this.props.onExit && (
+              <button
+                onClick={this.props.onExit}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 text-sm"
+              >
+                <ArrowLeft size={16} /> Zpět na přehled
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -156,28 +177,19 @@ export function ScenePage() {
       void flushAssetConfigs()
       navigate('/')
     }
-    const base = {
+    const base: PersistBase = {
       sceneId: id,
       sceneName: loaded.scene.name,
       ownerId,
-      access: loaded.access,
+      // host z odkazu pro prohlížení: jen prohlížení a navíc bez exportů a úprav (jako ViewPage)
+      access: loaded.access === 'guest' ? 'viewer' : loaded.access,
+      guest: loaded.access === 'guest',
       ownerName: loaded.ownerName,
       initial: loaded.scene.state ?? {},
       assets: loaded.assets,
       exit,
     }
-    // Jen prohlížení: všechno jde vyzkoušet, nic se neuloží (databáze by zápis stejně odmítla).
-    if (loaded.access === 'viewer') {
-      return {
-        ...base,
-        patchState: () => {},
-        uploadAsset: async (opts) => { throw new Error(`Scénu jen prohlížíš — „${opts.file.name}“ se do ní neuloží a po zavření zmizí`) },
-        patchAssetConfig: () => {},
-        renameAsset: async () => {},
-        deleteAsset: async () => {},
-        saveThumb: async () => {},
-      }
-    }
+    if (loaded.access === 'viewer' || loaded.access === 'guest') return viewOnlyPersist(base)
     return {
       ...base,
       share: loaded.access === 'owner' ? () => openShareDialog({ sceneId: id, sceneName: loaded.scene.name }) : undefined,

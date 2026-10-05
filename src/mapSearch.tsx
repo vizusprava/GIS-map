@@ -48,7 +48,8 @@ type Props = {
   onExpandParts: (obecKod: number) => void
   /** Režim „vyber klikem do mapy" — tentýž stav, jaký zapíná tlačítko v panelu. */
   pickMode: boolean
-  onTogglePickMode: () => void
+  /** chybí = bez tlačítka (veřejný prohlížeč) */
+  onTogglePickMode?: () => void
   /** Název právě zvýrazněného území, ať je vidět, co je aktivní, i se zavřenou nabídkou. */
   activeName: string | null
   onClearActive: () => void
@@ -89,7 +90,7 @@ export function MapSearch(p: Props) {
               <X size={14} />
             </button>
           )}
-          <button
+          {p.onTogglePickMode && <button
             type="button"
             onClick={p.onTogglePickMode}
             title={p.pickMode ? 'Klikni do mapy na území (znovu klikni pro vypnutí)' : 'Vybrat území klikem do mapy'}
@@ -98,7 +99,7 @@ export function MapSearch(p: Props) {
             }`}
           >
             <Crosshair size={15} />
-          </button>
+          </button>}
           <button
             type="submit"
             disabled={p.busy}

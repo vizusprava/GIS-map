@@ -32,6 +32,8 @@ type Props = {
   onMove: (from: number, to: number) => void
   onSave: () => void
   onStep: (dir: 1 | -1) => void
+  /** veřejný prohlížeč: jen přelet a procházení, bez ukládání, přejmenování a řazení */
+  readOnly?: boolean
 }
 
 export function CamViews(p: Props) {
@@ -51,6 +53,9 @@ export function CamViews(p: Props) {
   return (
     <div className="flex flex-col gap-1.5" onPointerDown={() => setMenuId(null)}>
       <div className="flex items-center gap-1">
+        {p.readOnly ? (
+          <span className="flex-1 px-0.5 text-[11px] text-gray-400">Uložené pohledy scény — klik přeletí</span>
+        ) : (
         <button
           onClick={p.onSave}
           title="Uloží aktuální kameru, vzhled i náhled. Pojmenovat můžeš hned potom."
@@ -58,6 +63,7 @@ export function CamViews(p: Props) {
         >
           <Plus size={14} /> Uložit aktuální pohled
         </button>
+        )}
         {p.views.length > 1 && (
           <>
             <button onClick={() => p.onStep(-1)} title="Předchozí pohled (šipka vlevo)" className="shrink-0 rounded-lg bg-gray-800 p-1.5 text-gray-300 hover:bg-gray-700">
@@ -75,7 +81,7 @@ export function CamViews(p: Props) {
         return (
           <div
             key={cv.id}
-            draggable={p.renamingId !== cv.id}
+            draggable={!p.readOnly && p.renamingId !== cv.id}
             onDragStart={() => setDragFrom(i)}
             onDragOver={e => { e.preventDefault(); setDragOver(i) }}
             onDragEnd={() => { setDragFrom(null); setDragOver(null) }}
@@ -88,7 +94,7 @@ export function CamViews(p: Props) {
               active ? 'bg-sky-900/40 ring-1 ring-sky-700' : 'bg-gray-800/50 hover:bg-gray-800'
             } ${dragOver === i && dragFrom !== null && dragFrom !== i ? 'ring-1 ring-emerald-500' : ''}`}
           >
-            <GripVertical size={13} className="shrink-0 cursor-grab text-gray-600" />
+            {!p.readOnly && <GripVertical size={13} className="shrink-0 cursor-grab text-gray-600" />}
 
             {/* Náhled je zároveň tlačítko přeletu — je to největší klikací plocha v řádku. */}
             <button
@@ -108,14 +114,14 @@ export function CamViews(p: Props) {
               ) : (
                 <button
                   onClick={() => p.onGoto(cv)}
-                  onDoubleClick={() => p.onRenameStart(cv.id)}
-                  title="Klik přeletí, dvojklik přejmenuje"
+                  onDoubleClick={() => { if (!p.readOnly) p.onRenameStart(cv.id) }}
+                  title={p.readOnly ? 'Přeletět' : 'Klik přeletí, dvojklik přejmenuje'}
                   className="min-w-0 truncate text-left text-xs text-gray-100"
                 >
                   <span className="mr-1 text-gray-600">{i + 1}.</span>{cv.name}
                 </button>
               )}
-              {active && p.dirty && (
+              {active && p.dirty && !p.readOnly && (
                 <button
                   onClick={() => p.onOverwrite(i)}
                   title="Kamera nebo vzhled se liší od uloženého stavu — kliknutím pohled přepíšeš"
@@ -126,14 +132,14 @@ export function CamViews(p: Props) {
               )}
             </div>
 
-            <button
+            {!p.readOnly && <button
               onPointerDown={e => e.stopPropagation()}
               onClick={() => setMenuId(m => (m === cv.id ? null : cv.id))}
               title="Další akce"
               className="shrink-0 rounded p-0.5 text-gray-500 hover:text-gray-200"
             >
               <MoreVertical size={14} />
-            </button>
+            </button>}
 
             {menuId === cv.id && (
               <div
@@ -150,7 +156,10 @@ export function CamViews(p: Props) {
         )
       })}
 
-      {!p.views.length && (
+      {!p.views.length && p.readOnly && (
+        <div className="text-[10px] leading-snug text-gray-600">Scéna nemá uložené pohledy.</div>
+      )}
+      {!p.views.length && !p.readOnly && (
         <div className="text-[10px] leading-snug text-gray-600">
           Zatím žádné — natoč si kameru a dej „Uložit aktuální pohled". Uloží se i zorný úhel,
           rozostření, chvění a kroužení. Pojmenovat můžeš hned potom, přejmenovat kdykoliv.

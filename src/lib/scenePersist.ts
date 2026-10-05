@@ -19,6 +19,12 @@ export type ScenePersist = {
   access: SceneRole
   /** jméno vlastníka, když scéna není moje (hlavička panelu) */
   ownerName?: string | null
+  /**
+   * Veřejný prohlížeč (odkaz bez registrace, `access` je pak `viewer`): navíc bez exportů,
+   * importu, výběru parcel/dlaždic/území, odečtu souřadnic a úprav pohledů či popisků.
+   * Zůstává prohlížení, vrstvy, pohledy, prezentace a měření (bez ukládání).
+   */
+  guest?: boolean
   /** Otevři okno sdílení (jen vlastník; jinak chybí). */
   share?: () => void
   /** stav scény, jak byl při otevření — z něj se plní počáteční hodnoty */

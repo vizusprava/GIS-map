@@ -19,6 +19,7 @@ import { loadChunk } from './lib/lazyChunk'
 // Scéna táhne Cesium i three.js — přes 8 MB skriptu. Přihlášení a přehled scén ho nepotřebují,
 // tak se stáhne až při otevření scény.
 const ScenePage = lazy(() => loadChunk(() => import('./pages/ScenePage')).then(m => ({ default: m.ScenePage })))
+const ViewPage = lazy(() => loadChunk(() => import('./pages/ViewPage')).then(m => ({ default: m.ViewPage })))
 
 function Spinner() {
   return (
@@ -33,7 +34,8 @@ function Gate({ children }: { children: React.ReactNode }) {
 
   // Dokud se neobnoví session, nic nepřesměrovávat — jinak by po refreshi bliklo přihlášení.
   if (loading) return <Spinner />
-  if (!user) return <LoginPage />
+  // Anonymní přihlášení je jen pro veřejný prohlížeč scény (odkaz) — do appky jako takové ne.
+  if (!user || user.is_anonymous) return <LoginPage />
   // Přišel z odkazu „zapomenuté heslo" → nejdřív si ho musí nastavit.
   if (recovery) return <NewPasswordPage />
   return <>{children}</>
@@ -49,6 +51,8 @@ export default function App() {
         <Route path="/" element={<Gate><ScenesPage /></Gate>} />
         <Route path="/account" element={<Gate><AccountPage /></Gate>} />
         <Route path="/scene/:id" element={<Gate><Suspense fallback={<Spinner />}><ScenePage /></Suspense></Gate>} />
+        {/* odkaz jen pro prohlížení — bez přihlášení (ViewPage si případně přihlásí anonyma) */}
+        <Route path="/view/:token" element={<Suspense fallback={<Spinner />}><ViewPage /></Suspense>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </HashRouter>

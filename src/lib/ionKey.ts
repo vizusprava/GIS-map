@@ -8,6 +8,9 @@
  *
  * Klíč ion je „veřejný" klíč pro prohlížeč (v appce je stejně vidět), proto nevadí, že leží
  * v metadatech účtu; omezit ho jde v ion na konkrétní adresu webu.
+ *
+ * Veřejný prohlížeč scény (odkaz bez registrace) jede na klíč VLASTNÍKA scény — host vlastní
+ * klíč nemá a sdílený by vyčerpal každý rozeslaný odkaz. Nastaví ho `setSceneIonToken`.
  */
 import { ION_TOKEN, GOOGLE_3D_ION_ASSET } from '../config'
 import { supabase } from './supabase'
@@ -19,9 +22,19 @@ export function userIonToken(): string | null {
   return typeof t === 'string' && t.trim() ? t.trim() : null
 }
 
-/** Klíč, se kterým se má mapa připojit: vlastní, jinak sdílený zkušební. */
+let sceneToken: string | null = null
+
+/** Klíč vlastníka scény pro veřejný prohlížeč (null = zase podle přihlášeného). Před složením mapy. */
+export function setSceneIonToken(token: string | null): void {
+  sceneToken = token?.trim() || null
+}
+
+/** Jede mapa na klíč vlastníka scény (veřejný prohlížeč)? */
+export const usingSceneIonToken = () => !!sceneToken
+
+/** Klíč, se kterým se má mapa připojit: vlastníka scény v prohlížeči, vlastní, jinak sdílený. */
 export function effectiveIonToken(): string | undefined {
-  return userIonToken() ?? ION_TOKEN
+  return sceneToken ?? userIonToken() ?? ION_TOKEN
 }
 
 /** Hook: vlastní klíč (překreslí se, když si ho uživatel změní). */

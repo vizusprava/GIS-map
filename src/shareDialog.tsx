@@ -1,18 +1,20 @@
 /**
  * Okno „Sdílet scénu" — pozvání kolegů e-mailem, jejich role, čekající pozvánky a odkaz.
+ * Navíc odkaz jen pro prohlížení: kdo ho dostane, scénu uvidí bez registrace (sql/004).
  *
  * Otevře se odkudkoliv přes `openShareDialog()` (přehled scén, hlavička panelu ve scéně);
  * kreslí ho `<ShareHost />` v main.tsx. Pravidla hlídá databáze (sql/003_sharing.sql), práce
  * se Supabase je v lib/sharing.ts. Appka sama e-maily neposílá — proto odkaz ke zkopírování.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Link2, Loader2, UserPlus, Users, X } from 'lucide-react'
+import { Check, Globe, Link2, Loader2, RefreshCw, UserPlus, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { ask, isAskOpen, useModal } from './dialog'
 import {
-  ROLE_LABEL, listMembers, removeMember, revokeInvite, sceneLink, setInviteRole, setMemberRole, shareScene,
-  type Invite, type Member,
+  ROLE_LABEL, disableSceneLink, enableSceneLink, getSceneLink, listMembers, removeMember, revokeInvite, sceneLink,
+  setInviteRole, setMemberRole, shareScene, viewLink, type Invite, type Member,
 } from './lib/sharing'
+import { useUserIonToken } from './lib/ionKey'
 import { useAuthStore } from './stores/authStore'
 import type { MemberRole } from './lib/types'
 
@@ -35,6 +37,96 @@ export function ShareHost() {
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ROLES: MemberRole[] = ['editor', 'viewer']
+
+/** Zkopíruje text do schránky; když to prohlížeč nedovolí, vrátí false (ukáže se k ručnímu zkopírování). */
+async function copy(text: string, done: string): Promise<boolean> {
+  try { await navigator.clipboard.writeText(text); toast.success(done); return true } catch { return false }
+}
+
+/**
+ * Odkaz jen pro prohlížení — vypínač, adresa ke zkopírování a výměna za nový. Kdo odkaz má,
+ * scénu uvidí bez registrace a může měřit; nic neuloží, neexportuje ani nenahraje.
+ */
+function ViewLinkBlock({ sceneId, onChange }: { sceneId: string; onChange?: () => void }) {
+  const ownIon = useUserIonToken()
+  // undefined = načítá se, null = vypnutý
+  const [token, setToken] = useState<string | null | undefined>(undefined)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [manual, setManual] = useState(false) // schránka zakázaná → poradit ruční zkopírování
+
+  useEffect(() => {
+    let alive = true
+    getSceneLink(sceneId).then(t => { if (alive) setToken(t) }).catch(e => { if (alive) { setErr(msg(e)); setToken(null) } })
+    return () => { alive = false }
+  }, [sceneId])
+
+  async function run(fn: () => Promise<string | null>) {
+    setBusy(true); setErr(null)
+    try { setToken(await fn()); onChange?.() } catch (e) { setErr(msg(e)) } finally { setBusy(false) }
+  }
+  async function toggle() {
+    if (!token) { await run(() => enableSceneLink(sceneId)); return }
+    if (!(await ask({ title: 'Vypnout odkaz pro prohlížení?', message: 'Kdo ho má, scénu už neotevře. Pozvaných kolegů se to netýká.', okLabel: 'Vypnout', danger: true }))) return
+    await run(async () => { await disableSceneLink(sceneId); return null })
+  }
+  async function renew() {
+    if (!(await ask({ title: 'Vygenerovat nový odkaz?', message: 'Starý odkaz přestane fungovat všem, kdo ho mají. Nový pak pošli jen těm, kdo ho mít mají.', okLabel: 'Vygenerovat nový' }))) return
+    await run(() => enableSceneLink(sceneId, true))
+  }
+
+  const url = token ? viewLink(token) : ''
+  return (
+    <div data-view-link={token ? 'on' : 'off'} className="flex flex-col gap-1.5 rounded-lg border border-gray-800 p-2.5">
+      <div className="flex items-center gap-2">
+        <Globe size={15} className={`shrink-0 ${token ? 'text-sky-400' : 'text-gray-500'}`} />
+        <div className="min-w-0 flex-1">
+          <div className="text-xs text-gray-200">Odkaz jen pro prohlížení</div>
+          <div className="text-[11px] text-gray-500">Kdokoliv s odkazem, bez registrace</div>
+        </div>
+        <button
+          role="switch"
+          aria-checked={!!token}
+          aria-label="Odkaz jen pro prohlížení"
+          disabled={busy || token === undefined}
+          onClick={() => void toggle()}
+          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${token ? 'bg-sky-600' : 'bg-gray-700'}`}
+        >
+          <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${token ? 'left-[18px]' : 'left-0.5'}`} />
+        </button>
+      </div>
+      {err && <div className="text-xs text-amber-400">{err}</div>}
+      {token && (
+        <>
+          <div className="flex gap-1.5">
+            <input
+              readOnly
+              value={url}
+              onFocus={e => e.currentTarget.select()}
+              aria-label="Adresa odkazu pro prohlížení"
+              className="min-w-0 flex-1 rounded-md bg-gray-800 px-2 py-1 font-mono text-[11px] text-gray-300 outline-none ring-1 ring-gray-700"
+            />
+            <button
+              onClick={async () => { if (!(await copy(url, 'Odkaz pro prohlížení je ve schránce'))) setManual(true) }}
+              disabled={busy}
+              className="flex shrink-0 items-center gap-1 rounded-md bg-sky-600 px-2 py-1 text-xs text-white hover:bg-sky-500 disabled:opacity-50"
+            ><Link2 size={12} /> Kopírovat</button>
+          </div>
+          {manual && <div className="text-[11px] text-gray-400">Schránka není dostupná — označ adresu výš a zkopíruj ji ručně.</div>}
+          <div className="text-[11px] leading-relaxed text-gray-400">
+            Návštěvník scénu uvidí a může měřit — nic neuloží, neexportuje ani nenahraje. 3D realita pojede na{' '}
+            {ownIon
+              ? <>tvůj klíč Cesium ion (návštěvník si ho technicky může přečíst — v Cesium ion ho jde omezit na adresu webu).</>
+              : <>sdílený zkušební klíč. Nastav si vlastní, ať rozeslané odkazy nečerpají společnou kvótu.</>}
+          </div>
+          <button onClick={() => void renew()} disabled={busy} className="flex items-center gap-1.5 self-start rounded-md px-1.5 py-1 text-[11px] text-gray-400 hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50">
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Vygenerovat nový (starý přestane platit)
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
 
 function RoleSelect({ value, onChange, disabled, label }: { value: MemberRole; onChange: (r: MemberRole) => void; disabled?: boolean; label: string }) {
   return (
@@ -106,12 +198,8 @@ function ShareDialog({ sceneId, sceneName, onChange, onClose }: ShareOpts & { on
 
   async function copyLink() {
     const url = sceneLink(sceneId)
-    try {
-      await navigator.clipboard.writeText(url)
-      toast.success('Odkaz na scénu je ve schránce')
-    } catch {
-      setOk(`Odkaz: ${url}`) // schránka zakázaná — aspoň ho ukázat ke zkopírování
-    }
+    // schránka zakázaná — aspoň ho ukázat ke zkopírování
+    if (!(await copy(url, 'Odkaz na scénu je ve schránce'))) setOk(`Odkaz: ${url}`)
   }
 
   const empty = data && !data.members.length && !data.invites.length
@@ -206,6 +294,8 @@ function ShareDialog({ sceneId, sceneName, onChange, onClose }: ShareOpts & { on
           {empty && <div className="px-1 text-xs text-gray-500">Zatím ji nesdílíš s nikým.</div>}
         </div>
 
+        <ViewLinkBlock sceneId={sceneId} onChange={onChange} />
+
         <div className="rounded-lg bg-gray-800/60 px-2.5 py-2 text-[11px] leading-relaxed text-gray-400">
           <div><Check size={11} className="mr-1 inline text-sky-400" /><b className="text-gray-300">Může upravovat</b> — mění scénu a nahrává soubory; smazat ani sdílet ji nemůže.</div>
           <div><Check size={11} className="mr-1 inline text-sky-400" /><b className="text-gray-300">Jen prohlížet</b> — vidí všechno, ale nic neuloží.</div>
@@ -214,8 +304,8 @@ function ShareDialog({ sceneId, sceneName, onChange, onClose }: ShareOpts & { on
         </div>
 
         <div className="flex justify-end gap-2">
-          <button onClick={() => void copyLink()} className="mr-auto flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-gray-300 hover:bg-gray-800">
-            <Link2 size={13} /> Kopírovat odkaz
+          <button onClick={() => void copyLink()} title="Odkaz pro pozvané kolegy — otevře scénu po přihlášení" className="mr-auto flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-gray-300 hover:bg-gray-800">
+            <Link2 size={13} /> Odkaz pro pozvané
           </button>
           <button onClick={onClose} disabled={busy} className="rounded-lg bg-gray-800 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-700 disabled:opacity-50">Hotovo</button>
         </div>

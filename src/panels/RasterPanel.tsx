@@ -5,7 +5,7 @@ import { Crosshair, Eye, EyeOff, Trash2 } from 'lucide-react'
 import { CRS_IDS, CRS_LABELS, type CrsId } from '../worldRaster'
 import type { RastersTool } from '../useRasters'
 
-export function RasterPanel({ rasters }: { rasters: RastersTool }) {
+export function RasterPanel({ rasters, readOnly }: { rasters: RastersTool; readOnly?: boolean }) {
   const { rasterList, toggleRaster, locateRaster, removeRaster, setRasterAlpha, setRasterCrs, fmtGsd } = rasters
   return (
     <>
@@ -19,9 +19,11 @@ export function RasterPanel({ rasters }: { rasters: RastersTool }) {
             <button onClick={() => locateRaster(r.id)} title="Zaměřit" className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-700 hover:text-cyan-300">
               <Crosshair size={13} />
             </button>
+            {!readOnly && (
             <button onClick={() => removeRaster(r.id)} title="Odebrat" className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-700 hover:text-red-300">
               <Trash2 size={13} />
             </button>
+            )}
           </div>
           <div className="flex items-center gap-1.5">
             <span className="w-11 shrink-0 text-[10px] text-gray-400">Krytí</span>
@@ -33,7 +35,7 @@ export function RasterPanel({ rasters }: { rasters: RastersTool }) {
             />
             <span className="w-8 text-[10px] tabular-nums text-gray-300">{Math.round(r.alpha * 100)}%</span>
           </div>
-          <div className="flex items-center gap-1.5">
+          {!readOnly && <div className="flex items-center gap-1.5">
             <span className="w-11 shrink-0 text-[10px] text-gray-400">Systém</span>
             <select
               value={r.crsId}
@@ -43,7 +45,7 @@ export function RasterPanel({ rasters }: { rasters: RastersTool }) {
             >
               {CRS_IDS.map(c => <option key={c} value={c}>{CRS_LABELS[c]}</option>)}
             </select>
-          </div>
+          </div>}
           <div className="px-0.5 text-[10px] tabular-nums text-gray-600">{r.px} · {fmtGsd(r.gsd)}</div>
         </div>
       ))}

@@ -12,7 +12,7 @@ import { CR_EXTENT, GOOGLE_3D_ION_ASSET, OSM_LIFT_M } from './config'
 import { applyBackground, BG_MODES, type BgMode } from './background'
 import { simplifyRingCapped } from './rings'
 import { sjtskOf, wgsOf } from './tiles'
-import { userIonToken } from './lib/ionKey'
+import { userIonToken, usingSceneIonToken } from './lib/ionKey'
 import type { Base, ModelEntry, ParcelEntry, SceneObj } from './types'
 import type { PerfSettings } from './perfProfile'
 import type { ScenePersist } from './lib/scenePersist'
@@ -277,7 +277,9 @@ export function useMapLayers(deps: {
           const msg = e instanceof Error ? e.message : String(e)
           const own = !!userIonToken()
           if (code === 401 || code === 403 || code === 429 || /401|403|429|unauthor|forbidden|token|quota/i.test(msg))
-            setGoogleErr(own
+            setGoogleErr(usingSceneIonToken()
+              ? 'Klíč Cesium ion vlastníka scény nefunguje (neplatný nebo vyčerpaný) — dej mu vědět. Zbytek scény jde dál.'
+              : own
               ? 'Cesium ion tvůj klíč odmítl — je platný a má přístup ke Google 3D? Zkontroluj ho v okně Klíč Cesium ion.'
               : 'Sdílený zkušební klíč Cesium ion nefunguje — nejspíš má vyčerpanou kvótu. Nastav si vlastní klíč (zdarma).')
           else if (code === 404)

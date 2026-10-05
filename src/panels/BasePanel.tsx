@@ -13,7 +13,7 @@ import { ToggleBtn } from '../ui'
 import type { MapLayers } from '../useMapLayers'
 import type { DistrictsTool } from '../useDistricts'
 
-export function BasePanel({ layers, districts, perfChoice, setPerfChoice, perfLevel, sharpness, setSharpness, ortoDetail, setOrtoDetail, viewerReady, viewerRef }: {
+export function BasePanel({ layers, districts, perfChoice, setPerfChoice, perfLevel, sharpness, setSharpness, ortoDetail, setOrtoDetail, viewerReady, viewerRef, guest }: {
   layers: MapLayers
   districts: DistrictsTool
   perfChoice: PerfChoice
@@ -25,6 +25,8 @@ export function BasePanel({ layers, districts, perfChoice, setPerfChoice, perfLe
   setOrtoDetail: (d: OrtoDetail) => void
   viewerReady: boolean
   viewerRef: React.RefObject<Cesium.Viewer | null>
+  /** veřejný prohlížeč: 3D realita jede na klíč vlastníka scény, vlastní se nenastavuje */
+  guest?: boolean
 }) {
   const {
     base, setBase, googleLoading, googleErr, googleAlpha, setGoogleAlpha, googleUnder, setGoogleUnder,
@@ -44,7 +46,7 @@ export function BasePanel({ layers, districts, perfChoice, setPerfChoice, perfLe
           <div className="text-[10px] text-gray-500 leading-snug">
             {googleErr ? <span className="text-amber-400">{googleErr}</span> : <>Fotorealistické 3D. Posuvníkem prosvítíš mapu pod ním.</>}
           </div>
-          <IonKeyLine highlight={!!googleErr} />
+          {!guest && <IonKeyLine highlight={!!googleErr} />}
           <div className="flex items-center gap-1.5">
             <span className="text-[10px] text-gray-400 w-9 shrink-0">3D</span>
             <input type="range" min={0} max={1} step={0.05} value={googleAlpha} onChange={e => setGoogleAlpha(parseFloat(e.target.value))} className="flex-1 min-w-0 accent-cyan-500" title="Průhlednost 3D reality — vlevo jen mapa, vpravo plná 3D" />

@@ -30,7 +30,8 @@ export async function listScenes(): Promise<SceneItem[]> {
   if (error) throw new Error(`Seznam scén se nepodařilo načíst: ${error.message}`)
   const rows = (data ?? []) as SceneRow[]
   const mine = rows.some(r => r.owner !== uid) ? await myMemberships() : new Map()
-  const items: SceneItem[] = rows.map(r => {
+  // scény viditelné jen přes odkaz pro prohlížení (host, ne člen) do přehledu nepatří
+  const items: SceneItem[] = rows.filter(r => r.owner === uid || mine.has(r.id)).map(r => {
     if (r.owner === uid) return { ...r, role: 'owner' }
     const m = mine.get(r.id)
     return { ...r, role: m?.role ?? 'viewer', opened_at: m?.openedAt ?? null }

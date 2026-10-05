@@ -9,7 +9,7 @@ import { DOT_DEFAULT, FRAME_DEFAULT, SIZE_DEFAULT } from '../callouts'
 import type { CamView } from '../types'
 import type { PresentationTool } from '../usePresentation'
 
-export function PresentationMenu({ pres, activeView, activeViewId, presentOn, togglePresent, calloutMode, toggleCallout }: {
+export function PresentationMenu({ pres, activeView, activeViewId, presentOn, togglePresent, calloutMode, toggleCallout, readOnly }: {
   pres: PresentationTool
   activeView: CamView | null
   activeViewId: string | null
@@ -17,6 +17,8 @@ export function PresentationMenu({ pres, activeView, activeViewId, presentOn, to
   togglePresent: () => void
   calloutMode: boolean
   toggleCallout: () => void
+  /** veřejný prohlížeč: jen vypínač prezentace, popisky se neupravují */
+  readOnly?: boolean
 }) {
   const { callouts, calloutSel, setCalloutSel, updateCallout, delCallout, toggleCalloutHere } = pres
   return (
@@ -32,6 +34,7 @@ export function PresentationMenu({ pres, activeView, activeViewId, presentOn, to
         Zapnutá ukáže popisky a efekty uložených pohledů — rozostření, chvění a kroužení. Při běžné práci s mapou překážejí, tak ji vypni.
       </div>
 
+      {!readOnly && <>
       <div className="flex items-center gap-1.5 border-t border-gray-700 pt-2 text-[10px] text-gray-500">
         <span className="shrink-0 uppercase tracking-wide">Popisky</span>
         <span className="min-w-0 flex-1 truncate text-right">pohled: <span className="text-gray-300">{activeView ? activeView.name : 'žádný'}</span></span>
@@ -72,6 +75,7 @@ export function PresentationMenu({ pres, activeView, activeViewId, presentOn, to
       {!callouts.length && (
         <div className="text-[10px] leading-snug text-gray-600">Zatím žádné — vyber pohled, dej „Přidat popisek" a klikni do mapy. Bublinu pak přetáhneš myší.</div>
       )}
+      </>}
     </div>
   )
 }

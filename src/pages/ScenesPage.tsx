@@ -8,7 +8,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Globe2, Plus, Trash2, Pencil, LogOut, Loader2, Layers, Clock, Image as ImageIcon, Check, X, KeyRound, UserRound, Users, UserMinus } from 'lucide-react'
+import { Globe2, Plus, Trash2, Pencil, LogOut, Loader2, Layers, Clock, Image as ImageIcon, Check, X, KeyRound, UserRound, Users, UserMinus, Link2 } from 'lucide-react'
 import { openIonKeyDialog } from '../ionKeyDialog'
 import { openShareDialog } from '../shareDialog'
 import { useUserIonToken } from '../lib/ionKey'
@@ -155,6 +155,11 @@ export function ScenesPage() {
               {sharedWith > 0 && (
                 <span className="flex items-center gap-1 text-sky-400/80" title={`Sdíleno s ${sharedWith} ${sharedWith === 1 ? 'člověkem' : 'lidmi'}`}>
                   <Users size={11} /> {sharedWith}
+                </span>
+              )}
+              {sharing?.links[scene.id] && (
+                <span className="flex items-center text-sky-400/80" title="Má zapnutý odkaz pro prohlížení bez registrace">
+                  <Link2 size={11} />
                 </span>
               )}
             </div>

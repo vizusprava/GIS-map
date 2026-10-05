@@ -16,11 +16,13 @@ import type { LookTool } from '../useLookTool'
 type Tab = 'views' | 'look'
 const TAB_KEY = 'geo.kameraTab'
 
-export function CameraMenu({ views, look, motion, presentOn }: {
+export function CameraMenu({ views, look, motion, presentOn, readOnly }: {
   views: CamViewsTool
   look: LookTool
   motion: CameraMotion
   presentOn: boolean
+  /** veřejný prohlížeč: pohledy jen k přeletu, bez ukládání a úprav */
+  readOnly?: boolean
 }) {
   const [tab, setTabState] = useState<Tab>(() => {
     try { return localStorage.getItem(TAB_KEY) === 'look' ? 'look' : 'views' } catch { return 'views' }
@@ -57,6 +59,7 @@ export function CameraMenu({ views, look, motion, presentOn }: {
             onMove={views.moveCamView}
             onSave={views.saveCamView}
             onStep={views.stepCamView}
+            readOnly={readOnly}
           />
           <label className="flex cursor-pointer items-center gap-1.5 text-xs" title="Kamera nepoletí napřímo, ale obloukem kolem toho, na co zrovna koukáš — objekt uprostřed zůstane uprostřed.">
             <input type="checkbox" checked={orbitOn} onChange={e => setOrbitOn(e.target.checked)} className="accent-sky-500" />

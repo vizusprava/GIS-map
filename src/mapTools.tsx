@@ -11,6 +11,9 @@
  *
  * Posun modelu je v nástrojích jen když je model vybraný; jinak by to byla položka, která nic nedělá.
  *
+ * Ve veřejném prohlížeči (`guest`) chybí výběr parcel/dlaždic/území, odečet souřadnic i posun
+ * modelu — vedou k exportům a úpravám. Zůstává podklad, měření, pohled, kamera a prezentace.
+ *
  * Kamera a Prezentace nejsou krátké nabídky, ale panely (pohledy, slidery, popisky) — dřív to
  * byly sekce levého panelu. Otevřou se najetím jako ostatní, ale jakmile do nich klikneš, zůstanou
  * otevřené („přišpendlí se"), ať jde posouvat slider nebo psát název, aniž by panel ujel pod myší.
@@ -37,6 +40,8 @@ import type { TilesTool } from './useTiles'
 import type { RegionTool } from './useRegionTool'
 
 type Props = {
+  /** veřejný prohlížeč: bez výběrů, souřadnic a posunu modelu (i bez jejich zkratek) */
+  guest?: boolean
   /** pro kolečko „načítám mapu" — null, dokud mapa není */
   viewer: Cesium.Viewer | null
   layers: MapLayers
@@ -90,18 +95,20 @@ const kbdLabel = (sc: Pick<Shortcut, 'key' | 'shift'>) => (sc.shift ? '⇧' : ''
  * klávesnici píšou stejně (žádné Y/Z).
  */
 function shortcuts(p: Props): Shortcut[] {
-  return [
-    { key: 'p', label: 'Vybrat parcelu', run: p.onParcel },
-    { key: 'o', label: 'Vybrat oblast', run: p.onArea },
-    { key: 'd', label: 'Vybrat dlaždice', run: p.tiles.toggleTileMode },
-    { key: 'u', label: 'Vybrat území', run: p.onRegion },
+  const all: (Shortcut & { edit?: boolean })[] = [
+    { key: 'p', label: 'Vybrat parcelu', run: p.onParcel, edit: true },
+    { key: 'o', label: 'Vybrat oblast', run: p.onArea, edit: true },
+    { key: 'd', label: 'Vybrat dlaždice', run: p.tiles.toggleTileMode, edit: true },
+    { key: 'u', label: 'Vybrat území', run: p.onRegion, edit: true },
     { key: 'm', label: 'Měření vzdálenosti', run: () => p.onRuler('line') },
     { key: 'm', shift: true, label: 'Měření plochy', run: () => p.onRuler('area') },
-    { key: 's', label: 'Souřadnice bodu', run: p.onCoords },
-    { key: 'v', label: 'Posun modelu', run: p.onMove, when: p.canMove, note: 'jen s vybraným modelem' },
+    { key: 's', label: 'Souřadnice bodu', run: p.onCoords, edit: true },
+    { key: 'v', label: 'Posun modelu', run: p.onMove, when: p.canMove, note: 'jen s vybraným modelem', edit: true },
     { key: 'k', label: 'Katastr zap / vyp', run: () => p.layers.setKatastrOn(v => !v) },
     { key: 't', label: 'Shora / perspektiva', run: p.camProj === 'ortho' ? p.onPersp : p.onOrtho },
   ]
+  // `edit` = nástroj, který ve veřejném prohlížeči není (vede k exportům nebo úpravám)
+  return p.guest ? all.filter(s => !s.edit) : all
 }
 const isTyping = (t: EventTarget | null) => {
   const el = t as HTMLElement | null
@@ -198,7 +205,7 @@ export function MapTools(p: Props) {
           <Item icon={<Layers size={13} />} label="Katastr" active={katastrOn} kbd={kbd('Katastr zap / vyp')} onClick={() => setKatastrOn(v => !v)} />
         </Group>
 
-        <Group
+        {!p.guest && <Group
           {...group} id="vyber" title="Výběr parcel, oblasti, dlaždic nebo území"
           icon={<MousePointerClick size={15} />} label={selLabel ?? 'Výběr'}
           tone={selTool ? toolTheme(selTool).solid : undefined}
@@ -207,19 +214,21 @@ export function MapTools(p: Props) {
           <Item icon={<Hexagon size={13} />} label="Vybrat oblast" active={p.areaMode} tool="area" kbd={kbd('Vybrat oblast')} onClick={pick(p.onArea)} />
           <Item icon={<Grid3x3 size={13} />} label="Vybrat dlaždice" active={p.tileMode} tool="tiles" kbd={kbd('Vybrat dlaždice')} onClick={pick(p.tiles.toggleTileMode)} />
           <Item icon={p.region.regionBusy ? <Loader2 size={13} className="animate-spin" /> : <Landmark size={13} />} label="Vybrat území" active={p.region.regionMode} tool="region" kbd={kbd('Vybrat území')} onClick={pick(p.onRegion)} />
-        </Group>
+        </Group>}
 
         <Group
-          {...group} id="nastroje" title="Měření, odečet souřadnic a posun modelu"
+          {...group} id="nastroje" title={p.guest ? 'Měření vzdálenosti a plochy' : 'Měření, odečet souřadnic a posun modelu'}
           icon={<PencilRuler size={15} />} label={toolLabel ?? 'Nástroje'}
           tone={toolId ? toolTheme(toolId).solid : undefined}
         >
           <Item icon={<Ruler size={13} />} label="Měření vzdálenosti" active={p.rulerMode && p.rulerKind === 'line'} tool="ruler" kbd={kbd('Měření vzdálenosti')} onClick={pick(() => p.onRuler('line'))} />
           <Item icon={<Hexagon size={13} />} label="Měření plochy" active={p.rulerMode && p.rulerKind === 'area'} tool="ruler" kbd={kbd('Měření plochy')} onClick={pick(() => p.onRuler('area'))} />
           {p.rulerMode && <Item icon={<X size={13} />} label="Přestat měřit" onClick={pick(() => p.onRuler(p.rulerKind))} />}
-          <Sep />
-          <Item icon={<Crosshair size={13} />} label="Souřadnice bodu" active={p.coordsMode} tool="coords" kbd={kbd('Souřadnice bodu')} onClick={pick(p.onCoords)} />
-          {p.canMove && <Item icon={<Move size={13} />} label="Posun modelu" active={p.moveMode} tool="move" kbd={kbd('Posun modelu')} onClick={pick(p.onMove)} />}
+          {!p.guest && <>
+            <Sep />
+            <Item icon={<Crosshair size={13} />} label="Souřadnice bodu" active={p.coordsMode} tool="coords" kbd={kbd('Souřadnice bodu')} onClick={pick(p.onCoords)} />
+            {p.canMove && <Item icon={<Move size={13} />} label="Posun modelu" active={p.moveMode} tool="move" kbd={kbd('Posun modelu')} onClick={pick(p.onMove)} />}
+          </>}
         </Group>
 
         <Group

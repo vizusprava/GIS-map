@@ -67,7 +67,7 @@ export function useScenePanelUi() {
   }
 }
 
-export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, locateObject, toggleVisible, deleteObject, onRename }: {
+export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, locateObject, toggleVisible, deleteObject, onRename, readOnly }: {
   ui: ScenePanelUi
   objects: SceneObj[]
   selectedId: string | null
@@ -78,6 +78,8 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
   deleteObject: (o: SceneObj) => void
   /** nové jméno objektu (přejmenovat jde jen model) */
   onRename: (id: string, name: string) => void
+  /** veřejný prohlížeč: bez mazání a přejmenování */
+  readOnly?: boolean
 }) {
   const {
     clearLayerSel, dragOverLayer, expandedDrawings, layerFilter, layerSel, renameDraft, renamingId,
@@ -123,7 +125,7 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
           ) : (
             <span
               className="flex-1 min-w-0 truncate"
-              onDoubleClick={e => { if (o.kind === 'model') { e.stopPropagation(); setRenamingId(o.id); setRenameDraft(o.name) } }}
+              onDoubleClick={e => { if (o.kind === 'model' && !readOnly) { e.stopPropagation(); setRenamingId(o.id); setRenameDraft(o.name) } }}
               title={o.name}
             >{o.name}</span>
           )}
@@ -133,9 +135,11 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
           <button onClick={e => { e.stopPropagation(); toggleVisible(o) }} title="Zobrazit/skrýt" className="shrink-0 p-0.5 rounded text-gray-400 hover:text-gray-100">
             {o.visible ? <Eye size={13} /> : <EyeOff size={13} />}
           </button>
+          {!readOnly && (
           <button onClick={e => { e.stopPropagation(); deleteObject(o) }} title="Smazat" className="shrink-0 p-0.5 rounded text-gray-400 hover:text-red-300 opacity-0 group-hover:opacity-100">
             <Trash2 size={13} />
           </button>
+          )}
         </div>
         {isExpanded && draw && (() => {
           const did = o.id.replace('drawing-', '')

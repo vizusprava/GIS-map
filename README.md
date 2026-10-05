@@ -79,6 +79,19 @@ A nakonec `sql/003_sharing.sql` (sdílení scén s kolegy):
 Bez 003 appka funguje dál jako dřív, jen bez sdílení (okno Sdílet řekne, že migrace chybí).
 Appka sama e-maily o nasdílení neposílá — vlastník kolegovi pošle odkaz na scénu.
 
+Pro odkaz jen pro prohlížení (bez registrace) pak `sql/004_view_links.sql` a v Supabase
+zapnout **Authentication → Sign In / Providers → Allow anonymous sign-ins**:
+
+- vlastník v okně Sdílet zapne „Odkaz jen pro prohlížení" → adresa `…#/view/<kód>`
+- návštěvník se na pozadí přihlásí anonymně a databáze ho pustí ke scéně jako hosta —
+  jen číst, a jen dokud odkaz platí (vypnutí nebo nový kód přístup okamžitě sebere)
+- v prohlížeči nejsou exporty, import, výběry, odečet souřadnic ani úpravy; měřit jde,
+  nic se neuloží. Anonymní uživatel nesmí v databázi ani v úložišti nic zakládat ani měnit
+- 3D realita jede na klíč Cesium ion vlastníka scény (když ho má), jinak na sdílený
+- soubory scény se do prohlížeče stahují, takže je odhodlaný návštěvník dokáže vytáhnout —
+  na citlivé podklady odkaz nepoužívat
+- anonymní účty se hromadí; jak je uklízet (ručně nebo přes pg_cron), je na konci 004
+
 Po nasazení na veřejnou adresu je potřeba ji přidat v Supabase do
 **Authentication → URL Configuration** (Site URL i Redirect URLs), jinak nebudou
 fungovat odkazy z potvrzovacích a resetovacích e-mailů.
