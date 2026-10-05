@@ -100,7 +100,18 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   // Sbalení sekcí levého panelu. Klíč chybí = použij výchozí hodnotu sekce, takže nové sekce
   // nemusí nic doplňovat a stav přežije i jejich přejmenování.
   // Panel překrývá levých 320 px mapy, takže musí jít odsunout — jinak se pod ním nedá klikat.
-  const [panelOpen, setPanelOpen] = useState(true)
+  // Na úzké obrazovce (tablet na výšku) začíná zavřený — mapa má přednost.
+  const [panelOpen, setPanelOpen] = useState(() => innerWidth >= 900)
+  // Šířka okna: na úzké mapě (tablet, otevřený panel) je lišta dole jen z ikon.
+  const [winW, setWinW] = useState(() => innerWidth)
+  useEffect(() => {
+    const onResize = () => setWinW(innerWidth)
+    addEventListener('resize', onResize)
+    return () => removeEventListener('resize', onResize)
+  }, [])
+  const PANEL_W = 320
+  const mapLeft = panelOpen ? PANEL_W : 0
+  const compactTools = winW - mapLeft < 780
   // Hlavní vypínač prezentace (popisky + efekty pohledů). Při běžné práci s mapou překážejí.
   const [presentOn, setPresentOn] = useState(true)
   // Co bylo zapnuté, než se prezentace vypnula — aby zapnutí vrátilo přesně to, ne nějaký default.
@@ -710,12 +721,24 @@ export function MapView({ scene }: { scene: ScenePersist }) {
         onTogglePickMode={guest ? undefined : toggleRegionMode}
         activeName={region.regionName}
         onClearActive={region.clearRegion}
+        left={panelOpen ? PANEL_W : 48 /* vlevo nahoře je tlačítko, které panel zase otevře */}
       />
 
-      {/* pod vyhledávací lištou, ať se nepřekrývají — obojí míří doprostřed nahoru */}
-      {restoring && (
-        <div className="absolute top-16 left-1/2 z-30 -translate-x-1/2 flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900/90 px-3 py-1.5 text-xs text-gray-200">
-          <Loader2 size={13} className="animate-spin" /> {restoring}
+      {/* Pod vyhledávací lištou, ať se nepřekrývají — obojí míří doprostřed VIDITELNÉ mapy
+          (vedle panelu), jinak by na užší obrazovce zajely pod panel. */}
+      {(restoring || (NEEDS_ION && !effectiveIonToken() && layers.base === 'google')) && (
+        <div className="pointer-events-none absolute right-0 top-16 z-30 flex flex-col items-center gap-2 px-3 transition-[left]" style={{ left: mapLeft }}>
+          {restoring && (
+            <div className="flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900/90 px-3 py-1.5 text-xs text-gray-200">
+              <Loader2 size={13} className="animate-spin" /> {restoring}
+            </div>
+          )}
+          {NEEDS_ION && !effectiveIonToken() && layers.base === 'google' && (
+            <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-amber-600/50 bg-amber-900/80 px-3 py-1.5 text-xs text-amber-200">
+              3D realita potřebuje klíč Cesium ion
+              {!guest && <button onClick={openIonKeyDialog} className="rounded bg-amber-600 px-2 py-0.5 text-white hover:bg-amber-500">Nastavit</button>}
+            </div>
+          )}
         </div>
       )}
       <CalloutLayer
@@ -751,13 +774,6 @@ export function MapView({ scene }: { scene: ScenePersist }) {
         onChange={e => { const fs = [...(e.target.files ?? [])]; if (fs.length) importRasters(fs); e.target.value = '' }}
       />
 
-      {NEEDS_ION && !effectiveIonToken() && layers.base === 'google' && (
-        <div className="absolute top-16 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-amber-600/50 bg-amber-900/80 px-3 py-1.5 text-xs text-amber-200">
-          3D realita potřebuje klíč Cesium ion
-          {!guest && <button onClick={openIonKeyDialog} className="rounded bg-amber-600 px-2 py-0.5 text-white hover:bg-amber-500">Nastavit</button>}
-        </div>
-      )}
-
       {/* loader při exportu */}
       {exporting && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/50">
@@ -773,11 +789,13 @@ export function MapView({ scene }: { scene: ScenePersist }) {
 
       {/* Rychlá lišta dole: podklad, výběr, nástroje a pohled — to, na co se sahá pořád, i se
           zavřeným panelem. Volá tytéž funkce jako panel, takže se to nemůže rozejít.
-          Střed se počítá z VIDITELNÉ mapy, ne z okna, aby lišta neutíkala pod panel.
+          Střed se počítá z VIDITELNÉ mapy, ne z okna, aby lišta neutíkala pod panel; vpravo
+          nechává místo kompasu. Na úzké mapě jsou skupiny jen ikony (compact).
           `bottom-6` míjí pruh s popiskami zdrojů, který si Cesium kreslí úplně dole. */}
-      <div className={`pointer-events-none absolute bottom-6 right-0 z-20 flex justify-center transition-[left] ${panelOpen ? 'left-80' : 'left-0'}`}>
+      <div className="pointer-events-none absolute bottom-6 right-16 z-20 flex justify-center transition-[left]" style={{ left: mapLeft }}>
         <MapTools
           guest={guest}
+          compact={compactTools}
           viewer={viewerReady ? viewerRef.current : null}
           layers={layers}
           parcels={parcels}

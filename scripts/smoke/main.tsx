@@ -82,7 +82,17 @@ const scene: ScenePersist = {
 function BackdropDemo() {
   const [mode, setMode] = useState<BackdropMode>(q.get('mode') === 'overview' ? 'overview' : 'login')
   useEffect(() => { Object.assign(window, { __backdrop: setMode }) }, [])
-  return <Backdrop mode={mode} />
+  // `&card=1`: prázdná karta na místě přihlášení (stejné rozvržení jako LoginPage) — pro snímky
+  return (
+    <>
+      <Backdrop mode={mode} />
+      {q.get('card') && mode === 'login' && (
+        <div className="h-full flex items-center justify-center p-6 xl:justify-start xl:pl-[7vw]">
+          <div className="h-80 w-full max-w-sm rounded-2xl border border-gray-800 bg-gray-950/85 p-7" />
+        </div>
+      )}
+    </>
+  )
 }
 
 // `?page=view`: veřejný prohlížeč — přihlášení se obnovuje jako v appce (App.tsx → init)

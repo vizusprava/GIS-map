@@ -11,6 +11,9 @@
  *
  * Posun modelu je v nástrojích jen když je model vybraný; jinak by to byla položka, která nic nedělá.
  *
+ * Na úzké mapě (tablet na výšku, otevřený panel) jsou skupiny jen ikony (`compact`) — celá
+ * lišta by se jinak nevešla a prohlížeč by stránku zmenšil. Na dotyku jsou terče větší.
+ *
  * Ve veřejném prohlížeči (`guest`) chybí výběr parcel/dlaždic/území, odečet souřadnic i posun
  * modelu — vedou k exportům a úpravám. Zůstává podklad, měření, pohled, kamera a prezentace.
  *
@@ -43,6 +46,8 @@ import type { RulerSnap } from './useRulers'
 type Props = {
   /** veřejný prohlížeč: bez výběrů, souřadnic a posunu modelu (i bez jejich zkratek) */
   guest?: boolean
+  /** málo místa: skupiny jen jako ikony (popisek zůstává v title) */
+  compact?: boolean
   /** pro kolečko „načítám mapu" — null, dokud mapa není */
   viewer: Cesium.Viewer | null
   layers: MapLayers
@@ -186,7 +191,7 @@ export function MapTools(p: Props) {
   const selLabel = p.parcelMode ? 'Parcela' : p.areaMode ? 'Oblast' : p.tileMode ? 'Dlaždice' : p.region.regionMode ? 'Území' : null
   const toolId: ToolId | null = p.rulerMode ? 'ruler' : p.coordsMode ? 'coords' : p.moveMode ? 'move' : null
   const toolLabel = p.rulerMode ? (p.rulerKind === 'area' ? 'Plocha' : 'Vzdálenost') : p.coordsMode ? 'Souřadnice' : p.moveMode ? 'Posun' : null
-  const group = { open, setOpen, pinned, setPinned }
+  const group = { open, setOpen, pinned, setPinned, compact: !!p.compact }
 
   return (
     <div className="pointer-events-auto flex flex-col items-center gap-1.5">
@@ -261,15 +266,16 @@ export function MapTools(p: Props) {
           {p.presentationMenu}
         </Group>
 
+        {/* na dotykovém zařízení bez klávesnice zkratky nemají smysl */}
         <button
           onClick={() => setHelp(h => !h)}
           title="Klávesové zkratky (?)"
           aria-pressed={help}
-          className={`rounded-lg p-1.5 transition-colors ${help ? 'bg-gray-700 text-gray-100' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'}`}
+          className={`rounded-lg p-1.5 transition-colors pointer-coarse:hidden ${help ? 'bg-gray-700 text-gray-100' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'}`}
         >
           <Keyboard size={15} />
         </button>
-        <MapLoading viewer={p.viewer} />
+        <MapLoading viewer={p.viewer} compact={p.compact} />
       </div>
     </div>
   )
@@ -284,12 +290,14 @@ export function MapTools(p: Props) {
  * přišpendlí: pak ho nezavře odjetí myší ani najetí na jinou skupinu, jen Esc, klik mimo nebo
  * znovu tlačítko.
  */
-function Group({ id, open, setOpen, pinned, setPinned, icon, label, badge, title, tone, panel, children }: {
+function Group({ id, open, setOpen, pinned, setPinned, compact, icon, label, badge, title, tone, panel, children }: {
   id: GroupId
   open: GroupId | null
   setOpen: React.Dispatch<React.SetStateAction<GroupId | null>>
   pinned: boolean
   setPinned: (v: boolean) => void
+  /** jen ikona (popisek v title) */
+  compact: boolean
   icon: React.ReactNode
   label: string
   /** krátký údaj vedle popisku (počet pohledů, „K" = zapnutý katastr) */
@@ -322,15 +330,16 @@ function Group({ id, open, setOpen, pinned, setPinned, icon, label, badge, title
     >
       <button
         onClick={click}
-        title={title}
+        title={compact ? `${label} — ${title}` : title}
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
+        aria-label={label}
+        className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors pointer-coarse:py-2 ${
           tone ?? (isOpen ? 'bg-gray-800 text-gray-100' : 'text-gray-300 hover:bg-gray-800')
         }`}
       >
         {icon}
-        <span className="whitespace-nowrap">{label}</span>
+        {!compact && <span className="whitespace-nowrap">{label}</span>}
         {badge && <span className="rounded bg-gray-700/80 px-1 text-[10px] leading-4 tabular-nums text-gray-300">{badge}</span>}
         <ChevronUp size={12} className={`opacity-60 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
@@ -365,7 +374,7 @@ function Item({ icon, label, active, tool, kbd, onClick }: { icon: React.ReactNo
     <button
       role="menuitem"
       onClick={onClick}
-      className={`flex items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-gray-800 ${active ? (tool ? toolTheme(tool).text : 'text-emerald-300') : 'text-gray-200'}`}
+      className={`flex items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-gray-800 pointer-coarse:py-2.5 ${active ? (tool ? toolTheme(tool).text : 'text-emerald-300') : 'text-gray-200'}`}
     >
       <span className="shrink-0">{icon}</span>
       <span className="min-w-0 flex-1">{label}</span>
@@ -413,7 +422,7 @@ function KeyHelp({ keys, onClose }: { keys: Shortcut[]; onClose: () => void }) {
  * kvůli ní celý panel by stálo víc než samo načítání. Ukáže se až po chvilce, ať při drobném
  * posunu mapy jen neproblikne; zmizí hned, jak je fronta prázdná.
  */
-function MapLoading({ viewer }: { viewer: Cesium.Viewer | null }) {
+function MapLoading({ viewer, compact }: { viewer: Cesium.Viewer | null; compact?: boolean }) {
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     if (!viewer || viewer.isDestroyed()) return
@@ -428,7 +437,7 @@ function MapLoading({ viewer }: { viewer: Cesium.Viewer | null }) {
   if (!busy) return null
   return (
     <div data-map-loading className="pointer-events-none absolute left-full top-1/2 ml-2 flex -translate-y-1/2 items-center gap-1.5 whitespace-nowrap rounded-full border border-gray-700 bg-gray-900/85 px-2 py-1 text-[10px] text-gray-300 shadow">
-      <Loader2 size={11} className="animate-spin" /> načítám mapu
+      <Loader2 size={11} className="animate-spin" />{!compact && ' načítám mapu'}
     </div>
   )
 }
@@ -465,7 +474,7 @@ function Hint(p: Props) {
         {' '}<span className="text-gray-500">
           {p.rulerDrafting
             ? 'Klik na první bod měření uzavře, na poslední ho dokončí (nebo pravým klikem). Ke stávajícím bodům se klik přichytí.'
-            : 'Bod jde přetáhnout. Ukončíš pravým klikem.'}
+            : 'Bod jde přetáhnout. Ukončíš klepnutím na poslední bod nebo pravým klikem.'}
         </span>
         {p.rulerDrafting && (
           <button onClick={p.onFinishRuler} className={`${btn} ${toolTheme('ruler').solid}`}>
@@ -535,7 +544,11 @@ function Hint(p: Props) {
           </button>
         </div>
         <div>
-          Klikni nebo táhni přes dlaždice ({tileCount} vybráno). <span className="text-gray-500">Mapu tu posouváš pravým tlačítkem.</span>
+          Klikni nebo táhni přes dlaždice ({tileCount} vybráno).{' '}
+          <span className="text-gray-500">
+            {/* tah prstem vybírá dlaždice — posunout mapu jde jen myší, na dotyku po vypnutí výběru */}
+            {matchMedia('(pointer: coarse)').matches ? 'Mapou posuneš, až výběr vypneš.' : 'Mapu tu posouváš pravým tlačítkem.'}
+          </span>
         </div>
       </div>
     )

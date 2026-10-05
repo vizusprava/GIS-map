@@ -3,12 +3,15 @@
  * a u výkresů jejich hladiny (výška, průhlednost, hledání a hromadné přepínání).
  */
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Crosshair, Eye, EyeOff, Search, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Crosshair, Eye, EyeOff, Pencil, Search, Trash2 } from 'lucide-react'
 import { EMPTY_NAMESET } from '../config'
 import type { SceneObj } from '../types'
 import type { DrawingsTool } from '../useDrawings'
 
 export type ScenePanelUi = ReturnType<typeof useScenePanelUi>
+
+/** ikonové tlačítko v řádku — na dotyku větší, ať se trefí prstem */
+const rowBtn = 'shrink-0 rounded p-0.5 text-gray-400 pointer-coarse:p-1.5'
 
 /**
  * Stav seznamu — co je rozbalené, výběr hladin, rozepsané jméno. Žije o patro výš než panel:
@@ -129,14 +132,20 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
               title={o.name}
             >{o.name}</span>
           )}
-          <button onClick={e => { e.stopPropagation(); locateObject(o) }} title="Zaměřit na mapě (odletět na místo)" className="shrink-0 p-0.5 rounded text-gray-400 hover:text-cyan-300">
+          {/* přejmenování i tlačítkem — dvojklik na dotykové obrazovce nefunguje */}
+          {o.kind === 'model' && !readOnly && renamingId !== o.id && (
+            <button onClick={e => { e.stopPropagation(); setRenamingId(o.id); setRenameDraft(o.name) }} title="Přejmenovat (nebo dvojklik na název)" className={`${rowBtn} hover:text-gray-100 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100`}>
+              <Pencil size={13} />
+            </button>
+          )}
+          <button onClick={e => { e.stopPropagation(); locateObject(o) }} title="Zaměřit na mapě (odletět na místo)" className={`${rowBtn} hover:text-cyan-300`}>
             <Crosshair size={13} />
           </button>
-          <button onClick={e => { e.stopPropagation(); toggleVisible(o) }} title="Zobrazit/skrýt" className="shrink-0 p-0.5 rounded text-gray-400 hover:text-gray-100">
+          <button onClick={e => { e.stopPropagation(); toggleVisible(o) }} title="Zobrazit/skrýt" className={`${rowBtn} hover:text-gray-100`}>
             {o.visible ? <Eye size={13} /> : <EyeOff size={13} />}
           </button>
           {!readOnly && (
-          <button onClick={e => { e.stopPropagation(); deleteObject(o) }} title="Smazat" className="shrink-0 p-0.5 rounded text-gray-400 hover:text-red-300 opacity-0 group-hover:opacity-100">
+          <button onClick={e => { e.stopPropagation(); deleteObject(o) }} title="Smazat" className={`${rowBtn} hover:text-red-300 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100`}>
             <Trash2 size={13} />
           </button>
           )}

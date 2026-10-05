@@ -607,6 +607,34 @@ async function main() {
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
   })
 
+  // ── tablet na výšku: nic nesmí přetéct (prohlížeč by jinak celou stránku zmenšil) ──
+  await check('tablet na výšku: lišta, vyhledávání a stránka se vejdou', async () => {
+    try {
+      await page.send('Emulation.setDeviceMetricsOverride', { width: 820, height: 1180, deviceScaleFactor: 1, mobile: true })
+      await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
+      await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html` })
+      await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa na tabletu')
+      expect(await ev(`!![...document.querySelectorAll('button')].find(b => b.title === 'Zobrazit panel')`), 'panel na úzké obrazovce začíná otevřený')
+      await ev(`[...document.querySelectorAll('button')].find(b => b.title === 'Zobrazit panel').click()`)
+      await sleep(600)
+      const m = await ev(`(() => {
+        const bar = document.querySelector('button[aria-haspopup="menu"]').closest('.relative.flex').getBoundingClientRect()
+        const s = document.querySelector('input[placeholder^="Najít"]').closest('form').getBoundingClientRect()
+        const help = [...document.querySelectorAll('button')].find(b => b.title === 'Klávesové zkratky (?)')
+        return { vw: innerWidth, sw: document.documentElement.scrollWidth, bar: [Math.round(bar.left), Math.round(bar.right)], search: [Math.round(s.left), Math.round(s.right)], help: help ? getComputedStyle(help).display : 'none' }
+      })()`)
+      expect(m.vw === 820 && m.sw <= 820, `stránka přetéká: viewport ${m.vw}, obsah ${m.sw}`)
+      expect(m.bar[0] >= 320 && m.bar[1] <= 820 - 56, `lišta mimo viditelnou mapu: ${m.bar}`)
+      expect(m.search[0] >= 320 && m.search[1] <= 820, `vyhledávání pod panelem: ${m.search}`)
+      expect(m.help === 'none', 'na dotyku je vidět tlačítko klávesových zkratek')
+      await shot('tablet-na-vysku')
+      return `lišta ${m.bar[0]}–${m.bar[1]} px`
+    } finally {
+      await page.send('Emulation.clearDeviceMetricsOverride')
+      await page.send('Emulation.setTouchEmulationEnabled', { enabled: false })
+    }
+  })
+
   await check('žádné chyby po znovuotevření scén a sdílení', async () => {
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)

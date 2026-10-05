@@ -15,10 +15,10 @@
   pointer-events: none;
   overflow: hidden;
   perspective: 1800px;
-  perspective-origin: 58% 34%;
+  perspective-origin: var(--bd-x, 58%) 34%;
   /* jemná souřadnicová síť */
   background-image:
-    radial-gradient(ellipse 46% 52% at 58% 50%, rgba(16, 185, 129, 0.075), transparent 70%),
+    radial-gradient(ellipse 46% 52% at var(--bd-x, 58%) 50%, rgba(16, 185, 129, 0.075), transparent 70%),
     linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px),
     linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px);
   background-size: auto, 64px 64px, 64px 64px;
@@ -26,16 +26,28 @@
 }
 .bd-stage::after {
   content: ''; position: absolute; inset: 0;
-  background: radial-gradient(ellipse 75% 80% at 58% 50%, transparent 40%, #030712 100%);
+  background: radial-gradient(ellipse 75% 80% at var(--bd-x, 58%) 50%, transparent 40%, #030712 100%);
 }
 
-/* wrap = posun a přiblížení (přehled scén), tilt = natočení kamery, stack = pomalé houpání */
+/* wrap = posun a přiblížení (přehled scén), zoom = „dýchání" kamery v cyklu,
+   tilt = natočení kamery, stack = pomalé houpání */
 .bd-wrap {
-  position: absolute; left: var(--bd-x, 59%); top: 50%;
+  position: absolute; left: var(--bd-x, 59%); top: 46%;   /* kamera kouká shora → stoh víc dole */
   width: var(--bd-size); height: var(--bd-size);
   margin: calc(var(--bd-size) / -2) 0 0 calc(var(--bd-size) / -2);
   transform-style: preserve-3d;
   transition: transform 1.6s cubic-bezier(.65, 0, .35, 1);
+}
+/* složený stoh je blíž (--bd-zin), při rozjíždění se kamera oddálí, ať se rozjeté desky vejdou */
+.bd-zoom {
+  position: absolute; inset: 0;
+  transform-style: preserve-3d;
+  animation: bd-zoom var(--bd-cycle) cubic-bezier(.65, 0, .35, 1) infinite;
+}
+@keyframes bd-zoom {
+  0%, 14%   { transform: scale3d(var(--bd-zin), var(--bd-zin), var(--bd-zin)); }
+  36%, 70%  { transform: scale3d(1, 1, 1); }
+  92%, 100% { transform: scale3d(var(--bd-zin), var(--bd-zin), var(--bd-zin)); }
 }
 .bd-tilt {
   position: absolute; inset: 0;
@@ -43,20 +55,25 @@
   transform: rotateX(55deg) rotateZ(-34deg);
   transition: transform 1.6s cubic-bezier(.65, 0, .35, 1);
 }
+/* houpání začíná uprostřed (0°) — tam ho přehled scén zastaví a odtud ho zase pustí */
 .bd-stack {
   position: absolute; inset: 0;
   transform-style: preserve-3d;
-  animation: bd-sway 40s ease-in-out infinite alternate;
+  animation: bd-sway 40s ease-in-out -20s infinite alternate;
 }
 @keyframes bd-sway {
   from { transform: rotateZ(-10deg); }
   to   { transform: rotateZ(10deg); }
 }
-/* přehled scén: zůstane jen terén, přiblížený přes celou obrazovku */
+/* přehled scén: zůstane jen terén, přiblížený pod celou obrazovku (jen tolik, aby byl ostrý —
+   okraje desky schová vinětace) */
 .bd-overview .bd-wrap { transform: translateX(var(--bd-ovx)) scale3d(var(--bd-ovs), var(--bd-ovs), var(--bd-ovs)); }
-.bd-overview .bd-tilt { transform: rotateX(34deg) rotateZ(-14deg); }
-/* návrat z přehledu: cyklus desek se spustí znovu od začátku, všechny naráz */
-.bd-restart .bd-plate, .bd-restart .bd-plate *, .bd-restart .bd-guide, .bd-restart .bd-floor { animation: none !important; }
+.bd-overview .bd-tilt { transform: rotateX(30deg) rotateZ(-8deg); }
+/* návrat z přehledu: cyklus se spustí znovu od začátku, všechno naráz */
+.bd-restart .bd-plate, .bd-restart .bd-plate *, .bd-restart .bd-guide, .bd-restart .bd-floor,
+.bd-restart .bd-zoom, .bd-restart .bd-stack { animation: none !important; }
+/* popisky jen tam, kam se vejdou */
+.bd-notags .bd-tag { display: none; }
 
 .bd-plate {
   position: absolute; inset: 0;
@@ -142,6 +159,13 @@
   92%, 100% { transform: translateZ(var(--bd-fc)) scale(.86); opacity: .9; }
 }
 
+/* vinětace přehledu: okraje přiblížené desky se rozplynou do pozadí */
+.bd-vig {
+  position: absolute; inset: 0; opacity: 0;
+  background: radial-gradient(ellipse 72% 78% at 50% 50%, transparent 45%, #030712 96%);
+  transition: opacity 1.4s ease;
+}
+.bd-overview .bd-vig { opacity: 1; }
 .bd-veil, .bd-shade { position: absolute; inset: 0; background: #030712; }
 /* náběh: krajina se ukáže, až jsou textury hotové */
 .bd-veil { transition: opacity 1.4s ease; }
@@ -155,7 +179,6 @@
   .bd-stage { perspective-origin: 50% 40%; }
   .bd-shade { opacity: .55; }
   .bd-overview .bd-shade { opacity: .76; }
-  .bd-tag { display: none; }
 }
 
 /* omezený pohyb: stoh stojí rozjetý */

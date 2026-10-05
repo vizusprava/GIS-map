@@ -60,7 +60,8 @@ function fmtDate(iso: string | null): string {
   return new Date(iso).toLocaleString('cs-CZ', { day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-const iconBtn = 'p-1.5 rounded-lg text-gray-400 hover:text-gray-100 hover:bg-gray-800'
+// na dotyku větší terče (prst), jinak stejné
+const iconBtn = 'p-1.5 rounded-lg text-gray-400 hover:text-gray-100 hover:bg-gray-800 pointer-coarse:p-2.5'
 
 export function ScenesPage() {
   const navigate = useNavigate()
@@ -170,7 +171,8 @@ export function ScenesPage() {
             )}
           </div>
 
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          {/* akce se ukážou najetím myší; na dotyku (bez najetí) jsou vidět pořád */}
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100 transition-opacity">
             {scene.role === 'owner' && (
               <button onClick={() => share(scene)} title="Sdílet s kolegy" className={iconBtn}>
                 <Users size={14} />
@@ -193,7 +195,7 @@ export function ScenesPage() {
                   remove.mutate(scene)
                 }}
                 title="Smazat scénu"
-                className="p-1.5 rounded-lg text-gray-400 hover:text-red-300 hover:bg-gray-800"
+                className="p-1.5 rounded-lg text-gray-400 hover:text-red-300 hover:bg-gray-800 pointer-coarse:p-2.5"
               >
                 <Trash2 size={14} />
               </button>
@@ -208,7 +210,7 @@ export function ScenesPage() {
                   leave.mutate(scene)
                 }}
                 title="Odejít ze sdílené scény"
-                className="p-1.5 rounded-lg text-gray-400 hover:text-red-300 hover:bg-gray-800"
+                className="p-1.5 rounded-lg text-gray-400 hover:text-red-300 hover:bg-gray-800 pointer-coarse:p-2.5"
               >
                 <UserMinus size={14} />
               </button>

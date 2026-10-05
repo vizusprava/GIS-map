@@ -81,6 +81,9 @@ export function Backdrop({ mode }: { mode: BackdropMode }) {
   const faceRefs = useRef<(HTMLCanvasElement | null)[]>([])
   const sliceRefs = useRef<(HTMLCanvasElement | null)[]>([])
   const zRef = useRef<Z>({ c: [0, 0, 0, 0], o: [0, 0, 0, 0] })
+  const zinRef = useRef(1)
+  const zoomRef = useRef<HTMLDivElement>(null)
+  const stackRef = useRef<HTMLDivElement>(null)
   const modeRef = useRef(mode)
   const hiRequested = useRef(false)
   /** v jakém rozlišení je terén nakreslený — pomalejší nižší nesmí přepsat hotový vyšší */
@@ -96,7 +99,19 @@ export function Backdrop({ mode }: { mode: BackdropMode }) {
     if (!st) return
     const fit = () => {
       const W = innerWidth, Hh = innerHeight, wide = W >= WIDE
-      const size = Math.round(wide ? Math.min(440, W * 0.32, Hh * 0.47) : Math.min(W * 0.74, Hh * 0.5, 420))
+      // Na širokém okně stoh zabere volné místo napravo od přihlašovací karty (LoginPage:
+      // xl:pl-[7vw], max-w-sm = 384 px). Výšku omezuje rozjetý stoh (zhruba 1,75× hrana desky),
+      // šířku natočená deska (půl šířky ≈ 0,71× hrana, s rezervou na perspektivu). Složený stoh
+      // je nižší, takže je přiblížený (zin) — tak je velký v obou fázích cyklu.
+      const SPREAD = 0.71 * 1.05
+      const cardRight = 0.07 * W + 384
+      const avail = W - cardRight - 48
+      const size = Math.round(wide ? Math.min(Hh * 0.5, avail / (2 * SPREAD)) : Math.min(W * 0.8, Hh * 0.5))
+      const zin = wide ? Math.min(1.3, avail / (2 * SPREAD * size)) : 1.15
+      const cx = wide ? cardRight + 24 + avail / 2 : W / 2
+      zinRef.current = zin
+      // popisky jen když se vejdou napravo od rozjetého stohu
+      st.classList.toggle('bd-notags', !wide || cx + SPREAD * size + 210 > W - 16)
       const t = Math.max(6, Math.round(size * 0.018)), gap = Math.round(size * 0.36)
       const step = size * 0.0064, relief = K * step
       // Výšky desek zdola. Složené: mapy leží na sobě hned nad reliéfem terénu, rozjeté po `gap`.
@@ -104,15 +119,14 @@ export function Backdrop({ mode }: { mode: BackdropMode }) {
       const zc = [0, relief + t, relief + 2 * t, relief + 3 * t], zo = [0, gap, 2 * gap, 3 * gap]
       const mc = zc[3] / 2, mo = zo[3] / 2
       zRef.current = { c: zc.map(z => z - mc), o: zo.map(z => z - mo) }
-      const x = wide ? 0.59 : 0.5
-      // přehled: deska natočená o 14° ± 10° houpání a nakloněná o 34° musí pokrýt celé okno
-      // i v nejhorším natočení, s rezervou na perspektivu
-      const th = 24 * Math.PI / 180, tilt = 34 * Math.PI / 180
-      const need = Math.max(W * Math.cos(th) + Hh * Math.sin(th), (W * Math.sin(th) + Hh * Math.cos(th)) / Math.cos(tilt))
+      // Přehled: terén pod celou obrazovkou, ale jen tak přiblížený, aby zůstal ostrý (houpání
+      // tam stojí, deska je natočená jen o 8°) — rohy, kam nedosáhne, schová vinětace.
+      const cover = Math.max(W * 1.04, Hh * 1.35)
       const px = (v: number) => `${v.toFixed(1)}px`
       const vars: Record<string, string> = {
         '--bd-size': `${size}px`, '--bd-t': `${t}px`, '--bd-gap': `${gap}px`, '--bd-step': `${step.toFixed(2)}px`,
-        '--bd-x': `${x * 100}%`, '--bd-ovx': px(W / 2 - W * x), '--bd-ovs': (need * 1.3 / size).toFixed(2),
+        '--bd-zin': zin.toFixed(3),
+        '--bd-x': px(cx), '--bd-ovx': px(W / 2 - cx), '--bd-ovs': (cover / size).toFixed(2),
         '--bd-gc': px(zc[0] - mc), '--bd-go': px(zo[0] - mo), '--bd-ratio': (zc[3] / zo[3]).toFixed(3),
         '--bd-fc': px(zc[0] - mc - t - 22), '--bd-fo': px(zo[0] - mo - t - 56),
       }
@@ -206,6 +220,9 @@ export function Backdrop({ mode }: { mode: BackdropMode }) {
       for (const leaf of leaves(el)) next.push(go(leaf, 'opacity', '0', { duration: 650 * d, delay: delay + 250 * d, easing: 'ease' }))
     })
     for (const g of guides()) next.push(go(g, 'opacity', '0', { duration: 500 * d, easing: 'ease' }))
+    // kamera bez „dýchání" a bez houpání — přiblížený terén stojí
+    next.push(go(zoomRef.current, 'transform', 'scale3d(1, 1, 1)', { duration: 1600 * d }))
+    next.push(go(stackRef.current, 'transform', 'rotateZ(0deg)', { duration: 1600 * d }))
     swap(next)
     requestHi()
   }
@@ -227,6 +244,10 @@ export function Backdrop({ mode }: { mode: BackdropMode }) {
     next.push(go(plateRefs.current[0]?.querySelector(':scope > .bd-tag') ?? null, 'opacity', '0', { duration: 1 }))
     // stín se vrátí, vodicí linky zůstanou schované — začátek cyklu je složený stoh
     for (const g of guides()) next.push(go(g, 'opacity', g.classList.contains('bd-floor') ? '0.9' : '0', { duration: 900 * d, delay: 600 * d, easing: 'ease' }))
+    // kamera zpátky na začátek cyklu: složený stoh přiblížený, houpání od 0°
+    const z = zinRef.current
+    next.push(go(zoomRef.current, 'transform', `scale3d(${z}, ${z}, ${z})`, { duration: 1600 * d }))
+    next.push(go(stackRef.current, 'transform', 'rotateZ(0deg)', { duration: 1600 * d }))
     swap(next)
     void Promise.all(anims.current.map(a => a.finished)).then(() => {
       if (my !== gen.current) return   // mezitím se přepnulo jinam
@@ -251,8 +272,9 @@ export function Backdrop({ mode }: { mode: BackdropMode }) {
   return (
     <div ref={stageRef} className="bd-stage" aria-hidden="true">
       <div className="bd-wrap">
+        <div ref={zoomRef} className="bd-zoom">
         <div className="bd-tilt">
-          <div className="bd-stack">
+          <div ref={stackRef} className="bd-stack">
             <div className="bd-floor" />
             {(['nw', 'ne', 'sw', 'se'] as const).map(c => <div key={c} className={`bd-guide ${c}`} />)}
             {LAYERS.map(l => (
@@ -282,7 +304,9 @@ export function Backdrop({ mode }: { mode: BackdropMode }) {
             ))}
           </div>
         </div>
+        </div>
       </div>
+      <div className="bd-vig" />
       <div className="bd-shade" />
       <div className="bd-veil" />
     </div>
