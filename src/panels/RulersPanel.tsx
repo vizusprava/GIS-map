@@ -17,7 +17,7 @@ export function RulersPanel({ rulers: tool, rulerMode }: { rulers: RulersTool; r
         const a = r.kind === 'area' ? rulerArea(r.pts) : null
         const val = r.kind === 'area'
           ? (a ? fmtArea(a.area) : '—')
-          : (r.pts.length > 1 ? fmtLen(rulerTotals(r.pts).len) : '—')
+          : (r.pts.length > 1 ? fmtLen(rulerTotals(r.pts, r.closed).len) : '—')
         return (
           <div
             key={r.id}
@@ -28,6 +28,7 @@ export function RulersPanel({ rulers: tool, rulerMode }: { rulers: RulersTool; r
             <span className="min-w-0 flex-1 truncate text-xs text-gray-200">
               {r.name}
               {r.id === rulerDraftId && <span className={`ml-1 text-[9px] opacity-80 ${toolTheme('ruler').text}`}>kreslí se</span>}
+              {r.closed && r.kind !== 'area' && <span className="ml-1 text-[9px] text-gray-500" title="Uzavřené do prvního bodu — délka počítá i úsek zpátky">uzavřené</span>}
             </span>
             <span className={`shrink-0 text-[11px] tabular-nums ${toolTheme('ruler').text}`}>{val}</span>
             <button onClick={() => delRuler(r.id)} title={r.kind === 'area' ? 'Smazat tuto plochu' : 'Smazat toto měření'} className="shrink-0 rounded p-0.5 text-gray-500 hover:text-red-300"><Trash2 size={13} /></button>
@@ -39,7 +40,8 @@ export function RulersPanel({ rulers: tool, rulerMode }: { rulers: RulersTool; r
       )}
       {!rulers.length && rulerMode && (
         <div className="max-w-[200px] px-1 text-[10px] leading-snug text-gray-500">
-          Klikej body do mapy — měření se tu objeví i s délkou nebo výměrou. Ukončíš pravým klikem.
+          Klikej body do mapy — měření se tu objeví i s délkou nebo výměrou. Ukončíš pravým klikem nebo
+          klikem na poslední bod; klik na první bod měření uzavře.
         </div>
       )}
       {!rulers.length && !rulerMode && (

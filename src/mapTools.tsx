@@ -38,6 +38,7 @@ import type { MapLayers } from './useMapLayers'
 import type { ParcelsTool } from './useParcels'
 import type { TilesTool } from './useTiles'
 import type { RegionTool } from './useRegionTool'
+import type { RulerSnap } from './useRulers'
 
 type Props = {
   /** veřejný prohlížeč: bez výběrů, souřadnic a posunu modelu (i bez jejich zkratek) */
@@ -60,6 +61,8 @@ type Props = {
   rulerKind: 'line' | 'area'
   /** rozdělané měření — dokud je, dá se ukončit */
   rulerDrafting: boolean
+  /** co udělá klik, ke kterému se myš zrovna přichytila (uzavřít, dokončit, přichytit na bod) */
+  rulerSnap?: RulerSnap
   onRuler: (kind: 'line' | 'area') => void
   onFinishRuler: () => void
   coordsMode: boolean
@@ -443,12 +446,27 @@ function Hint(p: Props) {
   const btn = 'ml-1 inline-flex items-center gap-1 rounded px-2 py-0.5 text-white disabled:opacity-50'
 
   if (p.rulerMode) {
+    // myš je u bodu, ke kterému se klik přichytí — řekni rovnou, co klik udělá
+    if (p.rulerSnap) {
+      return (
+        <div className={box('ruler')}>
+          {p.rulerSnap === 'close'
+            ? (p.rulerKind === 'area' ? 'Klikni — plocha se tím dokončí.' : 'Klikni — měření se uzavře do prvního bodu a dokončí.')
+            : p.rulerSnap === 'finish' ? 'Klikni — měření se tím dokončí.'
+            : 'Klikni — bod se přichytí přesně na tenhle.'}
+        </div>
+      )
+    }
     return (
       <div className={box('ruler')}>
         {p.rulerKind === 'area'
           ? 'Naklikej obvod plochy (aspoň tři body) — uvnitř se ukáže výměra, u stran délky. Uzavře se sama.'
           : 'Každý klik přidá bod, u úseku se ukáže jeho délka.'}
-        {' '}<span className="text-gray-500">Bod jde přetáhnout. Ukončíš pravým klikem.</span>
+        {' '}<span className="text-gray-500">
+          {p.rulerDrafting
+            ? 'Klik na první bod měření uzavře, na poslední ho dokončí (nebo pravým klikem). Ke stávajícím bodům se klik přichytí.'
+            : 'Bod jde přetáhnout. Ukončíš pravým klikem.'}
+        </span>
         {p.rulerDrafting && (
           <button onClick={p.onFinishRuler} className={`${btn} ${toolTheme('ruler').solid}`}>
             <Check size={12} /> Ukončit

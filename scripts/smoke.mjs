@@ -213,6 +213,31 @@ async function main() {
     expect(!(await section('vyber')), 'sekce Výběr v mapě visí i bez nástroje')
   })
 
+  // ── měření: klik na první bod ho přichytí, uzavře a dokončí ──
+  const mouse = async (type, x, y) => page.send('Input.dispatchMouseEvent', {
+    type, x, y, button: type === 'mouseMoved' ? 'none' : 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: type === 'mouseMoved' ? 0 : 1,
+  })
+  const clickAt = async (x, y) => { await mouse('mouseMoved', x, y); await mouse('mousePressed', x, y); await mouse('mouseReleased', x, y); await sleep(250) }
+  await check('měření: klik na první bod se přichytí, měření uzavře a dokončí', async () => {
+    await press('m')
+    const pts = [[620, 330], [820, 330], [820, 520]]
+    for (const [x, y] of pts) await clickAt(x, y)
+    const mereni = `document.querySelector('[data-sec="mereni"]')?.innerText ?? ''`
+    expect((await ev(mereni)).includes('kreslí se'), `po třech bodech se nekreslí: „${await ev(mereni)}"`)
+    // kousek vedle prvního bodu: nápověda řekne, že klik měření uzavře
+    await mouse('mouseMoved', pts[0][0] + 6, pts[0][1] + 5)
+    await waitFor(`document.body.innerText.includes('uzavře do prvního bodu')`, 3_000, 'nápověda k uzavření u prvního bodu')
+    await clickAt(pts[0][0] + 6, pts[0][1] + 5)
+    const t = await ev(mereni)
+    expect(t.includes('uzavřené') && !t.includes('kreslí se'), `měření se neuzavřelo: „${t}"`)
+    // délka = obvod trojúhelníku, ne jen dvě strany (uzavírací úsek se počítá)
+    const len = Number((t.match(/([\d\s ]+,\d+)\s*m/)?.[1] ?? '0').replace(/[\s ]/g, '').replace(',', '.'))
+    expect(len > 0, `bez délky: „${t}"`)
+    await shot('mereni-uzavrene')
+    await press('Escape')
+    return `obvod ${len} m`
+  })
+
   await check('přehled zkratek (?) a jeho zavření Esc', async () => {
     await press('?')
     expect(await ev(`document.body.innerText.includes('Klávesové zkratky')`), 'přehled se neotevřel')

@@ -49,6 +49,10 @@ BEGIN
 END;
 $$;
 
+-- Trigger funkce nemá co dělat ve veřejném API (/rest/v1/rpc/…) — stejně jako u 001 (bod 8).
+-- Triggeru to nevadí, práva se u něj kontrolují při vytvoření, ne při každém spuštění.
+REVOKE EXECUTE ON FUNCTION public.sync_profile_email() FROM PUBLIC, anon, authenticated;
+
 DROP TRIGGER IF EXISTS on_auth_user_email_changed ON auth.users;
 CREATE TRIGGER on_auth_user_email_changed
   AFTER UPDATE OF email ON auth.users

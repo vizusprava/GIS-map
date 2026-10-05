@@ -23,8 +23,12 @@ import { toolTheme } from './toolColors'
 
 /** bod měření: zeměpisná poloha + výška povrchu v místě kliknutí (m n.m.) */
 export type RulerPoint = [number, number, number]
-/** `kind` chybí u měření uložených před zavedením ploch → bere se jako čára. */
-export type Ruler = { id: string; name: string; pts: RulerPoint[]; kind?: 'line' | 'area' }
+/**
+ * `kind` chybí u měření uložených před zavedením ploch → bere se jako čára. `closed` = čára
+ * uzavřená zpátky do prvního bodu (při měření klik na první bod) — délka pak počítá i úsek
+ * z posledního bodu do prvního.
+ */
+export type Ruler = { id: string; name: string; pts: RulerPoint[]; kind?: 'line' | 'area'; closed?: boolean }
 
 /** barva měření v mapě — nastavuje se v toolColors.ts */
 export const RULER_COLOR = toolTheme('ruler').map
@@ -37,12 +41,21 @@ export function fmtLen(m: number): string {
 
 const cart = (p: RulerPoint) => Cesium.Cartesian3.fromDegrees(p[0], p[1], p[2])
 
-/** délka lomené čáry a její převýšení (rozdíl výšek prvního a posledního bodu) */
-export function rulerTotals(pts: RulerPoint[]): { len: number; rise: number } {
+/**
+ * Délka lomené čáry a její převýšení (rozdíl výšek prvního a posledního bodu). Uzavřená čára
+ * (`closed`) počítá i úsek zpátky do prvního bodu a převýšení nemá — končí tam, kde začala.
+ */
+export function rulerTotals(pts: RulerPoint[], closed = false): { len: number; rise: number } {
   let len = 0
   for (let i = 1; i < pts.length; i++) len += Cesium.Cartesian3.distance(cart(pts[i - 1]), cart(pts[i]))
+  if (closed && pts.length > 2) return { len: len + Cesium.Cartesian3.distance(cart(pts[pts.length - 1]), cart(pts[0])), rise: 0 }
   return { len, rise: pts.length > 1 ? pts[pts.length - 1][2] - pts[0][2] : 0 }
 }
+
+/** Uzavírá se měření zpátky do prvního bodu? Plocha vždy, čára jen uzavřená; obojí až od tří bodů. */
+const isLoop = (r: Pick<Ruler, 'kind' | 'closed' | 'pts'>) => (r.kind === 'area' || !!r.closed) && r.pts.length > 2
+/** Struktura měření — když se změní, entity se skládají znovu (jinak se jen přepíšou hodnoty). */
+const sigOf = (r: Ruler) => `${r.kind ?? 'line'}/${r.pts.length}/${r.closed ? 'o' : '-'}`
 
 /**
  * Výměra oklikané plochy a místo pro její popisek.
@@ -59,7 +72,9 @@ export function rulerArea(pts: RulerPoint[]): { area: number; label: [number, nu
   const m = measureRing(pts.map(p => [p[0], p[1]]))
   return m ? { area: m.area, label: m.label } : null
 }
-type Hit = { id: string; idx: number }
+/** bod konkrétního měření: které měření a kolikátý bod */
+export type RulerHit = { id: string; idx: number }
+type Hit = RulerHit
 
 /** Entity jednoho měření a vlastnosti, které se po posunu bodu přepisují. */
 type Live = {
@@ -91,8 +106,43 @@ export class RulerLayer {
   private sig = new Map<string, string>()   // rulerId → struktura (druh + počet bodů) → kdy přestavět
   // Výměra se počítá přes proj4 — přepočítá se jen když se body opravdu změní (sync, tažení).
   private areaCache = new Map<string, ReturnType<typeof rulerArea>>()
+  // bod, ke kterému se právě přichytí klik (zvětšený) — viz `setSnap`
+  private snap: Hit | null = null
+  private scratchWin = new Cesium.Cartesian2()
 
   constructor(viewer: Cesium.Viewer) { this.viewer = viewer }
+
+  /**
+   * Nejbližší bod měření k místu na obrazovce, nanejvýš `maxPx` daleko (CSS pixely), nebo null.
+   * Počítá se z promítnutí bodů, ne z `scene.pick` — je to levné i při každém pohybu myši
+   * a chytá to i kousek vedle desetipixelové tečky.
+   */
+  nearest(screen: Cesium.Cartesian2, maxPx: number): Hit | null {
+    const v = this.viewer
+    if (v.isDestroyed()) return null
+    let best: Hit | null = null
+    let bestD = maxPx
+    for (const [id, r] of this.data) {
+      for (let idx = 0; idx < r.pts.length; idx++) {
+        const w = Cesium.SceneTransforms.worldToWindowCoordinates(v.scene, cart(r.pts[idx]), this.scratchWin)
+        if (!w) continue
+        const d = Math.hypot(w.x - screen.x, w.y - screen.y)
+        if (d <= bestD) { bestD = d; best = { id, idx } }
+      }
+    }
+    return best
+  }
+
+  /** Zvětší bod, ke kterému se přichytí klik (null = žádný) — ať je vidět, kam to skočí. */
+  setSnap(h: Hit | null) {
+    const same = (a: Hit | null, b: Hit | null) => a?.id === b?.id && a?.idx === b?.idx
+    if (same(h, this.snap)) return
+    const dot = (x: Hit | null) => (x ? this.live.get(x.id)?.dots[x.idx] : undefined)
+    setConst(dot(this.snap)?.point?.pixelSize, 10)
+    this.snap = h
+    setConst(dot(h)?.point?.pixelSize, 16)
+    if (!this.viewer.isDestroyed()) this.viewer.scene.requestRender()
+  }
 
   /** Body daného měření — vždy živé, tažení je mutuje rovnou tady. */
   private pts(id: string): RulerPoint[] { return this.data.get(id)?.pts ?? [] }
@@ -104,7 +154,7 @@ export class RulerLayer {
     for (const id of [...this.live.keys()]) if (!alive.has(id)) this.drop(id)
     for (const r of rulers) {
       const prev = this.data.get(r.id)
-      const sig = `${r.kind ?? 'line'}/${r.pts.length}`
+      const sig = sigOf(r)
       this.data.set(r.id, r)
       if (this.sig.get(r.id) !== sig) { this.recalcArea(r.id); this.drop(r.id, true); this.build(r) }
       // Body se změnily (dotažený posun) → přepsat čísla a srovnat čáru zpátky na statickou.
@@ -157,6 +207,7 @@ export class RulerLayer {
     const ps = this.pts(id)
     const c = ps.map(cart)
     const area = this.isArea(id)
+    const closed = !area && !!this.data.get(id)?.closed
 
     if (moving !== L.moving || !moving) {
       // setCallback vyvolá změnu → statická geometrie se přepočítá z aktuálních bodů
@@ -175,9 +226,10 @@ export class RulerLayer {
 
     const last = L.dots[L.dots.length - 1]
     if (last?.label && ps.length > 1) {
-      const t = rulerTotals(ps)
+      const t = rulerTotals(ps, closed)
       // U plochy je hlavní číslo výměra uprostřed, tady se hodí spíš obvod (i s uzavíracím
-      // úsekem). U čáry naopak celková délka a převýšení mezi prvním a posledním bodem.
+      // úsekem). U čáry naopak celková délka a převýšení mezi prvním a posledním bodem
+      // (uzavřená čára převýšení nemá — `rulerTotals` ho vrací nulové).
       const rise = Math.abs(t.rise) >= 0.5 ? ` (${t.rise > 0 ? '+' : '−'}${Math.abs(t.rise).toFixed(1)} m)` : ''
       const txt = area && ps.length > 2
         ? `o ${fmtLen(t.len + Cesium.Cartesian3.distance(c[c.length - 1], c[0]))}`
@@ -198,6 +250,7 @@ export class RulerLayer {
     if (v.isDestroyed()) return
     const color = Cesium.Color.fromCssColorString(RULER_COLOR)
     const area = r.kind === 'area'
+    const loop = isLoop(r)
     const L: Live = { ents: [], moving: false, segs: [], dots: [] }
     const add = (o: Cesium.Entity.ConstructorOptions) => { const e = v.entities.add(o); L.ents.push(e); return e }
     const zero = () => new Cesium.ConstantPositionProperty(Cesium.Cartesian3.ZERO)
@@ -206,7 +259,7 @@ export class RulerLayer {
     if (r.pts.length > 1) {
       L.lineFn = () => {
         const ps = this.pts(r.id).map(cart)
-        return area && ps.length > 2 ? [...ps, ps[0]] : ps   // plocha se uzavírá zpátky k prvnímu bodu
+        return loop ? [...ps, ps[0]] : ps   // plocha i uzavřená čára se vrací k prvnímu bodu
       }
       L.line = new Cesium.CallbackProperty(L.lineFn, true)
       add({
@@ -243,9 +296,9 @@ export class RulerLayer {
       })
     }
 
-    // Kóta na každém úseku. U plochy se přidává i uzavírací úsek (poslední → první), aby měla
-    // okótovanou celou hranici a ne o jednu stranu míň.
-    const segs = area && r.pts.length > 2 ? r.pts.length : r.pts.length - 1
+    // Kóta na každém úseku. U plochy i uzavřené čáry se přidává i uzavírací úsek (poslední →
+    // první), aby měla okótovanou celou hranici a ne o jednu stranu míň.
+    const segs = loop ? r.pts.length : r.pts.length - 1
     for (let i = 0; i < segs; i++) {
       L.segs.push(add({
         position: zero(),
@@ -292,7 +345,9 @@ export class RulerLayer {
     }
 
     this.live.set(r.id, L)
-    this.sig.set(r.id, `${r.kind ?? 'line'}/${r.pts.length}`)
+    this.sig.set(r.id, sigOf(r))
+    // přestavěné měření: zvětšený bod přichycení patří novým entitám
+    if (this.snap?.id === r.id) setConst(L.dots[this.snap.idx]?.point?.pixelSize, 16)
     this.refresh(r.id, false)
   }
 

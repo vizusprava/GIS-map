@@ -260,7 +260,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
 
   // ── nástroje a vrstvy, které kreslí do mapy ──
   const rulerTool = useRulers({ viewerRef, viewerReady, sceneRef, rulerMode, claimMapClick, setClickOwner })
-  const { rulers, rulerKind, rulerDraftId, startRuler, finishRuler, setRulerSel } = rulerTool
+  const { rulers, rulerKind, rulerDraftId, rulerSnap, startRuler, finishRuler, setRulerSel } = rulerTool
   const tiles = useTiles({
     viewerRef, viewerReady, sceneRef, tileMode, claimMapClick, setClickOwner, exclusiveSelect,
     areaPolyLL: parcels.areaPolyLL, region,
@@ -792,6 +792,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           rulerMode={rulerMode}
           rulerKind={rulerKind}
           rulerDrafting={!!rulerDraftId}
+          rulerSnap={rulerSnap}
           onRuler={startRuler}
           onFinishRuler={finishRuler}
           coordsMode={coordsMode}
