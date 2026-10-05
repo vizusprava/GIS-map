@@ -135,18 +135,127 @@ function compose(o: Affine, i: Affine): Affine {
   }
 }
 
-const ARC_SEG = Math.PI / 24
+/**
+ * Jak jemně dělit oblouk: úhel úseku tak, aby se tětiva od oblouku odchýlila nanejvýš o `ARC_TOL`
+ * (v jednotkách výkresu — viz `setArcTol`), ale vždy mezi 1° a 5°. Dřív to bylo pevných 7,5°,
+ * a na velkém poloměru (oblouk silnice, R 500 m) byly úseky dlouhé desítky metrů a v mapě
+ * byly vidět rohy.
+ */
+let ARC_TOL = 0.005
+const segAngle = (r: number) => {
+  const a = r > ARC_TOL ? 2 * Math.acos(1 - ARC_TOL / Math.abs(r)) : Math.PI / 36
+  return Math.min(Math.PI / 36, Math.max(Math.PI / 180, a))
+}
 
 function arcPts(cx: number, cy: number, r: number, a0: number, a1: number): Pt[] {
   let sweep = a1 - a0
   while (sweep <= 0) sweep += 2 * Math.PI
-  const n = Math.max(2, Math.ceil(sweep / ARC_SEG)), out: Pt[] = []
+  const n = Math.max(2, Math.ceil(sweep / segAngle(r))), out: Pt[] = []
   for (let i = 0; i <= n; i++) { const t = a0 + sweep * (i / n); out.push([cx + r * Math.cos(t), cy + r * Math.sin(t)]) }
   return out
 }
 function circlePts(cx: number, cy: number, r: number): Pt[] {
-  const n = 64, out: Pt[] = []
+  const n = Math.max(24, Math.ceil(2 * Math.PI / segAngle(r))), out: Pt[] = []
   for (let i = 0; i <= n; i++) { const t = 2 * Math.PI * (i / n); out.push([cx + r * Math.cos(t), cy + r * Math.sin(t)]) }
+  return out
+}
+
+// ── spliny ────────────────────────────────────────────────────────────────────────
+// Spline se NESMÍ kreslit jako lomená čára přes své body: řídicí body na křivce neleží (je to
+// jen „rám", který ji táhne), a i přes body proložení by vyšly rohy. Křivka se proto počítá.
+
+/** kolik vzorků na jeden úsek mezi uzly (a strop na celou křivku) */
+const SPLINE_SPAN = 16
+const SPLINE_MAX = 4000
+
+/**
+ * NURBS křivka (de Boor) — stupeň `p`, řídicí body, uzlový vektor a váhy, jak je píše DXF.
+ * Racionální váhy počítá v homogenních souřadnicích, takže sedí i kružnice a oblouky
+ * zapsané jako spline. Chybný uzlový vektor nahradí rovnoměrným „sevřeným".
+ */
+export function nurbsPts(ctrl: Pt[], knotsIn: number[], weightsIn: number[] | null, pIn: number): Pt[] {
+  const n = ctrl.length
+  if (n < 2) return ctrl.slice()
+  const p = Math.max(1, Math.min(pIn || 3, n - 1))
+  const knots = knotsIn.length === n + p + 1 && knotsIn.every((k, i) => i === 0 || k >= knotsIn[i - 1]) ? knotsIn : clampedKnots(n, p)
+  const w = weightsIn && weightsIn.length === n && weightsIn.every(x => x > 0) ? weightsIn : null
+  const P = ctrl.map((c, i) => { const wi = w ? w[i] : 1; return [c[0] * wi, c[1] * wi, wi] })
+  const lo = knots[p], hi = knots[n]
+  if (!(hi > lo)) return ctrl.slice()
+  const evalAt = (u: number): Pt => {
+    let k = p
+    while (k < n - 1 && u >= knots[k + 1]) k++
+    const d = Array.from({ length: p + 1 }, (_, j) => P[j + k - p].slice())
+    for (let r = 1; r <= p; r++) {
+      for (let j = p; j >= r; j--) {
+        const a0 = knots[j + k - p], den = knots[j + 1 + k - r] - a0
+        const a = den > 0 ? (u - a0) / den : 0
+        for (let c = 0; c < 3; c++) d[j][c] = (1 - a) * d[j - 1][c] + a * d[j][c]
+      }
+    }
+    const q = d[p]
+    return q[2] !== 0 ? [q[0] / q[2], q[1] / q[2]] : [q[0], q[1]]
+  }
+  // Vzorky po úsecích mezi různými uzly. Hustota podle toho, jak moc se v úseku stáčí řídicí
+  // rám (~5° na vzorek): rovný kus 2 vzorky, ostrý oblouk až SPLINE_SPAN. Vrstevnice uložené
+  // jako spline mají stovky řídicích bodů — s pevnou hustotou by výkres zbytečně ztěžkl.
+  const spans: [number, number, number][] = []
+  for (let i = p; i < n; i++) if (knots[i + 1] > knots[i]) spans.push([knots[i], knots[i + 1], i])
+  const cap = Math.max(2, Math.floor(SPLINE_MAX / Math.max(1, spans.length)))
+  const out: Pt[] = [evalAt(lo)]
+  for (const [a, b, i] of spans) {
+    let turn = 0
+    for (let j = Math.max(1, i - p + 1); j <= i && j + 1 < n; j++) turn += turnAngle(ctrl[j - 1], ctrl[j], ctrl[j + 1])
+    const per = Math.max(2, Math.min(SPLINE_SPAN, cap, Math.ceil(turn / (Math.PI / 36)) + 1))
+    for (let s = 1; s <= per; s++) out.push(evalAt(a + (b - a) * (s / per)))
+  }
+  return out
+}
+
+/** o kolik se lomená čára a → b → c stáčí v bodě b (0 = rovně, π = obrat) */
+function turnAngle(a: Pt, b: Pt, c: Pt): number {
+  const u = Math.atan2(b[1] - a[1], b[0] - a[0]), v = Math.atan2(c[1] - b[1], c[0] - b[0])
+  let d = Math.abs(v - u)
+  if (d > Math.PI) d = 2 * Math.PI - d
+  return d
+}
+
+/** rovnoměrný uzlový vektor, který křivku přitáhne k prvnímu a poslednímu bodu */
+function clampedKnots(n: number, p: number): number[] {
+  const k: number[] = []
+  for (let i = 0; i <= n + p; i++) k.push(i <= p ? 0 : i >= n ? n - p : i - p)
+  return k
+}
+
+/**
+ * Hladká křivka PŘES body (spline zadaný jen body proložení, bez řídicích bodů).
+ * Centripetální Catmull-Rom: prochází přesně body a na nerovnoměrně rozložených bodech
+ * nedělá smyčky ani hroty (na rozdíl od obyčejného Catmull-Rom).
+ */
+export function fitCurvePts(fit: Pt[], closed: boolean): Pt[] {
+  const n = fit.length
+  if (n < 3) return fit.slice()
+  const at = (i: number): Pt => closed ? fit[(i + n) % n] : fit[Math.max(0, Math.min(n - 1, i))]
+  const out: Pt[] = [fit[0]]
+  const segs = closed ? n : n - 1
+  for (let i = 0; i < segs; i++) {
+    const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2)
+    const tj = (a: Pt, b: Pt) => Math.sqrt(Math.hypot(b[0] - a[0], b[1] - a[1])) || 1e-9
+    const t1 = tj(p0, p1), t2 = t1 + tj(p1, p2), t3 = t2 + tj(p2, p3)
+    // hustota podle stočení v okolí úseku (jako u NURBS): rovný kus pár bodů, oblouk víc
+    const turn = turnAngle(p0, p1, p2) + turnAngle(p1, p2, p3)
+    const per = Math.max(2, Math.min(SPLINE_SPAN, Math.ceil(turn / (Math.PI / 36)) + 1))
+    for (let s = 1; s <= per; s++) {
+      const t = t1 + (t2 - t1) * (s / per)
+      const lerp = (a: Pt, b: Pt, ta: number, tb: number): Pt => {
+        const f = tb - ta > 1e-12 ? (t - ta) / (tb - ta) : 0
+        return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]
+      }
+      const a1 = lerp(p0, p1, 0, t1), a2 = lerp(p1, p2, t1, t2), a3 = lerp(p2, p3, t2, t3)
+      const b1 = lerp(a1, a2, 0, t2), b2 = lerp(a2, a3, t1, t3)
+      out.push(lerp(b1, b2, t1, t2))
+    }
+  }
   return out
 }
 function bulgePts(p0: Pt, p1: Pt, bulge: number): Pt[] {
@@ -161,7 +270,7 @@ function bulgePts(p0: Pt, p1: Pt, bulge: number): Pt[] {
   const cx = mid[0] + Math.cos(chordAng - Math.PI / 2) * apo * side
   const cy = mid[1] + Math.sin(chordAng - Math.PI / 2) * apo * side
   const a0 = Math.atan2(p0[1] - cy, p0[0] - cx)
-  const n = Math.max(2, Math.ceil(Math.abs(theta) / ARC_SEG)), out: Pt[] = []
+  const n = Math.max(2, Math.ceil(Math.abs(theta) / segAngle(r))), out: Pt[] = []
   for (let i = 1; i < n; i++) { const t = a0 + theta * (i / n); out.push([cx + r * Math.cos(t), cy + r * Math.sin(t)]) }
   return out
 }
@@ -181,7 +290,7 @@ function ellipsePts(cx: number, cy: number, mx: number, my: number, ratio: numbe
   let sweep = a1 - a0
   if (Math.abs(sweep) < 1e-9) sweep = 2 * Math.PI
   while (sweep <= 0) sweep += 2 * Math.PI
-  const n = Math.max(8, Math.ceil(sweep / ARC_SEG)), out: Pt[] = [], cr = Math.cos(rot), sr = Math.sin(rot)
+  const n = Math.max(8, Math.ceil(sweep / segAngle(major))), out: Pt[] = [], cr = Math.cos(rot), sr = Math.sin(rot)
   for (let i = 0; i <= n; i++) {
     const t = a0 + sweep * (i / n), ex = major * Math.cos(t), ey = minor * Math.sin(t)
     out.push([cx + ex * cr - ey * sr, cy + ex * sr + ey * cr])
@@ -398,6 +507,9 @@ export function dxfToPrims(text: string): DrawParse {
   if (!toks.length) throw new Error('DXF je prázdný nebo není textový (binární DXF nepodporujeme)')
   const { layers, blocks, entities, header } = parseStructure(toks)
   const headerUnit = INSUNITS[parseInt(header.$INSUNITS ?? '', 10)]
+  // dělení oblouků: odchylka tětivy nanejvýš 5 mm (v jednotkách výkresu podle hlavičky;
+  // když hlavička lže, aspoň ten úhlový strop 1–5° drží oblouk hladký)
+  ARC_TOL = 0.005 / (headerUnit?.m ?? 1)
 
   const prims: DrawPrim[] = []
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -448,8 +560,28 @@ export function dxfToPrims(text: string): DrawParse {
         break
       }
       case 'POLYLINE': {
-        const vs = e.vertices.map(vx => ({ x: num(vx.props, 10), y: num(vx.props, 20), bulge: num(vx.props, 42) || undefined }))
-        if (vs.length) pushPoly(polyWithBulges(vs, (flag(e.props, 70) & 1) === 1), tf, layer, color)
+        const pf = flag(e.props, 70)
+        const closed = (pf & 1) === 1
+        const vflag = (vx: RawEnt) => flag(vx.props, 70)
+        const xy = (vx: RawEnt): Pt => [num(vx.props, 10), num(vx.props, 20)]
+        /**
+         * Polylinie vyhlazená na spline (PEDIT → Spline, 70 & 4) nese DVĚ sady vrcholů: řídicí
+         * rám (VERTEX 70 & 16) a body spočítané křivky (70 & 8). Rám na křivce neleží — kreslit
+         * ho s ní dávalo zuby a rohy. Kreslí se jen spočítané body; když v souboru chybí,
+         * křivka se dopočítá z rámu (kvadratická / kubická podle 75).
+         */
+        if (pf & 4) {
+          const fitted = e.vertices.filter(vx => vflag(vx) & 8).map(xy)
+          if (fitted.length >= 2) { pushPoly(closed ? [...fitted, fitted[0]] : fitted, tf, layer, color); break }
+          const frame = e.vertices.filter(vx => vflag(vx) & 16).map(xy)
+          const pts = frame.length >= 2 ? frame : e.vertices.map(xy)
+          const deg = flag(e.props, 75) === 5 ? 2 : 3
+          pushPoly(nurbsPts(closed ? [...pts, pts[0]] : pts, [], null, deg), tf, layer, color)
+          break
+        }
+        // jinak běžná polylinie (i „curve fit", 70 & 2: přidané vrcholy leží na křivce)
+        const vs = e.vertices.filter(vx => !(vflag(vx) & 16)).map(vx => ({ x: num(vx.props, 10), y: num(vx.props, 20), bulge: num(vx.props, 42) || undefined }))
+        if (vs.length) pushPoly(polyWithBulges(vs, closed), tf, layer, color)
         break
       }
       case 'CIRCLE':
@@ -462,16 +594,22 @@ export function dxfToPrims(text: string): DrawParse {
         pushPoly(ellipsePts(num(e.props, 10), num(e.props, 20), num(e.props, 11), num(e.props, 21), num(e.props, 40, 1), num(e.props, 41, 0), num(e.props, 42, 2 * Math.PI)), tf, layer, color)
         break
       case 'SPLINE': {
-        const fit: Pt[] = [], ctrl: Pt[] = []
+        // řídicí body (10/20) s uzly (40) a váhami (41), případně jen body proložení (11/21)
+        const fit: Pt[] = [], ctrl: Pt[] = [], knots: number[] = [], weights: number[] = []
         for (let k = 0; k < e.props.length; k++) {
-          const p = e.props[k]
-          if (p.code === 11) fit.push([parseFloat(p.value) || 0, 0])
-          else if (p.code === 21 && fit.length) fit[fit.length - 1][1] = parseFloat(p.value) || 0
-          else if (p.code === 10) ctrl.push([parseFloat(p.value) || 0, 0])
-          else if (p.code === 20 && ctrl.length) ctrl[ctrl.length - 1][1] = parseFloat(p.value) || 0
+          const p = e.props[k], v = parseFloat(p.value) || 0
+          if (p.code === 11) fit.push([v, 0])
+          else if (p.code === 21 && fit.length) fit[fit.length - 1][1] = v
+          else if (p.code === 10) ctrl.push([v, 0])
+          else if (p.code === 20 && ctrl.length) ctrl[ctrl.length - 1][1] = v
+          else if (p.code === 40) knots.push(v)
+          else if (p.code === 41) weights.push(v)
         }
-        const src = fit.length >= 2 ? fit : ctrl
-        if (src.length >= 2) pushPoly(src, tf, layer, color)
+        const closed = (flag(e.props, 70) & 1) === 1
+        // Křivka se počítá z řídicích bodů — ty ji definují přesně. Body proložení jsou až
+        // druhá volba (AutoCAD je píše jen pro úpravy); bez řídicích se jimi křivka proloží.
+        if (ctrl.length >= 2) pushPoly(nurbsPts(ctrl, knots, weights.length ? weights : null, flag(e.props, 71) || 3), tf, layer, color)
+        else if (fit.length >= 2) pushPoly(fitCurvePts(fit, closed), tf, layer, color)
         break
       }
       case 'SOLID':

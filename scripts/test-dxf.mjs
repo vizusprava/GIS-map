@@ -139,6 +139,55 @@ console.log('\n── zápisy S-JTSK: záporný (CAD), kladný, kladný s prohoz
   ok(p.unit === 1 && krovakForm(p.midX, p.midY) === 'swap', `prohozené osy v metrech s „mm" v hlavičce → metry (${p.unit}×)`)
 }
 
+console.log('\n── spliny a oblouky: hladké křivky, žádné rohy ──')
+{
+  /** DXF s jednou entitou (pole group codů za `0 <typ>`) */
+  const one = (type, codes) => ['0', 'SECTION', '2', 'ENTITIES', '0', type, '8', 'K', ...codes.map(String), '0', 'ENDSEC', '0', 'EOF'].join('\r\n') + '\r\n'
+  const polyOf = text => dxfToPrims(text).prims.filter(p => p.kind === 'poly').flatMap(p => p.pts)
+
+  // kvadratický spline z řídicích bodů (0,0) (1,2) (2,0): vrchol křivky je (1,1), NE řídicí bod (1,2)
+  const q = polyOf(one('SPLINE', [70, 8, 71, 2, 72, 6, 73, 3, 40, 0, 40, 0, 40, 0, 40, 1, 40, 1, 40, 1, 10, 0, 20, 0, 10, 1, 20, 2, 10, 2, 20, 0]))
+  const top = Math.max(...q.map(p => p[1]))
+  near(top, 1, 0.01, 'spline jde vrcholem (1, 1), ne řídicím bodem (1, 2)')
+  ok(q.length > 10, `spline je hladký — ${q.length} bodů, ne 3 rohy`)
+  ok(Math.hypot(q[0][0], q[0][1]) < 1e-9 && Math.hypot(q[q.length - 1][0] - 2, q[q.length - 1][1]) < 1e-9, 'začíná a končí v krajních bodech')
+
+  // racionální spline = čtvrtkruh (váhy 1, √2/2, 1): všechny body musí ležet na kružnici r = 1
+  const c = polyOf(one('SPLINE', [70, 8, 71, 2, 72, 6, 73, 3, 40, 0, 40, 0, 40, 0, 40, 1, 40, 1, 40, 1, 10, 1, 20, 0, 41, 1, 10, 1, 20, 1, 41, Math.SQRT1_2, 10, 0, 20, 1, 41, 1]))
+  const dev = Math.max(...c.map(p => Math.abs(Math.hypot(p[0], p[1]) - 1)))
+  ok(dev < 1e-9, `čtvrtkruh zapsaný jako NURBS leží na kružnici (odchylka ${dev.toExponential(1)})`)
+
+  // spline jen z bodů proložení: prochází jimi a mezi nimi je hladký
+  const fitPts = [[0, 0], [10, 5], [20, 0], [30, 5]]
+  const f = polyOf(one('SPLINE', [70, 8, 71, 3, 74, 4, ...fitPts.flatMap(([x, y]) => [11, x, 21, y])]))
+  ok(fitPts.every(([x, y]) => f.some(p => Math.hypot(p[0] - x, p[1] - y) < 1e-6)), 'prochází všemi body proložení')
+  ok(f.length > 30, `mezi body proložení je hladký (${f.length} bodů)`)
+
+  // hustá skoro rovná křivka (vrstevnice jako spline, 300 řídicích bodů) nesmí ztěžknout
+  const dense = Array.from({ length: 300 }, (_, i) => [i, Math.sin(i / 40) * 3])
+  const d = polyOf(one('SPLINE', [70, 8, 71, 3, 73, 300, ...dense.flatMap(([x, y]) => [10, x, 20, y])]))
+  ok(d.length < 900, `hustá mírná křivka: ${d.length} bodů na 300 řídicích (ne 16× víc)`)
+
+  // polylinie vyhlazená na spline: řídicí rám (VERTEX 70=16) se nekreslí, jen spočítané body (70=8)
+  const vtx = (x, y, fl) => ['0', 'VERTEX', '8', 'K', '10', x, '20', y, '70', fl]
+  const pl = ['0', 'SECTION', '2', 'ENTITIES', '0', 'POLYLINE', '8', 'K', '66', '1', '70', '4', '75', '6',
+    ...vtx(0, 0, 16), ...vtx(5, 10, 16), ...vtx(10, 0, 16),
+    ...vtx(0, 0, 8), ...vtx(2.5, 3.75, 8), ...vtx(5, 5, 8), ...vtx(7.5, 3.75, 8), ...vtx(10, 0, 8),
+    '0', 'SEQEND', '0', 'ENDSEC', '0', 'EOF'].map(String).join('\r\n') + '\r\n'
+  const s = polyOf(pl)
+  ok(!s.some(p => p[0] === 5 && p[1] === 10), 'řídicí rám vyhlazené polylinie se nekreslí (žádný zub do (5, 10))')
+  ok(s.length === 5, `kreslí se jen spočítané body křivky (${s.length})`)
+
+  // velký oblouk (R 500 m, hlavička v metrech): tětivy nesmí od oblouku utéct o víc než pár cm
+  const arcDxf = ['0', 'SECTION', '2', 'HEADER', '9', '$INSUNITS', '70', '6', '0', 'ENDSEC',
+    '0', 'SECTION', '2', 'ENTITIES', '0', 'ARC', '8', 'K', '10', '0', '20', '0', '40', '500', '50', '0', '51', '30',
+    '0', 'ENDSEC', '0', 'EOF'].join('\r\n') + '\r\n'
+  const a = polyOf(arcDxf)
+  let sag = 0
+  for (let i = 1; i < a.length; i++) sag = Math.max(sag, 500 - Math.hypot((a[i][0] + a[i - 1][0]) / 2, (a[i][1] + a[i - 1][1]) / 2))
+  ok(sag < 0.03, `oblouk R 500 m: tětiva se odchýlí nejvýš ${(sag * 100).toFixed(1)} cm (dřív zhruba 1 m)`)
+}
+
 console.log('\n── kódování: UTF-8 i WINDOWS-1250 (tak ukládá AutoCAD u nás) ──')
 {
   const label = 'Žluťoučký kůň'
