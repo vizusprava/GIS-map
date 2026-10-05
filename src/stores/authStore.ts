@@ -27,7 +27,7 @@ type AuthState = {
 }
 
 /** Chyby ze Supabase chodí anglicky — nejčastější přeložíme, ostatní pustíme dál. */
-function czech(message: string): string {
+export function czech(message: string): string {
   const m = message.toLowerCase()
   if (m.includes('invalid login credentials')) return 'Nesprávný e-mail nebo heslo.'
   if (m.includes('email not confirmed')) return 'E-mail ještě není potvrzený — mrkni do pošty na odkaz.'
@@ -35,6 +35,9 @@ function czech(message: string): string {
   if (m.includes('password should be at least')) return 'Heslo musí mít alespoň 6 znaků.'
   if (m.includes('unable to validate email') || m.includes('invalid email')) return 'Neplatná e-mailová adresa.'
   if (m.includes('rate limit') || m.includes('too many requests')) return 'Příliš mnoho pokusů — zkus to za chvíli.'
+  if (m.includes('should be different from the old password')) return 'Nové heslo musí být jiné než současné.'
+  if (m.includes('weak password') || m.includes('password is known to be weak')) return 'Heslo je moc slabé — zkus delší nebo méně obvyklé.'
+  if (m.includes('reauthentication')) return 'Kvůli bezpečnosti se nejdřív znovu přihlas.'
   return message
 }
 

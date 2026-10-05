@@ -425,6 +425,32 @@ async function main() {
     expect(!(await ev(`!!document.querySelector('[data-sec="chybi"]')`)), 'podruhé se znovu ptá, kde soubor je')
   })
 
+  // ── Nastavení účtu s podvrženým uživatelem (bez Supabase — jen formuláře a jejich kontroly) ──
+  await check('nastavení účtu: bloky, kontrola hesel, pojistka mazání', async () => {
+    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?page=account` })
+    await waitFor(`!!document.querySelector('[data-account-card="Smazat účet"]')`, 30_000, 'stránka Nastavení účtu')
+    for (const t of ['Jméno', 'E-mail', 'Heslo', 'Klíč Cesium ion', 'Smazat účet']) {
+      expect(await ev(`!!document.querySelector('[data-account-card="${t}"]')`), `chybí blok ${t}`)
+    }
+    // React si hodnotu pole bere z události input — nastavit přes nativní setter
+    const fill = (card, i, v) => ev(`(() => {
+      const el = document.querySelectorAll('[data-account-card="${card}"] input')[${i}]
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(v)})
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })()`)
+    await fill('Heslo', 0, 'stare-heslo'); await fill('Heslo', 1, 'nove-heslo'); await fill('Heslo', 2, 'nove-hesl0')
+    await ev(`document.querySelector('[data-account-card="Heslo"] form').requestSubmit()`)
+    await sleep(300)
+    expect((await ev(`document.querySelector('[data-account-card="Heslo"]').innerText`)).includes('neshodují'), 'neshodná hesla prošla bez upozornění')
+    const delBtn = `[...document.querySelectorAll('[data-account-card="Smazat účet"] button')].pop()`
+    expect(await ev(`${delBtn}.disabled`), 'mazání jde spustit bez potvrzení')
+    await fill('Smazat účet', 0, 'heslo'); await sleep(100)
+    expect(await ev(`${delBtn}.disabled`), 'mazání jde spustit jen s heslem, bez napsaného SMAZAT')
+    await fill('Smazat účet', 1, 'smazat'); await sleep(100)
+    expect(!(await ev(`${delBtn}.disabled`)), 'po hesle a SMAZAT se tlačítko neodemklo')
+    await shot('nastaveni-uctu')
+  })
+
   await check('žádné chyby po znovuotevření scény', async () => {
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)

@@ -13,6 +13,7 @@ import { useAuthStore } from './stores/authStore'
 import { LoginPage } from './pages/LoginPage'
 import { NewPasswordPage } from './pages/NewPasswordPage'
 import { ScenesPage } from './pages/ScenesPage'
+import { AccountPage } from './pages/AccountPage'
 import { loadChunk } from './lib/lazyChunk'
 
 // Scéna táhne Cesium i three.js — přes 8 MB skriptu. Přihlášení a přehled scén ho nepotřebují,
@@ -46,6 +47,7 @@ export default function App() {
     <HashRouter>
       <Routes>
         <Route path="/" element={<Gate><ScenesPage /></Gate>} />
+        <Route path="/account" element={<Gate><AccountPage /></Gate>} />
         <Route path="/scene/:id" element={<Gate><Suspense fallback={<Spinner />}><ScenePage /></Suspense></Gate>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

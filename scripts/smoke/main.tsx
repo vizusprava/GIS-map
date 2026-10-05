@@ -14,6 +14,10 @@ import { IonKeyHost, openIonKeyDialog } from '../../src/ionKeyDialog'
 import '../../src/index.css'
 import { MapView } from '../../src/MapView'
 import type { ScenePersist } from '../../src/lib/scenePersist'
+import { HashRouter } from 'react-router-dom'
+import type { User } from '@supabase/supabase-js'
+import { AccountPage } from '../../src/pages/AccountPage'
+import { useAuthStore } from '../../src/stores/authStore'
 
 const errors: string[] = []
 const note = (e: unknown) => errors.push((e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e)).slice(0, 2000))
@@ -61,5 +65,17 @@ const scene: ScenePersist = {
   exit: () => {},
 }
 
+// `?page=account`: Nastavení účtu s podvrženým uživatelem — test projde formuláře bez Supabase
+const page = q.get('page') === 'account'
+  ? (() => {
+      useAuthStore.setState({
+        user: { id: 'u-smoke', email: 'test@example.cz', user_metadata: {}, app_metadata: {}, aud: 'authenticated', created_at: '' } as unknown as User,
+        profile: { id: 'u-smoke', email: 'test@example.cz', display_name: 'Test', created_at: '' },
+        loading: false,
+      })
+      return <HashRouter><AccountPage /></HashRouter>
+    })()
+  : <MapView scene={scene} />
+
 createRoot(document.getElementById('root')!, { onUncaughtError: note, onCaughtError: note })
-  .render(<StrictMode><MapView scene={scene} /><AppToaster /><DialogHost /><IonKeyHost /></StrictMode>)
+  .render(<StrictMode>{page}<AppToaster /><DialogHost /><IonKeyHost /></StrictMode>)

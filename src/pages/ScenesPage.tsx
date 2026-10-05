@@ -7,7 +7,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Globe2, Plus, Trash2, Pencil, LogOut, Loader2, Layers, Clock, Image as ImageIcon, Check, X, KeyRound } from 'lucide-react'
+import { Globe2, Plus, Trash2, Pencil, LogOut, Loader2, Layers, Clock, Image as ImageIcon, Check, X, KeyRound, UserRound } from 'lucide-react'
 import { openIonKeyDialog } from '../ionKeyDialog'
 import { useUserIonToken } from '../lib/ionKey'
 import { toast } from 'sonner'
@@ -98,9 +98,9 @@ export function ScenesPage() {
           </div>
           <div className="min-w-0">
             <h1 className="text-lg font-bold text-gray-100">GIS Map</h1>
-            <p className="text-xs text-gray-500 truncate">
+            <button onClick={() => navigate('/account')} title="Nastavení účtu" className="block max-w-full truncate text-left text-xs text-gray-500 hover:text-gray-300">
               {profile?.display_name ?? profile?.email ?? 'přihlášen'}
-            </p>
+            </button>
           </div>
           <div className="ml-auto flex items-center gap-2">
             <button
@@ -116,6 +116,13 @@ export function ScenesPage() {
               className={`p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-gray-700 ${ownIon ? 'text-emerald-300' : 'text-gray-300'}`}
             >
               <KeyRound size={16} />
+            </button>
+            <button
+              onClick={() => navigate('/account')}
+              title="Nastavení účtu — jméno, e-mail, heslo, smazání účtu"
+              className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300"
+            >
+              <UserRound size={16} />
             </button>
             <button
               onClick={() => void signOut()}

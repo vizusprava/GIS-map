@@ -57,6 +57,12 @@ spuštění nic nerozbije. Vytvoří:
 - RLS na všem: každý vidí a mění jen svoje řádky
 - privátní storage bucket `geo`; soubory se servírují přes dočasné signed URL
 
+Pak ještě `sql/002_account.sql` (Nastavení účtu): funkce `delete_my_account()`, kterou si
+uživatel smaže účet i se všemi daty, a trigger, který po změně e-mailu přepíše e-mail
+v profilu. Bez ní v appce nepůjde jen smazání účtu — změna jména, e-mailu a hesla jedou
+rovnou přes Supabase Auth. Změna e-mailu posílá potvrzovací odkaz, takže potřebuje funkční
+odesílání pošty (vlastní SMTP, vestavěné e-maily Supabase jsou jen na zkoušení).
+
 Po nasazení na veřejnou adresu je potřeba ji přidat v Supabase do
 **Authentication → URL Configuration** (Site URL i Redirect URLs), jinak nebudou
 fungovat odkazy z potvrzovacích a resetovacích e-mailů.
