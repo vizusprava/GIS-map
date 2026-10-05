@@ -10,7 +10,7 @@
  * Ve scéně s mapou se pozadí vůbec nekreslí (App.tsx), ať nebere grafiku Cesiu.
  */
 import { useEffect, useLayoutEffect, useRef, type CSSProperties } from 'react'
-import { K, N, drawSet, makeWorld, type LayerSet, type Surface } from './landscape'
+import { K, N, drawSet, makeWorld, type LayerSet, type Pixels, type Surface } from './landscape'
 import type { LandscapeRequest, LandscapeResponse } from './landscapeWorker'
 import './backdrop.css'
 
@@ -31,8 +31,8 @@ const WIDE = 1280
 
 type Z = { c: number[]; o: number[] }
 
-// ── textury: worker, a kde nejde, totéž na hlavním vlákně ─────────────────────────
-type Source = ImageBitmap | Surface
+// ── textury: worker (pošle pixely), a kde nejde, totéž na hlavním vlákně (plátna) ──
+type Source = Pixels | Surface
 function textureSource() {
   let worker: Worker | null = null
   let nextId = 1
@@ -43,7 +43,7 @@ function textureSource() {
     worker.onmessage = (e: MessageEvent<LandscapeResponse>) => {
       const r = e.data, done = pending.get(r.id)
       pending.delete(r.id)
-      done?.(r.ok ? r.bitmaps : new Error(r.message))
+      done?.(r.ok ? r.pixels : new Error(r.message))
     }
     worker.onerror = e => { for (const done of pending.values()) done(new Error(e.message || 'worker spadl')); pending.clear(); worker = null }
   } catch { worker = null }
@@ -70,9 +70,13 @@ function textureSource() {
 }
 
 function paint(target: HTMLCanvasElement, src: Source) {
-  if (target.width !== src.width) { target.width = src.width; target.height = src.height }
-  target.getContext('2d')?.drawImage(src as CanvasImageSource, 0, 0)
-  if ('close' in src && typeof src.close === 'function') src.close()   // ImageBitmap — uvolnit hned
+  const px = 'data' in src ? src : null
+  const w = px ? px.w : (src as Surface).width, h = px ? px.h : (src as Surface).height
+  if (target.width !== w) { target.width = w; target.height = h }
+  const ctx = target.getContext('2d')
+  if (!ctx) return
+  if (px) ctx.putImageData(new ImageData(new Uint8ClampedArray(px.data), w, h), 0, 0)
+  else ctx.drawImage(src as CanvasImageSource, 0, 0)
 }
 
 export function Backdrop({ mode }: { mode: BackdropMode }) {

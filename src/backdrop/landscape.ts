@@ -26,7 +26,17 @@ function surface(R: number): Surface {
   c.width = c.height = R
   return c
 }
-const ctx2d = (c: Surface) => c.getContext('2d') as Ctx
+// Kreslí se na procesoru (willReadFrequently): textury se dělají jednou, pixely se pak čtou
+// a posílají z workeru — přes grafiku by na Linuxu se softwarovým vykreslováním (CI, slabé PC
+// s vypnutou grafikou v prohlížeči) přišly prázdné.
+const ctx2d = (c: Surface) => c.getContext('2d', { willReadFrequently: true }) as Ctx
+
+/** Pixely plochy — tak se textury posílají z workeru (ArrayBuffer jde předat bez kopie). */
+export type Pixels = { w: number; h: number; data: ArrayBuffer }
+export function toPixels(c: Surface): Pixels {
+  const img = ctx2d(c).getImageData(0, 0, c.width, c.height)
+  return { w: c.width, h: c.height, data: img.data.buffer as ArrayBuffer }
+}
 
 // ── šum ──────────────────────────────────────────────────────────────────────────
 function mulberry32(a: number) {

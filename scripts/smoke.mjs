@@ -230,8 +230,10 @@ async function main() {
     await clickAt(pts[0][0] + 6, pts[0][1] + 5)
     const t = await ev(mereni)
     expect(t.includes('uzavřené') && !t.includes('kreslí se'), `měření se neuzavřelo: „${t}"`)
-    // délka = obvod trojúhelníku, ne jen dvě strany (uzavírací úsek se počítá)
-    const len = Number((t.match(/([\d\s ]+,\d+)\s*m/)?.[1] ?? '0').replace(/[\s ]/g, '').replace(',', '.'))
+    // délka = obvod trojúhelníku, ne jen dvě strany (uzavírací úsek se počítá); panel píše
+    // „595,34 m", nad kilometr „1,539 km" — záleží na měřítku mapy, které se v CI liší
+    const m = t.match(/(\d[\d\s ]*(?:,\d+)?)\s*(km|m)\b/)
+    const len = m ? Number(m[1].replace(/[\s ]/g, '').replace(',', '.')) * (m[2] === 'km' ? 1000 : 1) : 0
     expect(len > 0, `bez délky: „${t}"`)
     await shot('mereni-uzavrene')
     await press('Escape')
