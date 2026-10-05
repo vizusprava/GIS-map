@@ -11,7 +11,7 @@ import { fetchElevSampler } from './elevation'
 import { viewCenterGround } from './sceneUtils'
 import { buildTextPrims } from './dxfText'
 import { parseDrawingFile } from './drawingClient'
-import type { DrawParse, DrawPrim } from './dxf'
+import { krovakForm, toKrovakNeg, type DrawParse, type DrawPrim } from './dxf'
 import type { DrawOverlay } from './export/drawOverlay'
 import type { DrawLayer, DrawingEntry, SceneObj } from './types'
 import type { AssetConfig } from './lib/types'
@@ -109,14 +109,12 @@ export function useDrawings(deps: {
     // a kresba sedne do mapy přesně; lokálně umístěný výkres se musí protáhnout přes zeměpis.
     let toSjtsk: (x: number, y: number) => [number, number]
     let mode: string
-    if (cx > -950000 && cx < -380000 && cy > -1260000 && cy < -890000) {
-      toLL = (x, y) => wgsOf(x, y) as [number, number]
-      toSjtsk = (x, y) => [x, y]
-      mode = 'S-JTSK'
-    } else if (cx > 380000 && cx < 950000 && cy > 890000 && cy < 1260000) {
-      toLL = (x, y) => wgsOf(-x, -y) as [number, number]
-      toSjtsk = (x, y) => [-x, -y]
-      mode = 'S-JTSK (kladné)'
+    // zápis S-JTSK podle mediánu kresby (záporný z CADu, kladný, kladný s prohozenými osami)
+    const form = krovakForm(cx, cy)
+    if (form) {
+      toSjtsk = (x, y) => toKrovakNeg(form, x, y)
+      toLL = (x, y) => wgsOf(...toKrovakNeg(form, x, y)) as [number, number]
+      mode = form === 'neg' ? 'S-JTSK' : form === 'pos' ? 'S-JTSK (kladné)' : 'S-JTSK (kladné, prohozené osy X/Y)'
     } else {
       const g = viewCenterGround(v)
       const enu = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(g.lon, g.lat, g.height))
@@ -302,6 +300,9 @@ export function useDrawings(deps: {
      * skončí uprostřed pohledu v nesmyslné velikosti a vypadá to jako chyba programu.
      * Tohle o tom řekne rovnou, i s čísly, podle kterých se to pozná.
      */
+    // hlavička tvrdila jiné jednotky, než ve kterých souřadnice sedí do S-JTSK (typicky
+    // „milimetry" ze šablony u výkresu v metrech) — říct to, ať je vidět, proč to sedí
+    if (parse.unitNote && !restore) toast.info(`Výkres „${name}": ${parse.unitNote}`, { duration: 10000 })
     if (mode.startsWith('lokální')) {
       toast.warning(
         `Výkres „${name}" nemá souřadnice v S-JTSK — střed je ${cx.toFixed(0)}, ${cy.toFixed(0)}. `

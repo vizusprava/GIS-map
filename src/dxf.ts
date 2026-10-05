@@ -7,7 +7,8 @@
  * ignoruje. (Hotové knihovny na takových souborech vyhazují výjimku a zabijí celý import.)
  *
  * Souřadnice se převedou na METRY podle `$INSUNITS` z hlavičky (kresba v milimetrech by jinak
- * vyšla tisíckrát větší); georeferenci (S-JTSK vs lokální) řeší až renderer.
+ * vyšla tisíckrát větší) — leda by hlavička nesouhlasila se souřadnicemi v S-JTSK, pak vyhrají
+ * souřadnice (`pickUnit`). Georeferenci (S-JTSK vs lokální) řeší až renderer.
  * Modul je bez Cesia/DOMu, aby šel testovat i mimo prohlížeč.
  */
 
@@ -46,10 +47,60 @@ export type DrawParse = {
   coreMinY: number
   coreMaxX: number
   coreMaxY: number
-  /** kolik METRŮ je jedna jednotka výkresu podle `$INSUNITS` (1 = soubor je rovnou v metrech) */
+  /** kolik METRŮ je jedna jednotka výkresu (1 = soubor je rovnou v metrech) — viz `pickUnit` */
   unit: number
   /** jak se ta jednotka jmenuje — do hlášky, ať je vidět, podle čeho se to rozhodlo */
   unitName: string
+  /** jednotky se rozhodly jinak, než tvrdí hlavička (proč) — appka to řekne v hlášce */
+  unitNote?: string
+}
+
+/**
+ * Leží bod v S-JTSK (Křovák, metry), a v jakém zápisu?
+ *  - `neg`: jak ho píše proj4 / CAD — obě souřadnice záporné (x = −Y, y = −X),
+ *  - `pos`: „civilní" kladné (x = Y, y = X),
+ *  - `swap`: kladné s prohozenými osami (x = X, y = Y) — data z GIS, kde je X první.
+ * Rozsahy pokrývají celou republiku s rezervou; jinde (lokální výkres) vrací null.
+ */
+export type Krovak = 'neg' | 'pos' | 'swap'
+export function krovakForm(x: number, y: number): Krovak | null {
+  if (x > -950000 && x < -380000 && y > -1260000 && y < -890000) return 'neg'
+  if (x > 380000 && x < 950000 && y > 890000 && y < 1260000) return 'pos'
+  if (x > 890000 && x < 1260000 && y > 380000 && y < 950000) return 'swap'
+  return null
+}
+/** Souřadnice výkresu v S-JTSK tak, jak je čeká proj4 (záporné, x = −Y, y = −X). */
+export function toKrovakNeg(form: Krovak, x: number, y: number): [number, number] {
+  return form === 'neg' ? [x, y] : form === 'pos' ? [-x, -y] : [-y, -x]
+}
+
+const UNIT_NAMES: Record<number, string> = { 1: 'metry', 0.001: 'milimetry', 0.01: 'centimetry' }
+
+/**
+ * Jednotky výkresu: hlavička (`$INSUNITS`), ale ne naslepo.
+ *
+ * České výkresy v S-JTSK mají souřadnice v metrech, jenže hlavička z výchozí šablony AutoCADu
+ * často tvrdí milimetry. Přepočet podle ní by souřadnice vydělil tisícem: z −745 000 by bylo
+ * −745, výkres by vypadl z Křováku, skončil uprostřed pohledu a byl by tisíckrát menší. Proto:
+ *  1. dají-li jednotky z hlavičky souřadnice v Křováku, platí hlavička,
+ *  2. jinak se zkusí metry, milimetry a centimetry — která z nich Křovák trefí, ta platí
+ *     (souřadnice nelžou, hlavička ano),
+ *  3. lokální výkres (nikde v Křováku) jede podle hlavičky — tam o velikosti rozhoduje jen ona.
+ * Rozhoduje se podle mediánu prvků (`midX`), ne obálky — ta se rozpadne kvůli jedinému úletu.
+ */
+export function pickUnit(rawX: number, rawY: number, header: { m: number; name: string } | undefined): { unit: number; unitName: string; unitNote?: string } {
+  const declared = header?.m ?? 1
+  const declaredName = header?.name ?? 'bez jednotek (bere se jako metry)'
+  if (krovakForm(rawX * declared, rawY * declared)) return { unit: declared, unitName: declaredName }
+  for (const m of [1, 0.001, 0.01]) {
+    if (m === declared || !krovakForm(rawX * m, rawY * m)) continue
+    return {
+      unit: m,
+      unitName: UNIT_NAMES[m],
+      unitNote: `Hlavička výkresu uvádí ${header ? header.name : 'žádné jednotky'}, ale souřadnice leží v S-JTSK v jednotkách „${UNIT_NAMES[m]}" — beru ${UNIT_NAMES[m]}.`,
+    }
+  }
+  return { unit: declared, unitName: declaredName }
 }
 
 /**
@@ -346,9 +397,7 @@ export function dxfToPrims(text: string): DrawParse {
   const toks = tokenize(text)
   if (!toks.length) throw new Error('DXF je prázdný nebo není textový (binární DXF nepodporujeme)')
   const { layers, blocks, entities, header } = parseStructure(toks)
-  const u = INSUNITS[parseInt(header.$INSUNITS ?? '', 10)]
-  const unit = u?.m ?? 1
-  const unitName = u?.name ?? 'bez jednotek (bere se jako metry)'
+  const headerUnit = INSUNITS[parseInt(header.$INSUNITS ?? '', 10)]
 
   const prims: DrawPrim[] = []
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -470,6 +519,17 @@ export function dxfToPrims(text: string): DrawParse {
   for (const e of entities) emit(e, ID, 0xffffff, 0)
   if (!prims.length) throw new Error('DXF neobsahuje žádnou kresbu (podporované: čáry, polylinie, kružnice, oblouky, texty, bloky)')
 
+  // jeden reprezentativní bod na prvek → medián a percentily (viz `midX` u DrawParse);
+  // počítá se ze souřadnic, jak jsou v souboru — podle mediánu se rozhodují i jednotky
+  const xs: number[] = [], ys: number[] = []
+  for (const p of prims) {
+    const q = p.kind === 'poly' ? p.pts[0] : p.pt
+    xs.push(q[0]); ys.push(q[1])
+  }
+  xs.sort((m, n) => m - n); ys.sort((m, n) => m - n)
+  const q = (a: number[], f: number) => a[Math.min(a.length - 1, Math.max(0, Math.round((a.length - 1) * f)))]
+  const { unit, unitName, unitNote } = pickUnit(q(xs, 0.5), q(ys, 0.5), headerUnit)
+
   /**
    * Přepočet na metry se dělá až tady, jedním průchodem přes hotové prvky.
    *
@@ -479,24 +539,17 @@ export function dxfToPrims(text: string): DrawParse {
    */
   if (unit !== 1) {
     for (const p of prims) {
-      if (p.kind === 'poly') for (const q of p.pts) { q[0] *= unit; q[1] *= unit }
+      if (p.kind === 'poly') for (const pt of p.pts) { pt[0] *= unit; pt[1] *= unit }
       else { p.pt[0] *= unit; p.pt[1] *= unit; if (p.kind === 'text') p.height *= unit }
     }
     minX *= unit; minY *= unit; maxX *= unit; maxY *= unit
   }
-
-  // jeden reprezentativní bod na prvek → medián (viz `midX` u DrawParse)
-  const xs: number[] = [], ys: number[] = []
-  for (const p of prims) {
-    const q = p.kind === 'poly' ? p.pts[0] : p.pt
-    xs.push(q[0]); ys.push(q[1])
-  }
-  xs.sort((m, n) => m - n); ys.sort((m, n) => m - n)
-  const q = (a: number[], f: number) => a[Math.min(a.length - 1, Math.max(0, Math.round((a.length - 1) * f)))]
+  // kladné násobení pořadí nemění — medián a percentily stačí přepočítat
+  const s = (a: number[], f: number) => q(a, f) * unit
   return {
-    prims, minX, minY, maxX, maxY, unit, unitName,
-    midX: q(xs, 0.5), midY: q(ys, 0.5),
-    coreMinX: q(xs, 0.02), coreMinY: q(ys, 0.02),
-    coreMaxX: q(xs, 0.98), coreMaxY: q(ys, 0.98),
+    prims, minX, minY, maxX, maxY, unit, unitName, unitNote,
+    midX: s(xs, 0.5), midY: s(ys, 0.5),
+    coreMinX: s(xs, 0.02), coreMinY: s(ys, 0.02),
+    coreMaxX: s(xs, 0.98), coreMaxY: s(ys, 0.98),
   }
 }

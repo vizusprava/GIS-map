@@ -7,7 +7,7 @@
  *
  * Spustit: `npm run test:dxf` (Node 24 čte .ts přímo, žádný build není potřeba).
  */
-import { decodeDxf, dxfToPrims } from '../src/dxf.ts'
+import { decodeDxf, dxfToPrims, krovakForm, toKrovakNeg } from '../src/dxf.ts'
 import { parseDrawing } from '../src/drawingParse.ts'
 
 let fails = 0
@@ -91,6 +91,52 @@ console.log('\n── jednotky z hlavičky ──')
 {
   const p = dxfToPrims(makeDxf(site, 0)) // 0 = bez jednotek (geodetické výkresy)
   ok(p.unit === 1, 'nulové $INSUNITS se taky nepřepočítává')
+}
+
+console.log('\n── hlavička nesedí se souřadnicemi v S-JTSK: vyhrají souřadnice ──')
+{
+  // nejčastější případ: šablona AutoCADu s milimetry, souřadnice v metrech Křováku —
+  // podle hlavičky by se vydělily tisícem a výkres by vypadl z Křováku a byl tisíckrát menší
+  const p = dxfToPrims(makeDxf(site, 4))
+  ok(p.unit === 1, `„milimetry" v hlavičce, souřadnice v metrech → metry (${p.unitName})`)
+  near(p.midX, CX + 95, 60, 'medián X zůstal v Křováku')
+  near(p.maxX - p.minX, 198, 15, 'velikost sedí (m)')
+  ok(!!p.unitNote && p.unitNote.includes('milimetry'), `appka to řekne: „${p.unitNote}"`)
+}
+{
+  // opačně: hlavička „metry", souřadnice ve skutečnosti v milimetrech
+  const mm = site.map(([a, b, c, d]) => [a * 1000, b * 1000, c * 1000, d * 1000])
+  const p = dxfToPrims(makeDxf(mm, 6))
+  ok(p.unit === 0.001, `„metry" v hlavičce, souřadnice v mm → milimetry (${p.unit}×)`)
+  near(p.midX, CX + 95, 60, 'po přepočtu medián X v Křováku')
+}
+{
+  // bez hlavičky, souřadnice v milimetrech Křováku
+  const mm = site.map(([a, b, c, d]) => [a * 1000, b * 1000, c * 1000, d * 1000])
+  const p = dxfToPrims(makeDxf(mm, undefined))
+  ok(p.unit === 0.001, `bez hlavičky, souřadnice v mm → milimetry (${p.unit}×)`)
+}
+{
+  // lokální výkres (stavba kolem nuly) v milimetrech: o velikosti rozhoduje hlavička jako dřív
+  const local = []
+  for (let i = 0; i < 50; i++) local.push([i * 1000, 0, i * 1000 + 500, 500])
+  const p = dxfToPrims(makeDxf(local, 4))
+  ok(p.unit === 0.001 && !p.unitNote, `lokální výkres v mm → milimetry podle hlavičky (${p.unit}×)`)
+  near(p.maxX - p.minX, 49.5, 1, 'lokální výkres má 49,5 m')
+}
+
+console.log('\n── zápisy S-JTSK: záporný (CAD), kladný, kladný s prohozenými osami ──')
+{
+  ok(krovakForm(-675000, -980000) === 'neg', 'záporný zápis z CADu')
+  ok(krovakForm(675000, 980000) === 'pos', 'kladný (Y, X)')
+  ok(krovakForm(980000, 675000) === 'swap', 'kladný s prohozenými osami (X, Y)')
+  ok(krovakForm(1200, 300) === null, 'lokální souřadnice nejsou Křovák')
+  const a = toKrovakNeg('pos', 675000, 980000), b = toKrovakNeg('swap', 980000, 675000)
+  ok(a[0] === -675000 && a[1] === -980000 && b[0] === -675000 && b[1] === -980000, 'všechny zápisy vedou na stejný bod')
+  // a jednotky se poznají i u prohozených os
+  const swapped = site.map(([x1, y1, x2, y2]) => [-y1, -x1, -y2, -x2])
+  const p = dxfToPrims(makeDxf(swapped, 4))
+  ok(p.unit === 1 && krovakForm(p.midX, p.midY) === 'swap', `prohozené osy v metrech s „mm" v hlavičce → metry (${p.unit}×)`)
 }
 
 console.log('\n── kódování: UTF-8 i WINDOWS-1250 (tak ukládá AutoCAD u nás) ──')
