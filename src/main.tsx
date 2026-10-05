@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppToaster } from './appToaster'
 import { DialogHost } from './dialog'
+import { IonKeyHost } from './ionKeyDialog'
 import './index.css'
 import App from './App.tsx'
 
@@ -36,6 +37,7 @@ createRoot(document.getElementById('root')!).render(
       <App />
       <AppToaster />
       <DialogHost />
+      <IonKeyHost />
     </QueryClientProvider>
   </StrictMode>,
 )

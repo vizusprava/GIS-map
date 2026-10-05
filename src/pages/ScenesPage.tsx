@@ -7,7 +7,9 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Globe2, Plus, Trash2, Pencil, LogOut, Loader2, Layers, Clock, Image as ImageIcon, Check, X } from 'lucide-react'
+import { Globe2, Plus, Trash2, Pencil, LogOut, Loader2, Layers, Clock, Image as ImageIcon, Check, X, KeyRound } from 'lucide-react'
+import { openIonKeyDialog } from '../ionKeyDialog'
+import { useUserIonToken } from '../lib/ionKey'
 import { toast } from 'sonner'
 import { ask } from '../dialog'
 import { createScene, deleteScene, listScenes, renameScene } from '../lib/scenes'
@@ -59,6 +61,7 @@ export function ScenesPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const { profile, signOut } = useAuthStore()
+  const ownIon = useUserIonToken()
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draftName, setDraftName] = useState('')
 
@@ -106,6 +109,13 @@ export function ScenesPage() {
               className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-sm font-medium"
             >
               {create.isPending ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Nová scéna
+            </button>
+            <button
+              onClick={openIonKeyDialog}
+              title={ownIon ? 'Klíč Cesium ion pro 3D realitu — používáš vlastní' : 'Klíč Cesium ion pro 3D realitu — používáš sdílený zkušební'}
+              className={`p-2 rounded-xl bg-gray-800 hover:bg-gray-700 border border-gray-700 ${ownIon ? 'text-emerald-300' : 'text-gray-300'}`}
+            >
+              <KeyRound size={16} />
             </button>
             <button
               onClick={() => void signOut()}

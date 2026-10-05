@@ -12,6 +12,7 @@ import { CR_EXTENT, GOOGLE_3D_ION_ASSET, OSM_LIFT_M } from './config'
 import { applyBackground, BG_MODES, type BgMode } from './background'
 import { simplifyRingCapped } from './rings'
 import { sjtskOf, wgsOf } from './tiles'
+import { userIonToken } from './lib/ionKey'
 import type { Base, ModelEntry, ParcelEntry, SceneObj } from './types'
 import type { PerfSettings } from './perfProfile'
 import type { ScenePersist } from './lib/scenePersist'
@@ -48,6 +49,8 @@ export function useMapLayers(deps: {
   const dimRafRef = useRef<number | null>(null)
   const [googleLoading, setGoogleLoading] = useState(false)
   const [googleErr, setGoogleErr] = useState<string | null>(null)
+  // zvedne se po změně klíče Cesium ion → efekt podkladu připojí Google 3D znovu
+  const [ionVer, setIonVer] = useState(0)
   const [googleAlpha, setGoogleAlpha] = useState(1)               // průhlednost 3D reality (1 = plná, 0 = jen mapa pod ní)
   const [googleUnder, setGoogleUnder] = useState<'ortofoto' | 'zm' | 'none'>('none') // plochá mapa pod 3D; default 'none' = čistě 3D
 
@@ -272,10 +275,13 @@ export function useMapLayers(deps: {
           // místo abychom natvrdo hlásili „chybí asset" (což bývá nejmíň častá příčina).
           const code = (e as { statusCode?: number })?.statusCode
           const msg = e instanceof Error ? e.message : String(e)
-          if (code === 401 || /401|unauthor|token/i.test(msg))
-            setGoogleErr('Google 3D: ion token odmítnut (401). Zkontroluj, že token v nasazené appce je platný a nemá doménové omezení, které blokuje tuhle stránku.')
+          const own = !!userIonToken()
+          if (code === 401 || code === 403 || code === 429 || /401|403|429|unauthor|forbidden|token|quota/i.test(msg))
+            setGoogleErr(own
+              ? 'Cesium ion tvůj klíč odmítl — je platný a má přístup ke Google 3D? Zkontroluj ho v okně Klíč Cesium ion.'
+              : 'Sdílený zkušební klíč Cesium ion nefunguje — nejspíš má vyčerpanou kvótu. Nastav si vlastní klíč (zdarma).')
           else if (code === 404)
-            setGoogleErr('Google 3D: asset 2275207 nenalezen (404) — přidej „Google Photorealistic 3D Tiles" ve svém ion účtu (Asset Depot).')
+            setGoogleErr('Účet klíče nemá přidané „Google Photorealistic 3D Tiles" — přidej je v Cesium ion v Asset Depot.')
           else
             setGoogleErr(`Google 3D se nenačetlo${code ? ` (HTTP ${code})` : ''}: ${msg}`)
         })
@@ -286,7 +292,21 @@ export function useMapLayers(deps: {
     }
 
     return () => { alive = false }
-  }, [base, katastrOn, googleUnder, parcelClip])
+  }, [base, katastrOn, googleUnder, parcelClip, ionVer])
+
+  /**
+   * Klíč Cesium ion se změnil (vlastní místo sdíleného nebo naopak): už načtené Google 3D
+   * patří ke starému klíči, tak se zahodí a efekt podkladu ho s novým klíčem připojí znovu.
+   */
+  function reloadGoogle() {
+    const v = viewerRef.current
+    const ts = googleRef.current
+    if (ts && v && !v.isDestroyed()) v.scene.primitives.remove(ts) // remove ho i zničí
+    googleRef.current = null
+    googlePendingRef.current = null
+    setGoogleErr(null)
+    setIonVer(n => n + 1)
+  }
 
   // Jak jemně dělit glóbus, se řídí podkladem: u topa je dlaždice levná a předěl mezi úrovněmi
   // je vidět jako hrana, u ortofota je drahá a předěl znamená jen měkčí dálku. Úsporný profil
@@ -403,6 +423,7 @@ export function useMapLayers(deps: {
     clipOff,
     googleAlpha,
     googleErr,
+    reloadGoogle,
     googleLoading,
     googleUnder,
     katastrOn,

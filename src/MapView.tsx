@@ -4,6 +4,8 @@ import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { toast } from 'sonner'
 import { ChevronLeft, ChevronRight, Layers, Loader2, Sparkles, Trash2, Upload } from 'lucide-react'
 import { ION_TOKEN, NEEDS_ION, SHARP_KEY } from './config'
+import { effectiveIonToken, useUserIonToken } from './lib/ionKey'
+import { openIonKeyDialog } from './ionKeyDialog'
 import { geoidN } from './geoid'
 import { perfSettings, readPerfChoice, resolvePerf, savePerfChoice, type PerfChoice } from './perfProfile'
 import { readOrtoDetail, saveOrtoDetail, type OrtoDetail } from './imagery'
@@ -169,6 +171,18 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     },
   })
   const { viewerRef, viewerReady } = viewer
+
+  // Vlastní klíč Cesium ion jde změnit i za běhu (okno Klíč Cesium ion) — mapa ho hned použije
+  // a 3D realitu připojí znovu, bez obnovení stránky.
+  const ownIon = useUserIonToken()
+  const prevIonRef = useRef(ownIon)
+  useEffect(() => {
+    if (prevIonRef.current === ownIon) return
+    prevIonRef.current = ownIon
+    const t = effectiveIonToken()
+    if (t) Cesium.Ion.defaultAccessToken = t
+    layers.reloadGoogle()
+  }, [ownIon])
 
   // ── vzhled kamery: hloubka ostrosti a zorný úhel — stav i obsluha žijí v `useLookTool` ──
   const look = useLookTool({ viewerRef })
@@ -735,9 +749,10 @@ export function MapView({ scene }: { scene: ScenePersist }) {
         onChange={e => { const fs = [...(e.target.files ?? [])]; if (fs.length) importRasters(fs); e.target.value = '' }}
       />
 
-      {NEEDS_ION && !ION_TOKEN && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-lg bg-amber-900/80 border border-amber-600/50 text-amber-200 text-xs">
-          Chybí VITE_CESIUM_ION_TOKEN — Google 3D / OSM budovy nepoběží
+      {NEEDS_ION && !ION_TOKEN && !ownIon && layers.base === 'google' && (
+        <div className="absolute top-16 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-amber-600/50 bg-amber-900/80 px-3 py-1.5 text-xs text-amber-200">
+          3D realita potřebuje klíč Cesium ion
+          <button onClick={openIonKeyDialog} className="rounded bg-amber-600 px-2 py-0.5 text-white hover:bg-amber-500">Nastavit</button>
         </div>
       )}
 

@@ -10,6 +10,7 @@ import { createRoot } from 'react-dom/client'
 import * as Cesium from 'cesium'
 import { AppToaster } from '../../src/appToaster'
 import { DialogHost } from '../../src/dialog'
+import { IonKeyHost, openIonKeyDialog } from '../../src/ionKeyDialog'
 import '../../src/index.css'
 import { MapView } from '../../src/MapView'
 import type { ScenePersist } from '../../src/lib/scenePersist'
@@ -18,7 +19,7 @@ const errors: string[] = []
 const note = (e: unknown) => errors.push((e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e)).slice(0, 2000))
 window.addEventListener('error', e => note(e.error ?? e.message))
 window.addEventListener('unhandledrejection', e => note(e.reason))
-Object.assign(window, { __errors: errors })
+Object.assign(window, { __errors: errors, __openIonKey: openIonKeyDialog }) // okno klíče ion bez načítání Google 3D (to by čerpalo kvótu)
 
 const render = Cesium.Scene.prototype.render
 Cesium.Scene.prototype.render = function (this: Cesium.Scene, ...args: unknown[]) {
@@ -61,4 +62,4 @@ const scene: ScenePersist = {
 }
 
 createRoot(document.getElementById('root')!, { onUncaughtError: note, onCaughtError: note })
-  .render(<StrictMode><MapView scene={scene} /><AppToaster /><DialogHost /></StrictMode>)
+  .render(<StrictMode><MapView scene={scene} /><AppToaster /><DialogHost /><IonKeyHost /></StrictMode>)

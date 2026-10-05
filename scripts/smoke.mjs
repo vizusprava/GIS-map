@@ -365,6 +365,20 @@ async function main() {
     })
   }
 
+  await check('okno Klíč Cesium ion: stav klíče, návod a zavření Esc', async () => {
+    // Google 3D se v testu schválně nenačítá — čerpalo by kvótu sdíleného klíče
+    await ev('window.__openIonKey()')
+    await waitFor(`!!document.querySelector('[data-ion-dialog]')`, 3000, 'okno klíče')
+    const t = await ev(`document.querySelector('[data-ion-dialog]').innerText`)
+    expect(/sdílený zkušební klíč|nemá žádný sdílený/.test(t), 'okno neříká, jaký klíč se používá')
+    expect(t.includes('ion.cesium.com') && t.includes('Access Tokens'), 'chybí návod, jak klíč získat')
+    expect(t.includes('nejdřív se přihlas'), 'bez přihlášení má okno říct, že se klíč ukládá k účtu')
+    await shot('klic-cesium-ion')
+    await press('Escape')
+    expect(!(await ev(`!!document.querySelector('[data-ion-dialog]')`)), 'Esc okno nezavřel')
+    expect(!(await group(1)).color, 'Esc v okně vypnul / zapnul nástroj pod ním')
+  })
+
   await check('náhled scény při odchodu: malý JPEG, ne černý', async () => {
     expect(await clickText('document', 'Scény'), 'chybí tlačítko Scény')
     await waitFor('!!window.__thumb', 10_000, 'náhled scény')

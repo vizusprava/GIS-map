@@ -33,10 +33,16 @@ Do `.env.local` patří:
 |---|---|---|
 | `VITE_SUPABASE_URL` | ano | adresa Supabase projektu |
 | `VITE_SUPABASE_ANON` | ano | publishable klíč (veřejný — chrání ho RLS, ne tajnost) |
-| `VITE_CESIUM_ION_TOKEN` | ne | jen pro Google Photorealistic 3D Tiles |
+| `VITE_CESIUM_ION_TOKEN` | ne | sdílený zkušební klíč pro Google Photorealistic 3D Tiles |
 
 Bez ion tokenu appka funguje normálně — terén i ortofoto jedou přímo z ČÚZK,
 neaktivní zůstanou jen Google 3D dlaždice.
+
+Sdílený klíč čerpají všichni uživatelé dohromady. Kdo 3D realitu používá hodně, nastaví si
+vlastní (zdarma z ion.cesium.com) v okně **Klíč Cesium ion** — ikona klíče v přehledu scén,
+nebo u 3D reality v panelu Podklad. Uloží se k jeho účtu (`user_metadata.ion_token`), platí
+na každém počítači a mapa ho použije hned (`src/lib/ionKey.ts`). Sdílený klíč doporučuji
+v ion omezit jen na adresu webu, ať ho nikdo nepoužije jinde.
 
 ### Databáze
 

@@ -8,7 +8,8 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
-import { ION_TOKEN, CR_EXTENT, LIBEREC_EXTENT, MOVE_SETTLE_MS, SHARP_KEY } from './config'
+import { CR_EXTENT, LIBEREC_EXTENT, MOVE_SETTLE_MS, SHARP_KEY } from './config'
+import { effectiveIonToken } from './lib/ionKey'
 import { ortofotoProvider, ortofotoPatchProvider, ORTO_CACHE_SHARE, ORTO_PATCH_MIN_TERRAIN, ztmProvider, katastrProvider, type OrtoDetail } from './imagery'
 import { makeDmrTerrain, setDmrCacheMax, setTerrainFocus } from './terrain'
 import { watchClipCollections } from './cesiumClipDebug'
@@ -54,7 +55,9 @@ export function useCesiumViewer(deps: {
 
   useEffect(() => {
     if (!containerRef.current) return
-    if (ION_TOKEN) Cesium.Ion.defaultAccessToken = ION_TOKEN
+    // vlastní klíč uživatele, jinak sdílený zkušební (lib/ionKey.ts)
+    const ionToken = effectiveIonToken()
+    if (ionToken) Cesium.Ion.defaultAccessToken = ionToken
 
 
     const viewer = new Cesium.Viewer(containerRef.current, {

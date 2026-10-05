@@ -2,7 +2,9 @@
  * Sekce „Podklad a překryvy": podklad mapy, překryvy, pozadí scény a nastavení vykreslování.
  */
 import * as Cesium from 'cesium'
-import { Building2, Image, Layers, Loader2, Map as MapIcon, Sparkles } from 'lucide-react'
+import { Building2, Image, KeyRound, Layers, Loader2, Map as MapIcon, Sparkles } from 'lucide-react'
+import { useUserIonToken } from '../lib/ionKey'
+import { openIonKeyDialog } from '../ionKeyDialog'
 import { ENABLE_GOOGLE_3D, ENABLE_LIBEREC_DISTRICTS, ENABLE_OSM_BUILDINGS } from '../config'
 import { BG_MODES } from '../background'
 import { detectPerf, type PerfChoice, type PerfLevel } from '../perfProfile'
@@ -42,6 +44,7 @@ export function BasePanel({ layers, districts, perfChoice, setPerfChoice, perfLe
           <div className="text-[10px] text-gray-500 leading-snug">
             {googleErr ? <span className="text-amber-400">{googleErr}</span> : <>Fotorealistické 3D. Posuvníkem prosvítíš mapu pod ním.</>}
           </div>
+          <IonKeyLine highlight={!!googleErr} />
           <div className="flex items-center gap-1.5">
             <span className="text-[10px] text-gray-400 w-9 shrink-0">3D</span>
             <input type="range" min={0} max={1} step={0.05} value={googleAlpha} onChange={e => setGoogleAlpha(parseFloat(e.target.value))} className="flex-1 min-w-0 accent-cyan-500" title="Průhlednost 3D reality — vlevo jen mapa, vpravo plná 3D" />
@@ -158,5 +161,23 @@ export function BasePanel({ layers, districts, perfChoice, setPerfChoice, perfLe
         </div>
       </div>
     </>
+  )
+}
+
+/**
+ * Čí klíč Cesium ion 3D realita čerpá — sdílený zkušební, nebo vlastní — a odkaz na jeho změnu.
+ * Při chybě Google 3D je tlačítko výraznější: vlastní klíč je nejčastější řešení.
+ */
+function IonKeyLine({ highlight }: { highlight: boolean }) {
+  const own = useUserIonToken()
+  return (
+    <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+      <KeyRound size={11} className={own ? 'text-emerald-400' : 'text-gray-500'} />
+      <span className="min-w-0 flex-1 truncate">{own ? 'vlastní klíč Cesium ion' : 'sdílený zkušební klíč'}</span>
+      <button
+        onClick={openIonKeyDialog}
+        className={`shrink-0 rounded px-1.5 py-0.5 ${highlight && !own ? 'bg-sky-600 text-white hover:bg-sky-500' : 'text-sky-300 hover:bg-gray-800'}`}
+      >{own ? 'Změnit' : 'Vlastní klíč'}</button>
+    </div>
   )
 }
