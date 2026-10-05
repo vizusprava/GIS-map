@@ -192,6 +192,18 @@ console.log('\n── spliny a oblouky: hladké křivky, žádné rohy ──')
   ok(!s.some(p => p[0] === 5 && p[1] === 10), 'řídicí rám vyhlazené polylinie se nekreslí (žádný zub do (5, 10))')
   ok(s.length === 5, `kreslí se jen spočítané body křivky (${s.length})`)
 
+  // kružnice jako stará 2D polylinie ze 4 čtvrtkruhů, jak ji vypíše převod DWG: VERTEXy BEZ
+  // kódu 42 (LibreDWG ho vynechá) — oblouky se doplní z objektového modelu podle handle
+  const ring = ['0', 'SECTION', '2', 'ENTITIES', '0', 'POLYLINE', '5', '4528', '8', 'K', '66', '1', '70', '1',
+    ...[[0, -14.65], [14.65, 0], [0, 14.65], [-14.65, 0]].flatMap(([x, y]) => ['0', 'VERTEX', '8', 'K', '10', x, '20', y]),
+    '0', 'SEQEND', '0', 'ENDSEC', '0', 'EOF'].map(String).join('\r\n') + '\r\n'
+  const sq = polyOf(ring)
+  ok(sq.length === 5, `bez oblouků je z kružnice čtverec (${sq.length} bodů) — tohle se dělo`)
+  const fixed = dxfToPrims(ring, { polyBulges: new Map([['4528', [0.414213562373095, 0.414213562373095, 0.414213562373095, 0.414213562373095]]]) })
+    .prims.filter(p => p.kind === 'poly').flatMap(p => p.pts)
+  const rdev = Math.max(...fixed.map(p => Math.abs(Math.hypot(p[0], p[1]) - 14.65)))
+  ok(fixed.length > 40 && rdev < 1e-6, `s oblouky z modelu je to kružnice R 14,65 (${fixed.length} bodů, odchylka ${rdev.toExponential(1)})`)
+
   // velký oblouk (R 500 m, hlavička v metrech): tětivy nesmí od oblouku utéct o víc než pár cm
   const arcDxf = ['0', 'SECTION', '2', 'HEADER', '9', '$INSUNITS', '70', '6', '0', 'ENDSEC',
     '0', 'SECTION', '2', 'ENTITIES', '0', 'ARC', '8', 'K', '10', '0', '20', '0', '40', '500', '50', '0', '51', '30',

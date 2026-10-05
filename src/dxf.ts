@@ -562,7 +562,16 @@ export function decodeDxf(buf: ArrayBuffer): string {
   return utf.includes('�') ? new TextDecoder('windows-1250').decode(buf) : utf
 }
 
-export function dxfToPrims(text: string): DrawParse {
+export type DxfOpts = {
+  /**
+   * Oblouky (bulge) vrcholů starých 2D polylinií podle handle polylinie (kód 5), v pořadí
+   * vrcholů. Doplňuje je převod DWG (dwg.ts) — LibreDWG je při zápisu do DXF vynechá.
+   * Kód 42 přímo ve VERTEXu má přednost.
+   */
+  polyBulges?: Map<string, number[]>
+}
+
+export function dxfToPrims(text: string, opts: DxfOpts = {}): DrawParse {
   const toks = tokenize(text)
   if (!toks.length) throw new Error('DXF je prázdný nebo není textový (binární DXF nepodporujeme)')
   const { layers, blocks, entities, header } = parseStructure(toks)
@@ -639,8 +648,13 @@ export function dxfToPrims(text: string): DrawParse {
           pushPoly(nurbsPts(closed ? [...pts, pts[0]] : pts, [], null, deg), tf, layer, color)
           break
         }
-        // jinak běžná polylinie (i „curve fit", 70 & 2: přidané vrcholy leží na křivce)
-        const vs = e.vertices.filter(vx => !(vflag(vx) & 16)).map(vx => ({ x: num(vx.props, 10), y: num(vx.props, 20), bulge: num(vx.props, 42) || undefined }))
+        // jinak běžná polylinie (i „curve fit", 70 & 2: přidané vrcholy leží na křivce);
+        // oblouky z VERTEXu, a kde v DXF chybí (převod DWG), z objektového modelu podle handle
+        const hb = opts.polyBulges?.get((str(e.props, 5) ?? '').toUpperCase())
+        const vs = e.vertices
+          .map((vx, i) => ({ vx, bulge: num(vx.props, 42) || hb?.[i] || undefined }))
+          .filter(({ vx }) => !(vflag(vx) & 16))
+          .map(({ vx, bulge }) => ({ x: num(vx.props, 10), y: num(vx.props, 20), bulge }))
         if (vs.length) pushPoly(polyWithBulges(vs, closed), tf, layer, color)
         break
       }

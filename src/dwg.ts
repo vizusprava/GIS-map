@@ -58,5 +58,39 @@ export async function dwgToPrims(buf: ArrayBuffer): Promise<DrawParse> {
   }
   if (!dxf) throw new Error(`DWG se nepodařilo převést (${what}) — poškozený soubor nebo nepodporovaná verze. Zkus ho uložit jako DXF.`)
   const text = typeof dxf === 'string' ? dxf : new TextDecoder('utf-8').decode(dxf)
-  return dxfToPrims(text)
+  return dxfToPrims(text, { polyBulges: polylineBulges(await libP, buf) })
+}
+
+type Bulgy = { type?: string; handle?: string; vertices?: { bulge?: number }[] }
+
+/**
+ * Oblouky vrcholů starých 2D polylinií (POLYLINE + VERTEX) podle handle polylinie.
+ *
+ * LibreDWG je při zápisu do DXF u VERTEXů vynechá (kód 42 chybí) — kružnice uložená jako
+ * polylinie ze čtyř čtvrtkruhů, v silničních výkresech běžná (ostrůvek kruhového objezdu),
+ * pak vyšla jako čtverec a každý oblouk jako rovná spojnice. Objektový model knihovny je má,
+ * tak se odtud doplní. Když čtení modelu selže, výkres se načte jako dřív — jen bez nich.
+ */
+export function polylineBulges(lib: Awaited<ReturnType<typeof LibreDwg.create>>, buf: ArrayBuffer): Map<string, number[]> {
+  const out = new Map<string, number[]>()
+  let ptr: number | undefined
+  try {
+    ptr = lib.dwg_read_data(buf, 0)
+    if (ptr == null) return out
+    const db = lib.convert(ptr) as unknown as {
+      entities?: Bulgy[]
+      tables?: { BLOCK_RECORD?: { entries?: { entities?: Bulgy[] }[] } }
+    }
+    const all: Bulgy[] = [...(db.entities ?? [])]
+    for (const b of db.tables?.BLOCK_RECORD?.entries ?? []) all.push(...(b.entities ?? []))
+    for (const e of all) {
+      if (e.type !== 'POLYLINE2D' || !e.handle || !e.vertices?.some(v => v.bulge)) continue
+      out.set(String(e.handle).toUpperCase(), e.vertices.map(v => v.bulge || 0))
+    }
+  } catch (e) {
+    console.warn('Oblouky polylinií z DWG se nepodařilo dočíst:', e)
+  } finally {
+    if (ptr != null) try { lib.dwg_free(ptr) } catch { /* nic */ }
+  }
+  return out
 }
