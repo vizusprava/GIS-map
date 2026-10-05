@@ -165,7 +165,7 @@ function circlePts(cx: number, cy: number, r: number): Pt[] {
 // jen „rám", který ji táhne), a i přes body proložení by vyšly rohy. Křivka se proto počítá.
 
 /** kolik vzorků na jeden úsek mezi uzly (a strop na celou křivku) */
-const SPLINE_SPAN = 16
+const SPLINE_SPAN = 24
 const SPLINE_MAX = 4000
 
 /**
@@ -197,7 +197,7 @@ export function nurbsPts(ctrl: Pt[], knotsIn: number[], weightsIn: number[] | nu
     return q[2] !== 0 ? [q[0] / q[2], q[1] / q[2]] : [q[0], q[1]]
   }
   // Vzorky po úsecích mezi různými uzly. Hustota podle toho, jak moc se v úseku stáčí řídicí
-  // rám (~5° na vzorek): rovný kus 2 vzorky, ostrý oblouk až SPLINE_SPAN. Vrstevnice uložené
+  // rám (~2,5° na vzorek): rovný kus 2 vzorky, ostrý oblouk až SPLINE_SPAN. Vrstevnice uložené
   // jako spline mají stovky řídicích bodů — s pevnou hustotou by výkres zbytečně ztěžkl.
   const spans: [number, number, number][] = []
   for (let i = p; i < n; i++) if (knots[i + 1] > knots[i]) spans.push([knots[i], knots[i + 1], i])
@@ -206,7 +206,7 @@ export function nurbsPts(ctrl: Pt[], knotsIn: number[], weightsIn: number[] | nu
   for (const [a, b, i] of spans) {
     let turn = 0
     for (let j = Math.max(1, i - p + 1); j <= i && j + 1 < n; j++) turn += turnAngle(ctrl[j - 1], ctrl[j], ctrl[j + 1])
-    const per = Math.max(2, Math.min(SPLINE_SPAN, cap, Math.ceil(turn / (Math.PI / 36)) + 1))
+    const per = Math.max(2, Math.min(SPLINE_SPAN, cap, Math.ceil(turn / (Math.PI / 72)) + 1))
     for (let s = 1; s <= per; s++) out.push(evalAt(a + (b - a) * (s / per)))
   }
   return out
@@ -228,23 +228,83 @@ function clampedKnots(n: number, p: number): number[] {
 }
 
 /**
- * Hladká křivka PŘES body (spline zadaný jen body proložení, bez řídicích bodů).
- * Centripetální Catmull-Rom: prochází přesně body a na nerovnoměrně rozložených bodech
- * nedělá smyčky ani hroty (na rozdíl od obyčejného Catmull-Rom).
+ * Hladká křivka PŘES body (spline zadaný jen body proložení, bez řídicích bodů) — tak, jak ji
+ * proloží AutoCAD: kubický spline spojitý i ve druhé derivaci, s parametrem podle délky tětiv
+ * a se směrem na koncích ze souboru (12/22, 13/23). Bez zadaného směru se konec odhadne
+ * z paraboly přes tři krajní body (Besselova podmínka), ať se konec nenarovná do tětivy.
+ * Uzavřená křivka jde přes centripetální Catmull-Rom (prochází body, nedělá smyčky).
  */
-export function fitCurvePts(fit: Pt[], closed: boolean): Pt[] {
+export function fitCurvePts(fit: Pt[], closed: boolean, startTan?: Pt | null, endTan?: Pt | null): Pt[] {
   const n = fit.length
-  if (n < 3) return fit.slice()
-  const at = (i: number): Pt => closed ? fit[(i + n) % n] : fit[Math.max(0, Math.min(n - 1, i))]
+  if (n < 2) return fit.slice()
+  if (closed) return closedFitPts(fit)
+
+  // parametr = délka tětiv
+  const h: number[] = []
+  for (let i = 0; i < n - 1; i++) h.push(Math.hypot(fit[i + 1][0] - fit[i][0], fit[i + 1][1] - fit[i][1]) || 1e-9)
+  const unit = (t: Pt | null | undefined): Pt | null => {
+    const l = t ? Math.hypot(t[0], t[1]) : 0
+    return t && l > 1e-12 ? [t[0] / l, t[1] / l] : null
+  }
+  const st = unit(startTan), et = unit(endTan)
+  if (n === 2 && !st && !et) return fit.slice()
+
+  // derivace v bodech (Hermitův tvar) pro každou souřadnici zvlášť
+  const m: Pt[] = fit.map(() => [0, 0])
+  for (const c of [0, 1] as const) {
+    const y = fit.map(p => p[c])
+    const del = h.map((hi, i) => (y[i + 1] - y[i]) / hi)
+    const end0 = st ? st[c] : n >= 3 ? ((2 * h[0] + h[1]) * del[0] - h[0] * del[1]) / (h[0] + h[1]) : del[0]
+    const k = n - 2
+    const end1 = et ? et[c] : n >= 3 ? ((2 * h[k] + h[k - 1]) * del[k] - h[k] * del[k - 1]) / (h[k] + h[k - 1]) : del[0]
+    // spojitost druhé derivace ve vnitřních bodech → třídiagonální soustava (Thomasův algoritmus)
+    const d = new Array<number>(n).fill(0)
+    d[0] = end0; d[n - 1] = end1
+    if (n > 2) {
+      const a: number[] = [], b: number[] = [], cc: number[] = [], r: number[] = []
+      for (let i = 1; i < n - 1; i++) {
+        a.push(h[i]); b.push(2 * (h[i - 1] + h[i])); cc.push(h[i - 1])
+        r.push(3 * (h[i] * del[i - 1] + h[i - 1] * del[i]))
+      }
+      r[0] -= a[0] * end0
+      r[r.length - 1] -= cc[cc.length - 1] * end1
+      for (let i = 1; i < b.length; i++) { const w = a[i] / b[i - 1]; b[i] -= w * cc[i - 1]; r[i] -= w * r[i - 1] }
+      for (let i = b.length - 1; i >= 0; i--) d[i + 1] = (r[i] - (i + 1 < b.length ? cc[i] * d[i + 2] : 0)) / b[i]
+    }
+    for (let i = 0; i < n; i++) m[i][c] = d[i]
+  }
+
+  // vzorky po úsecích; hustota podle toho, o kolik se úsek stočí (~2,5° na vzorek)
   const out: Pt[] = [fit[0]]
-  const segs = closed ? n : n - 1
-  for (let i = 0; i < segs; i++) {
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = fit[i], p1 = fit[i + 1], hi = h[i], m0 = m[i], m1 = m[i + 1]
+    let turn = Math.abs(Math.atan2(m1[1], m1[0]) - Math.atan2(m0[1], m0[0]))
+    if (turn > Math.PI) turn = 2 * Math.PI - turn
+    const per = Math.max(2, Math.min(SPLINE_SPAN, Math.ceil(turn / (Math.PI / 72)) + 1))
+    for (let s = 1; s <= per; s++) {
+      const t = s / per, t2 = t * t, t3 = t2 * t
+      const h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t, h01 = -2 * t3 + 3 * t2, h11 = t3 - t2
+      out.push([
+        h00 * p0[0] + h10 * hi * m0[0] + h01 * p1[0] + h11 * hi * m1[0],
+        h00 * p0[1] + h10 * hi * m0[1] + h01 * p1[1] + h11 * hi * m1[1],
+      ])
+    }
+  }
+  return out
+}
+
+/** Uzavřená křivka přes body: centripetální Catmull-Rom (prochází body, nedělá smyčky ani hroty). */
+function closedFitPts(fit: Pt[]): Pt[] {
+  const n = fit.length
+  if (n < 3) return [...fit, fit[0]]
+  const at = (i: number): Pt => fit[(i + n) % n]
+  const out: Pt[] = [fit[0]]
+  for (let i = 0; i < n; i++) {
     const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2)
     const tj = (a: Pt, b: Pt) => Math.sqrt(Math.hypot(b[0] - a[0], b[1] - a[1])) || 1e-9
     const t1 = tj(p0, p1), t2 = t1 + tj(p1, p2), t3 = t2 + tj(p2, p3)
-    // hustota podle stočení v okolí úseku (jako u NURBS): rovný kus pár bodů, oblouk víc
     const turn = turnAngle(p0, p1, p2) + turnAngle(p1, p2, p3)
-    const per = Math.max(2, Math.min(SPLINE_SPAN, Math.ceil(turn / (Math.PI / 36)) + 1))
+    const per = Math.max(2, Math.min(SPLINE_SPAN, Math.ceil(turn / (Math.PI / 72)) + 1))
     for (let s = 1; s <= per; s++) {
       const t = t1 + (t2 - t1) * (s / per)
       const lerp = (a: Pt, b: Pt, ta: number, tb: number): Pt => {
@@ -596,10 +656,15 @@ export function dxfToPrims(text: string): DrawParse {
       case 'SPLINE': {
         // řídicí body (10/20) s uzly (40) a váhami (41), případně jen body proložení (11/21)
         const fit: Pt[] = [], ctrl: Pt[] = [], knots: number[] = [], weights: number[] = []
+        let t0: Pt | null = null, t1: Pt | null = null   // směr na začátku / konci (12/22, 13/23)
         for (let k = 0; k < e.props.length; k++) {
           const p = e.props[k], v = parseFloat(p.value) || 0
           if (p.code === 11) fit.push([v, 0])
           else if (p.code === 21 && fit.length) fit[fit.length - 1][1] = v
+          else if (p.code === 12) t0 = [v, 0]
+          else if (p.code === 22 && t0) t0[1] = v
+          else if (p.code === 13) t1 = [v, 0]
+          else if (p.code === 23 && t1) t1[1] = v
           else if (p.code === 10) ctrl.push([v, 0])
           else if (p.code === 20 && ctrl.length) ctrl[ctrl.length - 1][1] = v
           else if (p.code === 40) knots.push(v)
@@ -609,7 +674,7 @@ export function dxfToPrims(text: string): DrawParse {
         // Křivka se počítá z řídicích bodů — ty ji definují přesně. Body proložení jsou až
         // druhá volba (AutoCAD je píše jen pro úpravy); bez řídicích se jimi křivka proloží.
         if (ctrl.length >= 2) pushPoly(nurbsPts(ctrl, knots, weights.length ? weights : null, flag(e.props, 71) || 3), tf, layer, color)
-        else if (fit.length >= 2) pushPoly(fitCurvePts(fit, closed), tf, layer, color)
+        else if (fit.length >= 2) pushPoly(fitCurvePts(fit, closed, t0, t1), tf, layer, color)
         break
       }
       case 'SOLID':

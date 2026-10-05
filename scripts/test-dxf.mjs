@@ -163,6 +163,20 @@ console.log('\n── spliny a oblouky: hladké křivky, žádné rohy ──')
   ok(fitPts.every(([x, y]) => f.some(p => Math.hypot(p[0] - x, p[1] - y) < 1e-6)), 'prochází všemi body proložení')
   ok(f.length > 30, `mezi body proložení je hladký (${f.length} bodů)`)
 
+  // přesně ten případ ze screenu: oblouk zadaný jen třemi body proložení — dřív rovné tětivy
+  // pod obloukem s rohem uprostřed, teď křivka, která se od skutečného oblouku skoro neliší
+  const R = 400, arcFit = [-12, 0, 12].map(deg => [R * Math.sin(deg * Math.PI / 180), R * Math.cos(deg * Math.PI / 180)])
+  const tan = deg => [Math.cos(deg * Math.PI / 180), -Math.sin(deg * Math.PI / 180)]
+  const g = polyOf(one('SPLINE', [70, 8, 71, 3, 74, 3, 12, tan(-12)[0], 22, tan(-12)[1], 13, tan(12)[0], 23, tan(12)[1], ...arcFit.flatMap(([x, y]) => [11, x, 21, y])]))
+  const arcDev = Math.max(...g.map(p => Math.abs(Math.hypot(p[0], p[1]) - R)))
+  ok(arcDev < 0.5, `oblouk R ${R} m ze tří bodů proložení: odchylka od oblouku ${arcDev.toFixed(2)} m (tětivy by měly až ${(R * (1 - Math.cos(6 * Math.PI / 180))).toFixed(1)} m)`)
+
+  // totéž bez směrů na koncích (soubor je nemá): konce se odhadnou, oblouk pořád sedí
+  const arc5 = [-20, -10, 0, 10, 20].map(deg => [R * Math.sin(deg * Math.PI / 180), R * Math.cos(deg * Math.PI / 180)])
+  const g5 = polyOf(one('SPLINE', [70, 8, 71, 3, 74, 5, ...arc5.flatMap(([x, y]) => [11, x, 21, y])]))
+  const dev5 = Math.max(...g5.map(p => Math.abs(Math.hypot(p[0], p[1]) - R)))
+  ok(dev5 < 0.1, `oblouk z pěti bodů proložení bez směrů na koncích: odchylka ${dev5.toFixed(3)} m`)
+
   // hustá skoro rovná křivka (vrstevnice jako spline, 300 řídicích bodů) nesmí ztěžknout
   const dense = Array.from({ length: 300 }, (_, i) => [i, Math.sin(i / 40) * 3])
   const d = polyOf(one('SPLINE', [70, 8, 71, 3, 73, 300, ...dense.flatMap(([x, y]) => [10, x, 20, y])]))
