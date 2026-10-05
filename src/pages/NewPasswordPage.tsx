@@ -36,8 +36,8 @@ export function NewPasswordPage() {
     'placeholder:text-gray-500 outline-none focus:border-emerald-500/70 focus:ring-1 focus:ring-emerald-500/40'
 
   return (
-    <div className="h-full flex items-center justify-center p-6">
-      <form onSubmit={submit} className="w-full max-w-sm space-y-3">
+    <div className="h-full flex items-center justify-center p-6 xl:justify-start xl:pl-[7vw]">
+      <form onSubmit={submit} className="w-full max-w-sm space-y-3 rounded-2xl border border-gray-800 bg-gray-950/85 p-7 shadow-2xl shadow-black/60">
         <div className="flex items-center gap-2 mb-4 text-gray-100">
           <KeyRound size={18} className="text-emerald-400" />
           <h1 className="text-base font-bold">Nové heslo</h1>

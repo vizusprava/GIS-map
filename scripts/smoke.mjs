@@ -581,6 +581,32 @@ async function main() {
     expect(t.includes('neplatí'), `hláška: „${t}"`)
   })
 
+  // ── pozadí přihlášení a přehledu scén (textury z workeru, přechod tam a zpátky) ──
+  await check('pozadí: krajina z workeru, přechod do přehledu scén a zpátky', async () => {
+    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?page=backdrop` })
+    await waitFor(`!!document.querySelector('.bd-stage.bd-ready')`, 20_000, 'hotové textury pozadí')
+    // každá deska má nakreslenou plochu (ne prázdný canvas)
+    const painted = await ev(`[...document.querySelectorAll('.bd-face')].map(c => {
+      const g = c.getContext('2d'); const d = g.getImageData(c.width / 2 | 0, c.height / 2 | 0, 1, 1).data
+      return c.width + ':' + d[3]
+    })`)
+    expect(painted.length === 4 && painted.every(p => p === '512:255'), `plochy desek: ${painted.join(', ')}`)
+    const slices = await ev(`document.querySelectorAll('.bd-slice').length`)
+    expect(slices === 14, `vrstevnic modelu: ${slices}`)
+    // přehled: mapy zmizí, terén se překreslí v plném rozlišení
+    await ev(`window.__backdrop('overview')`)
+    await waitFor(`[...document.querySelectorAll('.bd-see > .bd-face')].every(f => getComputedStyle(f).opacity === '0')`, 6_000, 'zmizení map v přehledu')
+    await waitFor(`document.querySelector('.bd-plate .bd-face').width === 1024`, 20_000, 'terén v plném rozlišení')
+    await shot('pozadi-prehled')
+    // zpátky na přihlášení: mapy se vrátí a cyklus skládání jede dál (CSS animace, žádné převzaté)
+    await ev(`window.__backdrop('login')`)
+    await waitFor(`[...document.querySelectorAll('.bd-see > .bd-face')].every(f => getComputedStyle(f).opacity === '1')
+      && [...document.querySelectorAll('.bd-plate')].every(p => p.getAnimations().length && p.getAnimations().every(a => a instanceof CSSAnimation))`, 8_000, 'návrat map a cyklu')
+    await shot('pozadi-prihlaseni')
+    const errs = await ev('window.__errors')
+    expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
+  })
+
   await check('žádné chyby po znovuotevření scén a sdílení', async () => {
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)

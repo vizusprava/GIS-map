@@ -121,7 +121,7 @@ export function ScenesPage() {
       <div
         key={scene.id}
         data-scene-card={scene.role}
-        className="group rounded-2xl border border-gray-800 bg-gray-900/50 p-3 hover:border-emerald-500/40 transition-colors"
+        className="group rounded-2xl border border-gray-800 bg-gray-900/80 p-3 hover:border-emerald-500/40 transition-colors"
       >
         <button onClick={() => navigate(`/scene/${scene.id}`)} className="block w-full text-left">
           <SceneThumb path={scene.thumb_path} />
@@ -285,7 +285,7 @@ export function ScenesPage() {
         )}
 
         {scenes && own.length === 0 && (
-          <div className="rounded-2xl border-2 border-dashed border-gray-800 p-12 text-center">
+          <div className="rounded-2xl border-2 border-dashed border-gray-800 bg-gray-950/70 p-12 text-center">
             <Layers size={28} className="mx-auto mb-3 text-gray-600" />
             <p className="text-sm text-gray-300 font-medium">{shared.length ? 'Zatím nemáš vlastní scénu' : 'Zatím tu nic není'}</p>
             <p className="text-xs text-gray-500 mt-1.5">

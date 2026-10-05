@@ -12,7 +12,7 @@
  * přihlášení i otevření odkazu jdou proti podvrženému API.
  */
 import './fakeRest' // první: klient Supabase si fetch bere hned při načtení
-import { StrictMode } from 'react'
+import { StrictMode, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Cesium from 'cesium'
 import { AppToaster } from '../../src/appToaster'
@@ -26,6 +26,7 @@ import { HashRouter, Route, Routes } from 'react-router-dom'
 import type { User } from '@supabase/supabase-js'
 import { AccountPage } from '../../src/pages/AccountPage'
 import { ViewPage } from '../../src/pages/ViewPage'
+import { Backdrop, type BackdropMode } from '../../src/backdrop/Backdrop'
 import { useAuthStore } from '../../src/stores/authStore'
 
 const errors: string[] = []
@@ -77,6 +78,13 @@ const scene: ScenePersist = {
   exit: () => {},
 }
 
+// `?page=backdrop`: pozadí přihlášení / přehledu scén; stav se přepíná přes window.__backdrop(mode)
+function BackdropDemo() {
+  const [mode, setMode] = useState<BackdropMode>(q.get('mode') === 'overview' ? 'overview' : 'login')
+  useEffect(() => { Object.assign(window, { __backdrop: setMode }) }, [])
+  return <Backdrop mode={mode} />
+}
+
 // `?page=view`: veřejný prohlížeč — přihlášení se obnovuje jako v appce (App.tsx → init)
 const viewPage = () => {
   useAuthStore.getState().init()
@@ -84,7 +92,7 @@ const viewPage = () => {
 }
 
 // `?page=account`: Nastavení účtu s podvrženým uživatelem — test projde formuláře bez Supabase
-const page = q.get('page') === 'view' ? viewPage() : q.get('page') === 'account'
+const page = q.get('page') === 'backdrop' ? <BackdropDemo /> : q.get('page') === 'view' ? viewPage() : q.get('page') === 'account'
   ? (() => {
       useAuthStore.setState({
         user: { id: 'u-smoke', email: 'test@example.cz', user_metadata: {}, app_metadata: {}, aud: 'authenticated', created_at: '' } as unknown as User,

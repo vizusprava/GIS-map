@@ -71,9 +71,11 @@ export function LoginPage() {
   const title = mode === 'login' ? 'Přihlášení' : mode === 'signup' ? 'Nový účet' : 'Zapomenuté heslo'
   const action = mode === 'login' ? 'Přihlásit se' : mode === 'signup' ? 'Vytvořit účet' : 'Poslat odkaz'
 
+  // Vpravo za oknem se rozkládá krajina (Backdrop) — na širokém okně proto okno vlevo,
+  // na užším uprostřed nad ztlumenou krajinou.
   return (
-    <div className="h-full flex items-center justify-center p-6">
-      <div className="w-full max-w-sm">
+    <div className="h-full flex items-center justify-center p-6 xl:justify-start xl:pl-[7vw]">
+      <div className="w-full max-w-sm rounded-2xl border border-gray-800 bg-gray-950/85 p-7 shadow-2xl shadow-black/60">
         <div className="flex items-center gap-3 mb-8">
           <div className="w-11 h-11 rounded-xl bg-emerald-600/20 border border-emerald-500/40 flex items-center justify-center">
             <Globe2 size={22} className="text-emerald-400" />

@@ -1,0 +1,164 @@
+/*
+ * Pozadí přihlášení a přehledu scén (Backdrop.tsx) — stoh čtyř desek v CSS 3D.
+ *
+ * Pohyb dělají jen transformace (kompozice na grafice), žádný JavaScript za snímek — běží to
+ * plynule i na integrované grafice. Rozměry a výšky desek nastavuje skript jako proměnné
+ * na .bd-stage (--bd-size, --bd-t, --bd-gap, --bd-z0c…).
+ *
+ * POZOR: průhlednost (opacity < 1) na čemkoliv ve 3D řetězci (.bd-wrap → .bd-plate) scénu
+ * zploští. Ztlumení a náběh proto dělají překryvné vrstvy (.bd-shade, .bd-veil) a průsvitné
+ * jsou jen listy bez 3D potomků (plocha mapy, bok desky, štítek).
+ */
+.bd-stage {
+  --bd-cycle: 15s;
+  position: fixed; inset: 0; z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+  perspective: 1800px;
+  perspective-origin: 58% 34%;
+  /* jemná souřadnicová síť */
+  background-image:
+    radial-gradient(ellipse 46% 52% at 58% 50%, rgba(16, 185, 129, 0.075), transparent 70%),
+    linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px);
+  background-size: auto, 64px 64px, 64px 64px;
+  background-position: 0 0, -1px -1px, -1px -1px;
+}
+.bd-stage::after {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 75% 80% at 58% 50%, transparent 40%, #030712 100%);
+}
+
+/* wrap = posun a přiblížení (přehled scén), tilt = natočení kamery, stack = pomalé houpání */
+.bd-wrap {
+  position: absolute; left: var(--bd-x, 59%); top: 50%;
+  width: var(--bd-size); height: var(--bd-size);
+  margin: calc(var(--bd-size) / -2) 0 0 calc(var(--bd-size) / -2);
+  transform-style: preserve-3d;
+  transition: transform 1.6s cubic-bezier(.65, 0, .35, 1);
+}
+.bd-tilt {
+  position: absolute; inset: 0;
+  transform-style: preserve-3d;
+  transform: rotateX(55deg) rotateZ(-34deg);
+  transition: transform 1.6s cubic-bezier(.65, 0, .35, 1);
+}
+.bd-stack {
+  position: absolute; inset: 0;
+  transform-style: preserve-3d;
+  animation: bd-sway 40s ease-in-out infinite alternate;
+}
+@keyframes bd-sway {
+  from { transform: rotateZ(-10deg); }
+  to   { transform: rotateZ(10deg); }
+}
+/* přehled scén: zůstane jen terén, přiblížený přes celou obrazovku */
+.bd-overview .bd-wrap { transform: translateX(var(--bd-ovx)) scale3d(var(--bd-ovs), var(--bd-ovs), var(--bd-ovs)); }
+.bd-overview .bd-tilt { transform: rotateX(34deg) rotateZ(-14deg); }
+/* návrat z přehledu: cyklus desek se spustí znovu od začátku, všechny naráz */
+.bd-restart .bd-plate, .bd-restart .bd-plate *, .bd-restart .bd-guide, .bd-restart .bd-floor { animation: none !important; }
+
+.bd-plate {
+  position: absolute; inset: 0;
+  transform-style: preserve-3d;
+  animation: bd-lift var(--bd-cycle) cubic-bezier(.65, 0, .35, 1) infinite;
+}
+@keyframes bd-lift {
+  0%, 14%   { transform: translateZ(var(--zc)); }
+  36%, 70%  { transform: translateZ(var(--zo)); }
+  92%, 100% { transform: translateZ(var(--zc)); }
+}
+/* mapy nad terénem jsou rozjeté lehce průhledné — skrz ně je vidět, co je pod nimi */
+.bd-see > .bd-face { animation: bd-see var(--bd-cycle) cubic-bezier(.65, 0, .35, 1) infinite; }
+@keyframes bd-see {
+  0%, 14%   { opacity: 1; }
+  36%, 70%  { opacity: .78; }
+  92%, 100% { opacity: 1; }
+}
+.bd-face, .bd-slice {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  display: block;
+}
+.bd-relief { position: absolute; inset: 0; transform-style: preserve-3d; }
+.bd-slice { transform: translateZ(calc(var(--k) * var(--bd-step))); }
+
+/* boky desky — visí z hran dolů o tloušťku desky */
+.bd-side { position: absolute; background: var(--sc); }
+.bd-side.s { left: 0; top: 100%; width: 100%; height: var(--bd-t); transform-origin: top; transform: rotateX(-90deg); }
+.bd-side.n { left: 0; bottom: 100%; width: 100%; height: var(--bd-t); transform-origin: bottom; transform: rotateX(90deg); background: color-mix(in srgb, var(--sc) 78%, #000); }
+.bd-side.e { top: 0; left: 100%; width: var(--bd-t); height: 100%; transform-origin: left; transform: rotateY(90deg); background: color-mix(in srgb, var(--sc) 70%, #000); }
+.bd-side.w { top: 0; right: 100%; width: var(--bd-t); height: 100%; transform-origin: right; transform: rotateY(-90deg); background: color-mix(in srgb, var(--sc) 88%, #000); }
+
+/* štítek vrstvy u pravého rohu desky, natočený čelem k divákovi */
+.bd-tag {
+  position: absolute; left: 100%; top: 100%;
+  transform-origin: 0 0;
+  transform: rotateZ(34deg) rotateX(-55deg) translate(30px, -50%);
+  white-space: nowrap;
+  font: 600 13px/1 ui-monospace, 'Cascadia Mono', 'SF Mono', Consolas, monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #e2e8f0;
+  opacity: 0;
+  animation: bd-tag var(--bd-cycle) ease infinite;
+}
+.bd-tag::before {
+  content: ''; position: absolute; right: calc(100% + 6px); top: 6px;
+  width: 22px; border-top: 1px solid rgba(52, 211, 153, .55);
+}
+@keyframes bd-tag {
+  0%, 30%   { opacity: 0; }
+  40%, 66%  { opacity: 1; }
+  76%, 100% { opacity: 0; }
+}
+
+/* svislé vodicí linky v rozích — ukazují, že desky lícují */
+.bd-guide {
+  position: absolute; width: 0;
+  height: calc(3 * var(--bd-gap));
+  border-left: 1px dashed rgba(52, 211, 153, .45);
+  transform-origin: 0 0;
+  animation: bd-guide var(--bd-cycle) cubic-bezier(.65, 0, .35, 1) infinite;
+}
+.bd-guide.nw { left: 0; top: 0; }
+.bd-guide.ne { left: 100%; top: 0; }
+.bd-guide.sw { left: 0; top: 100%; }
+.bd-guide.se { left: 100%; top: 100%; }
+@keyframes bd-guide {
+  0%, 14%   { transform: translateZ(var(--bd-gc)) rotateX(90deg) scaleY(var(--bd-ratio)); opacity: 0; }
+  36%, 70%  { transform: translateZ(var(--bd-go)) rotateX(90deg) scaleY(1); opacity: 1; }
+  92%, 100% { transform: translateZ(var(--bd-gc)) rotateX(90deg) scaleY(var(--bd-ratio)); opacity: 0; }
+}
+/* stín pod stohem */
+.bd-floor {
+  position: absolute; inset: -18%;
+  background: radial-gradient(closest-side, rgba(0, 0, 0, .7), rgba(0, 0, 0, .25) 55%, transparent);
+  animation: bd-floor var(--bd-cycle) cubic-bezier(.65, 0, .35, 1) infinite;
+}
+@keyframes bd-floor {
+  0%, 14%   { transform: translateZ(var(--bd-fc)) scale(.86); opacity: .9; }
+  36%, 70%  { transform: translateZ(var(--bd-fo)) scale(1.06); opacity: .6; }
+  92%, 100% { transform: translateZ(var(--bd-fc)) scale(.86); opacity: .9; }
+}
+
+.bd-veil, .bd-shade { position: absolute; inset: 0; background: #030712; }
+/* náběh: krajina se ukáže, až jsou textury hotové */
+.bd-veil { transition: opacity 1.4s ease; }
+.bd-ready .bd-veil { opacity: 0; }
+/* ztlumení: v přehledu je terén jen náznak pod kartami scén */
+.bd-shade { opacity: 0; transition: opacity 1.4s ease; }
+.bd-overview .bd-shade { opacity: .72; }
+
+/* užší okno: stoh doprostřed za přihlášení, ztlumený a bez štítků */
+@media (max-width: 1279px) {
+  .bd-stage { perspective-origin: 50% 40%; }
+  .bd-shade { opacity: .55; }
+  .bd-overview .bd-shade { opacity: .76; }
+  .bd-tag { display: none; }
+}
+
+/* omezený pohyb: stoh stojí rozjetý */
+@media (prefers-reduced-motion: reduce) {
+  .bd-stage * { animation-play-state: paused !important; animation-delay: calc(var(--bd-cycle) * -0.5) !important; }
+}

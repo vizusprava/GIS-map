@@ -7,7 +7,7 @@
  * chodí v query (`?code=`), ne ve fragmentu.
  */
 import { lazy, Suspense, useEffect } from 'react'
-import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { useAuthStore } from './stores/authStore'
 import { LoginPage } from './pages/LoginPage'
@@ -15,6 +15,7 @@ import { NewPasswordPage } from './pages/NewPasswordPage'
 import { ScenesPage } from './pages/ScenesPage'
 import { AccountPage } from './pages/AccountPage'
 import { loadChunk } from './lib/lazyChunk'
+import { Backdrop } from './backdrop/Backdrop'
 
 // Scéna táhne Cesium i three.js — přes 8 MB skriptu. Přihlášení a přehled scén ho nepotřebují,
 // tak se stáhne až při otevření scény.
@@ -41,12 +42,28 @@ function Gate({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+/**
+ * Pozadí s krajinou za přihlášením (rozkládající se vrstvy) a za přehledem scén (přiblížený
+ * terén). Žije nad routami, ať se po přihlášení přehraje přechod jednoho v druhé. Ve scéně
+ * s mapou ani v prohlížeči odkazu se nekreslí vůbec — grafika patří Cesiu.
+ */
+function BackdropHost() {
+  const { pathname } = useLocation()
+  const user = useAuthStore(s => s.user)
+  const loading = useAuthStore(s => s.loading)
+  const recovery = useAuthStore(s => s.recovery)
+  // dokud se neobnoví přihlášení, nevíme, který stav ukázat — přechod by se přehrál zbytečně
+  if (loading || pathname.startsWith('/scene/') || pathname.startsWith('/view/')) return null
+  return <Backdrop mode={!user || user.is_anonymous || recovery ? 'login' : 'overview'} />
+}
+
 export default function App() {
   const init = useAuthStore(s => s.init)
   useEffect(() => init(), [init])
 
   return (
     <HashRouter>
+      <BackdropHost />
       <Routes>
         <Route path="/" element={<Gate><ScenesPage /></Gate>} />
         <Route path="/account" element={<Gate><AccountPage /></Gate>} />
