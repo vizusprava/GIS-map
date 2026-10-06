@@ -647,7 +647,17 @@ async function main() {
       await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa na tabletu')
       expect(await ev(`!![...document.querySelectorAll('button')].find(b => b.title === 'Zobrazit panel')`), 'panel na úzké obrazovce začíná otevřený')
       await ev(`[...document.querySelectorAll('button')].find(b => b.title === 'Zobrazit panel').click()`)
-      await sleep(600)
+      // Počkat, až panel opravdu vyjede a lišta s vyhledáváním dojedou vedle něj (posun je
+      // animovaný). Pevná pauza nestačila: na pomalém stroji CI se softwarovou grafikou
+      // se měřilo dřív, než se panel stihl otevřít.
+      await waitFor(`(() => {
+        if (!document.querySelector('button[title="Skrýt panel"]')) return false
+        const bar = document.querySelector('button[aria-haspopup="menu"]').closest('.relative.flex').getBoundingClientRect()
+        const s = document.querySelector('input[placeholder^="Najít"]').closest('form').getBoundingClientRect()
+        return bar.left >= 320 && s.left >= 320
+      })()`, 15_000, 'otevření panelu a posun lišty vedle něj')
+        .catch(async e => { throw new Error(`${e.message}; lišta ${await ev(`(() => { const r = document.querySelector('button[aria-haspopup="menu"]').closest('.relative.flex').getBoundingClientRect(); return Math.round(r.left) + '–' + Math.round(r.right) })()`)}`) })
+      await sleep(300)   // dojezd animace
       const m = await ev(`(() => {
         const bar = document.querySelector('button[aria-haspopup="menu"]').closest('.relative.flex').getBoundingClientRect()
         const s = document.querySelector('input[placeholder^="Najít"]').closest('form').getBoundingClientRect()
