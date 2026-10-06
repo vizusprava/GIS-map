@@ -11,13 +11,15 @@
  * ho nemění (dřív se mapa přizpůsobovala tomu, co kamera vidí, a při každém naklonění se
  * přiblížila nebo oddálila). Mění se po půl úrovních a až když se výška změní znatelně.
  * Směr ukazuje kužel široký jako zorný úhel kamery — vždycky stejně dlouhý.
- * Klik do minimapy přesune kameru na to místo — výška nad terénem, natočení i sklon zůstanou.
+ * Klik do minimapy přesune kameru na to místo — výška nad terénem, natočení i sklon zůstanou;
+ * tažení kamerou na místě otočí tam, kam táhneš.
  */
 import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import { X } from 'lucide-react'
 import { ORTO_MAX_LEVEL, ZTM_MAX_LEVEL, orthoTileUrl, ztmTileUrl } from './imagery'
 import { geoidN } from './geoid'
+import { faceCamera } from './sceneUtils'
 
 export type MiniBase = 'orto' | 'ztm'
 
@@ -180,12 +182,37 @@ export function MiniMap({ viewer, base, onBase, onClose, size }: {
     }
   }
 
-  function onClick(e: React.MouseEvent<HTMLDivElement>) {
-    const v = viewer
-    if (!v || v.isDestroyed() || !snap || z === null) return
+  /**
+   * Klik = přesun kamery na to místo, tažení = otočení na místě: kamera se živě dívá tam, kam
+   * táhneš (od středu minimapy, kde kamera stojí). Rozliší je pohyb o pár pixelů.
+   */
+  const drag = useRef<{ id: number; x: number; y: number; turning: boolean } | null>(null)
+  const at = (e: React.PointerEvent<HTMLDivElement>): Pt => {
     const r = e.currentTarget.getBoundingClientRect()
+    return [e.clientX - r.left, e.clientY - r.top]
+  }
+  function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* bez zachycení jen bez tahu mimo minimapu */ }
+    const [x, y] = at(e)
+    drag.current = { id: e.pointerId, x, y, turning: false }
+  }
+  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const d = drag.current, v = viewer
+    if (!d || d.id !== e.pointerId || !v || v.isDestroyed()) return
+    const [x, y] = at(e)
+    if (!d.turning && Math.hypot(x - d.x, y - d.y) < 5) return
+    d.turning = true
+    const dx = x - half, dy = y - half
+    if (Math.hypot(dx, dy) < 6) return // přímo na kameře směr nemá smysl
+    faceCamera(v, Math.atan2(dx, -dy))
+  }
+  function onPointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    const d = drag.current, v = viewer
+    drag.current = null
+    if (!d || d.id !== e.pointerId || d.turning || !v || v.isDestroyed() || !snap || z === null) return
     const world = 256 * 2 ** z
-    moveCameraTo(v, lonOf(snap.cam[0] + (e.clientX - r.left - half) / world), latOf(snap.cam[1] + (e.clientY - r.top - half) / world))
+    moveCameraTo(v, lonOf(snap.cam[0] + (d.x - half) / world), latOf(snap.cam[1] + (d.y - half) / world))
   }
 
   const btn = (b: MiniBase, label: string) => (
@@ -203,9 +230,12 @@ export function MiniMap({ viewer, base, onBase, onClose, size }: {
       style={{ width: size, height: size }}
     >
       <div
-        onClick={onClick}
-        title="Minimapa — klikni a kamera se přesune na to místo"
-        className="absolute inset-0 cursor-crosshair"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={() => { drag.current = null }}
+        title="Minimapa — klik přesune kameru na to místo, tažení ji na místě otočí"
+        className="absolute inset-0 cursor-crosshair touch-none"
       >
         {tiles.map(t => (
           <img

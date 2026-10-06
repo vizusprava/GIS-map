@@ -15,7 +15,7 @@ import { loadGeoRaster, disposeRasterSrc, type CrsId } from './worldRaster'
 import { parseDrawingFile } from './drawingClient'
 import { captureThumb } from './snapshot'
 import { fetchAssetFile, fetchAssetSidecar, isLocalAsset, relinkLocalAsset } from './lib/assets'
-import { nextFrame, waitForMap } from './sceneUtils'
+import { nextFrame, turnCamera, waitForMap } from './sceneUtils'
 import { MissingLocalFile } from './lib/localFiles'
 import type { AssetRow, FileStorage } from './lib/types'
 import { ask } from './dialog'
@@ -957,6 +957,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           onOrtho={camTopOrtho}
           minimapOn={mini.on}
           onMinimap={toggleMini}
+          onTurn={deg => { const v = viewerRef.current; if (v && !v.isDestroyed()) turnCamera(v, deg) }}
           viewCount={camViews.length}
           cameraMenu={<CameraMenu views={views} look={look} motion={motion} presentOn={presentOn} readOnly={guest} />}
           presentOn={presentOn}

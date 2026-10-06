@@ -99,3 +99,20 @@ export function waitForMap(v: Cesium.Viewer, maxMs = 6000): Promise<void> {
     setTimeout(tick, 200)
   })
 }
+
+/**
+ * Natočí kameru na místě na azimut `heading` (radiány, od severu po směru hodin) — poloha,
+ * výška i sklon zůstanou. Rozdělaný přelet se nejdřív dokončí: kdo klikl do minimapy a hned
+ * táhne, chce stát tam, kam klikl, ne někde na půl cesty.
+ */
+export function faceCamera(v: Cesium.Viewer, heading: number) {
+  const cam = v.camera
+  cam.completeFlight()
+  cam.setView({ orientation: { heading, pitch: cam.pitch, roll: cam.roll } })
+}
+
+/** Otočí kameru na místě o `deg` stupňů (kladné doprava) — viz `faceCamera`. */
+export function turnCamera(v: Cesium.Viewer, deg: number) {
+  v.camera.completeFlight()
+  faceCamera(v, v.camera.heading + Cesium.Math.toRadians(deg))
+}

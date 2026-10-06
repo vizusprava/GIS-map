@@ -83,6 +83,8 @@ type Props = {
   /** minimapa v rohu (poloha kamery shora) */
   minimapOn: boolean
   onMinimap: () => void
+  /** otočit kameru na místě o tolik stupňů (kladné doprava) */
+  onTurn: (deg: number) => void
   /** obsah panelu Kamera (CameraMenu) a kolik je uložených pohledů */
   cameraMenu: ReactNode
   viewCount: number
@@ -95,8 +97,8 @@ type Props = {
 
 type GroupId = 'podklad' | 'vyber' | 'nastroje' | 'pohled' | 'kamera' | 'prezentace'
 
-/** Klávesová zkratka: písmeno (malé), případně se Shiftem, a co udělá. */
-type Shortcut = { key: string; shift?: boolean; label: string; run: () => void; when?: boolean; note?: string }
+/** Klávesová zkratka: písmeno (malé), případně se Shiftem, a co udělá. `repeat` = podržením se opakuje. */
+type Shortcut = { key: string; shift?: boolean; label: string; run: () => void; when?: boolean; note?: string; repeat?: boolean }
 const kbdLabel = (sc: Pick<Shortcut, 'key' | 'shift'>) => (sc.shift ? '⇧' : '') + sc.key.toUpperCase()
 
 /**
@@ -118,6 +120,8 @@ function shortcuts(p: Props): Shortcut[] {
     { key: 'k', label: 'Katastr zap / vyp', run: () => p.layers.setKatastrOn(v => !v) },
     { key: 't', label: 'Shora / perspektiva', run: p.camProj === 'ortho' ? p.onPersp : p.onOrtho },
     { key: 'n', label: 'Minimapa zap / vyp', run: p.onMinimap },
+    { key: 'q', label: 'Otočit kameru doleva', run: () => p.onTurn(-5), repeat: true, note: 'na místě, podržet' },
+    { key: 'e', label: 'Otočit kameru doprava', run: () => p.onTurn(5), repeat: true, note: 'na místě, podržet' },
   ]
   // `edit` = nástroj, který ve veřejném prohlížeči není (vede k exportům nebo úpravám)
   return p.guest ? all.filter(s => !s.edit) : all
@@ -162,13 +166,14 @@ export function MapTools(p: Props) {
   useEffect(() => { keysRef.current = keys })
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || isTyping(e.target)) return
-      if (e.key === '?') { e.preventDefault(); setHelp(h => !h); return }
+      if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return
+      if (e.key === '?') { if (!e.repeat) { e.preventDefault(); setHelp(h => !h) } return }
       const k = e.key.toLowerCase()
       const sc = keysRef.current.find(s => s.key === k && !!s.shift === e.shiftKey && s.when !== false)
-      if (!sc) return
+      // podržená klávesa opakuje jen to, co opakovat má (otáčení), ne přepínače
+      if (!sc || (e.repeat && !sc.repeat)) return
       e.preventDefault()
-      setOpen(null)
+      if (!e.repeat) setOpen(null)
       sc.run()
     }
     window.addEventListener('keydown', onKey)
@@ -399,6 +404,7 @@ function KeyHelp({ keys, onClose }: { keys: Shortcut[]; onClose: () => void }) {
     ...keys.map(sc => ({ k: kbdLabel(sc), label: sc.label, note: sc.note })),
     { k: 'Esc', label: 'Vypnout nástroj, podruhé zrušit výběr' },
     { k: '← →', label: 'Předchozí / další uložený pohled' },
+    { k: '⇧ + tah', label: 'Rozhlédnout se na místě', note: 'myší v mapě' },
     { k: '?', label: 'Tenhle přehled' },
   ]
   return (
@@ -411,7 +417,7 @@ function KeyHelp({ keys, onClose }: { keys: Shortcut[]; onClose: () => void }) {
       <div className="grid grid-cols-1 gap-x-5 gap-y-1 sm:grid-cols-2">
         {rows.map(r => (
           <div key={r.k + r.label} className="flex items-center gap-2">
-            <span className="w-9 shrink-0 text-right"><Kbd>{r.k}</Kbd></span>
+            <span className="w-14 shrink-0 text-right"><Kbd>{r.k}</Kbd></span>
             <span>{r.label}{r.note && <span className="text-gray-500"> ({r.note})</span>}</span>
           </div>
         ))}

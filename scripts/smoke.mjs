@@ -311,7 +311,7 @@ async function main() {
     await waitFor(`${label} === 'Perspektiva'`, 5000, 'přepnutí klávesou T zpátky na perspektivu')
   })
 
-  await check('minimapa: zapnutá od startu, směr pohledu, měřítko nezávislé na sklonu, podklad, klik, N', async () => {
+  await check('minimapa a otáčení: směr, měřítko nezávislé na sklonu, podklad, klik, tažení, Q/E, Shift + tažení bez náklonu, N', async () => {
     const cam = `(() => { const p = window.__scene.camera.positionWC; return [p.x, p.y, p.z] })()`
     const start = await ev(cam)
     await waitFor(`!!document.querySelector('[data-minimap="orto"] [data-minimap-view]') && !!document.querySelector('[data-minimap] img')`, 10_000, 'minimapa zapnutá od startu')
@@ -345,13 +345,57 @@ async function main() {
     const before = await ev(cam)
     const world = await ev(`256 * 2 ** Number(document.querySelector('[data-minimap]').dataset.zoom)`)
     const [ax, ay] = await ev(`(() => { const c = window.__scene.camera.positionCartographic; ${merc} })()`)
-    await ev(`(() => { const el = document.querySelector('[data-minimap] [title^="Minimapa"]'); const r = el.getBoundingClientRect()
-      el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: r.left + r.width / 2 + 40, clientY: r.top + r.height / 2 + 30 })) })()`)
+    // skutečný klik myší (minimapa poslouchá pointer události, ne `click`)
+    const [mcx, mcy] = await ev(`(() => { const r = document.querySelector('[data-minimap] [title^="Minimapa"]').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2] })()`)
+    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+      await page.send('Input.dispatchMouseEvent', { type, x: mcx + 40, y: mcy + 30, button: type === 'mouseMoved' ? 'none' : 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: type === 'mouseMoved' ? 0 : 1 })
+    }
     await waitFor(`(() => { const p = window.__scene.camera.positionWC, b = ${JSON.stringify(before)}; return Math.hypot(p.x - b[0], p.y - b[1], p.z - b[2]) > 20 })()`, 5_000, 'posun kamery po kliku do minimapy')
     await sleep(1200) // dolet
     const [gx, gy] = await ev(`(() => { const c = window.__scene.camera.positionCartographic; ${merc} })()`)
     const miss = Math.hypot(gx - (ax + 40 / world), gy - (ay + 30 / world)) * world
     expect(miss < 3, `kamera skončila ${miss.toFixed(1)} px od místa kliku na minimapě`)
+
+    // skutečné tažení myší (CDP), `modifiers` 8 = Shift
+    const dragMouse = async (x0, y0, x1, y1, modifiers = 0) => {
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x0, y: y0, modifiers })
+      await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: x0, y: y0, button: 'left', buttons: 1, clickCount: 1, modifiers })
+      for (let i = 1; i <= 8; i++) {
+        await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x0 + ((x1 - x0) * i) / 8, y: y0 + ((y1 - y0) * i) / 8, button: 'left', buttons: 1, modifiers })
+        await sleep(30)
+      }
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x1, y: y1, button: 'left', buttons: 0, clickCount: 1, modifiers })
+      await sleep(300)
+    }
+    const hpr = `(() => { const c = window.__scene.camera; return [c.heading, c.pitch, c.roll].map(v => v * 180 / Math.PI) })()`
+    const angle = d => ((d % 360) + 360) % 360
+    // tažení v minimapě na západ od kamery → kamera se na místě otočí na západ
+    const atPos = await ev(cam)
+    const [mx, my] = await ev(`(() => { const r = document.querySelector('[data-minimap] [title^="Minimapa"]').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2] })()`)
+    await dragMouse(mx + 20, my - 20, mx - 50, my)
+    const [h1] = await ev(hpr)
+    const moved = await ev(`(() => { const p = window.__scene.camera.positionWC, b = ${JSON.stringify(atPos)}; return Math.hypot(p.x - b[0], p.y - b[1], p.z - b[2]) })()`)
+    expect(Math.abs(angle(h1) - 270) < 2, `po tažení v minimapě na západ je azimut ${h1.toFixed(1)}°`)
+    expect(moved < 1, `tažení v minimapě kamerou pohnulo o ${moved.toFixed(1)} m`)
+    // Q / E: o 5° doleva a zpátky
+    await ev(`document.activeElement?.blur()`)
+    await press('q')
+    const [hq] = await ev(hpr)
+    expect(Math.abs(angle(hq - h1) - 355) < 0.5, `Q otočila o ${(angle(hq - h1) - 360).toFixed(1)}°`)
+    await press('e')
+    const [he] = await ev(hpr)
+    expect(Math.abs(angle(he - h1)) < 0.5 || Math.abs(angle(he - h1) - 360) < 0.5, `E se nevrátila: ${he.toFixed(1)}° proti ${h1.toFixed(1)}°`)
+    // Shift + tažení šikmo: azimut i sklon se mění, náklon do strany zůstává nula
+    await ev(`window.__scene.camera.setView({ orientation: { heading: 0, pitch: -0.5, roll: 0 } })`)
+    await sleep(200)
+    // dva tahy: (+150, −150) a (−100, +80) px → celkem azimut −50 px, sklon −70 px (obraz jde s myší)
+    await dragMouse(800, 400, 950, 250, 8)
+    await dragMouse(800, 400, 700, 480, 8)
+    const k = await ev(`(() => { const c = window.__scene.canvas; return window.__scene.camera.frustum.fov * 180 / Math.PI / Math.max(c.clientWidth, c.clientHeight) })()`)
+    const [hl, pl, rl] = await ev(hpr)
+    expect(Math.abs(angle(hl) - angle(-50 * k)) < 0.3, `Shift + tažení: azimut ${angle(hl).toFixed(2)}°, čekal jsem ${angle(-50 * k).toFixed(2)}°`)
+    expect(Math.abs(pl - (-28.648 - 70 * k)) < 0.3, `Shift + tažení: sklon ${pl.toFixed(2)}°, čekal jsem ${(-28.648 - 70 * k).toFixed(2)}°`)
+    expect(Math.abs(rl) < 0.01 || Math.abs(rl - 360) < 0.01, `Shift + tažení naklonilo kameru do strany o ${rl.toFixed(2)}°`)
     // N zavře; zavřenou vrátí tlačítko nad kompasem
     await press('n')
     expect(!(await ev(`!!document.querySelector('[data-minimap]')`)), 'N minimapu nezavřela')

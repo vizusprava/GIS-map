@@ -278,6 +278,49 @@ export function useCameraMotion(deps: {
     }
   }, [])
 
+  /**
+   * Rozhlížení na místě: Shift + tažení levým tlačítkem. Vlastní, ne vestavěné v Cesiu — to
+   * otáčí kolem os kamery, a tak se při tažení šikmo kamera postupně naklání do strany (změřeno:
+   * tři tahy a obzor je o 8° nakřivo). Tady se mění jen azimut a sklon, náklon zůstává nula.
+   * Pocit i rychlost jako dřív: obraz jde s myší (tah doprava = pohled doleva, nahoru = dolů),
+   * jeden pixel = zorný úhel / šířka obrazovky.
+   */
+  useEffect(() => {
+    const v = viewerRef.current
+    if (!v || v.isDestroyed()) return
+    const scene = v.scene, cam = scene.camera, canvas = scene.canvas
+    const ssc = scene.screenSpaceCameraController
+    ssc.lookEventTypes = undefined
+    let look: { id: number; x: number; y: number } | null = null
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0 || !e.shiftKey || e.pointerType === 'touch' || !ssc.enableInputs) return
+      look = { id: e.pointerId, x: e.clientX, y: e.clientY }
+    }
+    const onMove = (e: PointerEvent) => {
+      if (!look || e.pointerId !== look.id) return
+      if (!(e.buttons & 1)) { look = null; return } // puštěné mimo okno
+      const dx = e.clientX - look.x, dy = e.clientY - look.y
+      look.x = e.clientX; look.y = e.clientY
+      if (!dx && !dy) return
+      const f = cam.frustum
+      const k = (f instanceof Cesium.PerspectiveFrustum && f.fov ? f.fov : Math.PI / 3) / Math.max(1, canvas.clientWidth, canvas.clientHeight)
+      // pohled shora bez perspektivy má sklon pevně dolů — tam se jen otáčí
+      const pitch = f instanceof Cesium.OrthographicFrustum ? cam.pitch
+        : Cesium.Math.clamp(cam.pitch + dy * k, Cesium.Math.toRadians(-89.5), Cesium.Math.toRadians(60))
+      cam.completeFlight()
+      cam.setView({ orientation: { heading: cam.heading - dx * k, pitch, roll: 0 } })
+    }
+    const onUp = (e: PointerEvent) => { if (look && e.pointerId === look.id) look = null }
+    canvas.addEventListener('pointerdown', onDown)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
+      canvas.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+  }, [])
+
   return {
     camPerspective,
     camProj,
