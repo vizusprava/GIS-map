@@ -15,6 +15,7 @@ import { loadGeoRaster, disposeRasterSrc, type CrsId } from './worldRaster'
 import { parseDrawingFile } from './drawingClient'
 import { captureThumb } from './snapshot'
 import { fetchAssetFile, fetchAssetSidecar, isLocalAsset, relinkLocalAsset } from './lib/assets'
+import { nextFrame, waitForMap } from './sceneUtils'
 import { MissingLocalFile } from './lib/localFiles'
 import type { AssetRow, FileStorage } from './lib/types'
 import { ask } from './dialog'
@@ -505,16 +506,35 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     if (!assets.length) return
     let alive = true
     void (async () => {
-      let done = 0
+      // Nejdřív mapa: dokud se dotahují dlaždice pod pohledem, soubory čekají — jinak by
+      // se o procesor a grafiku praly a nebylo by vidět nic. Pomalé dlaždice ale čekají
+      // nejdéle pár vteřin.
+      const v0 = viewerRef.current
+      if (!v0 || v0.isDestroyed()) return
+      const n = assets.length
+      setRestoring(`Nejdřív mapa, pak ${n === 1 ? 'soubor' : `${n} ${n <= 4 ? 'soubory' : 'souborů'}`} scény…`)
+      await waitForMap(v0)
+      // Stahování jde po síti a mapu nebrzdí: další soubor se stahuje, zatímco se předchozí staví.
+      const files = new Map<number, Promise<File>>()
+      const fileAt = (i: number) => {
+        let p = files.get(i)
+        if (!p) { p = fetchAssetFile(assets[i]); p.catch(() => { /* ozve se, až na něj dojde */ }); files.set(i, p) }
+        return p
+      }
       const missing: AssetRow[] = []
-      for (const a of assets) {
+      for (let i = 0; i < assets.length; i++) {
+        const a = assets[i]
         const v = viewerRef.current
         if (!alive || !v || v.isDestroyed()) return
-        setRestoring(`Načítám „${a.name}" (${++done}/${assets.length})`)
+        setRestoring(`Načítám „${a.name}" (${i + 1}/${assets.length})`)
         try {
-          const file = await fetchAssetFile(a)
+          const file = await fileAt(i)
+          files.delete(i)
+          if (i + 1 < assets.length) fileAt(i + 1)
           if (!alive) return
           await mountAsset(a, file, () => alive)
+          // mezi soubory dát mapě snímek — překreslí, co přibylo, a chytí myš
+          await nextFrame()
         } catch (e) {
           // uložený jen v jiném počítači → nabídnout k dohledání, ne hlásit jako chybu
           if (e instanceof MissingLocalFile) { missing.push(a); continue }

@@ -4,13 +4,11 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
-import * as THREE from 'three'
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { toast } from 'sonner'
 import { MAX_GLB_YAW_DEG, MODEL_GLOW } from './config'
 import { pickTerrain, viewCenterGround, buildMatrix } from './sceneUtils'
-import { computeBottomZ, georeferenceSjtskGlb } from './model3d'
+import { prepareModelFile } from './modelClient'
+import type { PreparedModel } from './model3d'
 import { parseAnchor } from './exportUtils'
 import type { Anchor, MapClickOwner, ModelEntry, Placement, SceneObj } from './types'
 import type { AssetConfig } from './lib/types'
@@ -125,35 +123,30 @@ export function useModels(deps: {
     if (!v || v.isDestroyed()) return
 
     const isGlb = /\.(glb|gltf)$/i.test(file.name)
-    // glb URL pro Cesium (OBJ převedeme přes three) + promise na nejnižší bod + případná geo-kotva
+    // glb URL pro Cesium (OBJ převedeme přes three) + nejnižší bod + případná geo-kotva
     let url: string
-    let bottomPromise: Promise<number | null>
+    let bottomZ: number | null = null
     let anchor = parseAnchor(file.name) // kotva z názvu (geo_lon_lat_h.*) → reimport našeho exportu
     let footprint: Cesium.Cartesian3[][] | null = null // obrys(y) půdorysu ve světě pro skrytí mapy (jen S-JTSK)
-    if (/\.obj$/i.test(file.name)) {
-      try {
-        const group = new OBJLoader().parse(await file.text())
-        group.traverse(o => {
-          const m = o as THREE.Mesh
-          if (m.isMesh && m.geometry) { m.geometry.rotateX(-Math.PI / 2); m.geometry.rotateY(-Math.PI / 2) }
-        })
-        const box = new THREE.Box3().setFromObject(group)
-        bottomPromise = Promise.resolve(Number.isFinite(box.min.y) ? box.min.y : null)
-        const glbBuf = await new Promise<ArrayBuffer>((res, rej) => new GLTFExporter().parse(group, r => res(r as ArrayBuffer), rej, { binary: true }))
-        url = URL.createObjectURL(new Blob([glbBuf], { type: 'model/gltf-binary' }))
-      } catch (e) { console.error('Import OBJ selhal:', e); return }
+    if (anchor && isGlb) {
+      // náš export s kotvou v názvu: nic se nepočítá, nejnižší bod se u kotvy nepoužívá
+      url = URL.createObjectURL(file)
     } else {
-      // glb bez kotvy v názvu: zkus rozpoznat reálné S-JTSK souřadnice v geometrii a usadit přesně
-      const geo = !anchor ? await georeferenceSjtskGlb(file).catch(e => { console.error('Georeference selhala:', e); return null }) : null
-      if (geo) {
-        url = geo.url
-        bottomPromise = Promise.resolve(geo.bottomZ)
-        anchor = geo.anchor
-        footprint = geo.footprint
+      // OBJ → GLB, u GLB bez kotvy pokus o S-JTSK souřadnice v geometrii. Ve workeru: u modelu
+      // s miliony vrcholů je to práce na desítky vteřin a mapa se mezitím musí hýbat.
+      let prep: PreparedModel
+      try { prep = await prepareModelFile(file, !anchor) } catch (e) {
+        console.error(`Příprava modelu „${file.name}" selhala:`, e)
+        if (/\.obj$/i.test(file.name)) { toast.error(restore ? `Model „${file.name}" se nepodařilo obnovit` : 'Import OBJ selhal'); return }
+        prep = { glb: null, bottomZ: null, geo: null } // GLB zkusí načíst rovnou Cesium
+      }
+      if (v.isDestroyed()) return
+      url = prep.glb ? URL.createObjectURL(new Blob([prep.glb], { type: 'model/gltf-binary' })) : URL.createObjectURL(file)
+      bottomZ = prep.bottomZ
+      if (prep.geo) {
+        anchor = prep.geo.anchor
+        footprint = prep.geo.footprint?.map(r => r.map(([x, y, z]) => new Cesium.Cartesian3(x, y, z))) ?? null
         if (!restore) toast.success('Model usazen podle S-JTSK souřadnic z geometrie')
-      } else {
-        url = URL.createObjectURL(file)
-        bottomPromise = computeBottomZ(file)
       }
     }
 
@@ -205,7 +198,6 @@ export function useModels(deps: {
         if (!anchor) {
           const inv = Cesium.Matrix4.inverse(model.modelMatrix, new Cesium.Matrix4())
           const localCenter = Cesium.Matrix4.multiplyByPoint(inv, model.boundingSphere.center, new Cesium.Cartesian3())
-          const bottomZ = await bottomPromise
           entry.center = new Cesium.Cartesian3(localCenter.x, localCenter.y, bottomZ ?? 0)
           model.modelMatrix = buildMatrix(entry.placement, entry.center, entry.yawDeg)
         }

@@ -57,13 +57,28 @@ export function simplifyRingCapped(ring: [number, number][]): [number, number][]
   return simp.length >= 3 ? simp : null
 }
 
+/**
+ * Body do mřížky obrysu: z každé buňky jen první bod (interiér nás nezajímá, obrys drží
+ * krajní body). Body se dají přidávat průběžně — model s miliony vrcholů tak nemusí nejdřív
+ * skládat pole všech bodů. Klíč je číslo, ne řetězec: u milionu vrcholů to je znát.
+ */
+export class FootprintGrid {
+  private cells = new Map<number, [number, number]>()
+  add(x: number, y: number) {
+    // ±2^21 buněk po 15 cm = ±314 km od kotvy; dál model v ENU nesahá
+    const k = (Math.round(x / FOOT_GRID_M) + 2097152) * 4194304 + (Math.round(y / FOOT_GRID_M) + 2097152)
+    if (!this.cells.has(k)) this.cells.set(k, [x, y])
+  }
+  points(): [number, number][] { return [...this.cells.values()] }
+}
+
 /** Konkávní obal 2D bodů → zjednodušený prstenec [[x,y],…] bez děr; null když málo bodů. */
 export function concaveFootprint(pts: [number, number][]): [number, number][] | null {
   if (pts.length < 3) return null
-  // dedup do mřížky kvůli výkonu (interiér nás nezajímá, obrys drží krajní body)
-  const grid = new Map<string, [number, number]>()
-  for (const [x, y] of pts) { const k = `${Math.round(x / FOOT_GRID_M)}_${Math.round(y / FOOT_GRID_M)}`; if (!grid.has(k)) grid.set(k, [x, y]) }
-  const uniq = [...grid.values()]
+  // dedup do mřížky kvůli výkonu
+  const grid = new FootprintGrid()
+  for (const [x, y] of pts) grid.add(x, y)
+  const uniq = grid.points()
   if (uniq.length < 3) return null
   let raw: number[][]
   try { raw = concaveman(uniq, FOOT_CONCAVITY, FOOT_MIN_INLET_M) } catch (e) { console.error('Konkávní obal selhal:', e); return null }

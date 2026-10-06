@@ -3,16 +3,19 @@
  *
  * three je tu JEN na čtení geometrie (nejnižší bod, vrcholy pro půdorys) — vykreslování si
  * Cesium dělá samo ze stejného souboru.
+ *
+ * Modul je záměrně bez Cesia: příprava modelu (`prepareModel`) běží ve workeru (modelWorker.ts),
+ * protože u modelu s miliony vrcholů trvá i desítky vteřin a mapa by po celou dobu stála.
  */
-import * as Cesium from 'cesium'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js'
 import { wgsOf } from './tiles'
 import { geoidN } from './geoid'
-import { FOOT_MAX_TRIS_UNION, MASK_NAME_RE, concaveFootprint, simplifyRingCapped, unionOutlines } from './rings'
+import { FOOT_MAX_TRIS_UNION, MASK_NAME_RE, FootprintGrid, concaveFootprint, simplifyRingCapped, unionOutlines } from './rings'
 import type { Anchor } from './types'
 
 // three loader jen pro změření modelu (nejnižší bod) — Cesium si model vykresluje sám
@@ -75,33 +78,101 @@ export function textureImageIndex(parser: GltfParser | undefined, json: GltfJson
   return json.images?.length === 1 ? 0 : null
 }
 
-/** Nejnižší bod modelu (gltf Y-up = cesium Z-up). null = nezměřeno. */
-export async function computeBottomZ(file: File): Promise<number | null> {
-  try {
-    const buf = await file.arrayBuffer()
-    const gltf = await new Promise<{ scene: THREE.Object3D }>((resolve, reject) => {
-      getGltfLoader().parse(buf, '', g => resolve(g as unknown as { scene: THREE.Object3D }), reject)
+
+// ── WGS84 bez Cesia (stejné vzorce jako Cartesian3.fromDegrees a Transforms.eastNorthUpToFixedFrame) ──
+
+type V3 = [number, number, number]
+const RX2 = 6378137.0 ** 2, RZ2 = 6356752.3142451793 ** 2
+const RAD = Math.PI / 180
+
+/** zeměpisné souřadnice + výška nad elipsoidem → ECEF */
+function ecefOf(lon: number, lat: number, h: number): V3 {
+  const lo = lon * RAD, la = lat * RAD, cl = Math.cos(la)
+  let nx = cl * Math.cos(lo), ny = cl * Math.sin(lo), nz = Math.sin(la)
+  const nl = Math.hypot(nx, ny, nz); nx /= nl; ny /= nl; nz /= nl
+  const kx = RX2 * nx, ky = RX2 * ny, kz = RZ2 * nz
+  const g = Math.sqrt(nx * kx + ny * ky + nz * kz)
+  return [kx / g + nx * h, ky / g + ny * h, kz / g + nz * h]
+}
+
+/** lokální rámec východ–sever–nahoru v bodě `o` (ECEF), jako eastNorthUpToFixedFrame mimo póly */
+function enuFrame(o: V3) {
+  const ux0 = o[0] / RX2, uy0 = o[1] / RX2, uz0 = o[2] / RZ2
+  const ul = Math.hypot(ux0, uy0, uz0)
+  const up: V3 = [ux0 / ul, uy0 / ul, uz0 / ul]
+  const el = Math.hypot(o[0], o[1])
+  const east: V3 = [-o[1] / el, o[0] / el, 0]
+  const north: V3 = [up[1] * east[2] - up[2] * east[1], up[2] * east[0] - up[0] * east[2], up[0] * east[1] - up[1] * east[0]]
+  return { o, east, north, up }
+}
+
+// ── příprava modelu pro Cesium ──────────────────────────────────────────────────────
+
+/** Co z přípravy modelu dostane mapa (stejné z workeru i ze záložního běhu na hlavním vlákně). */
+export type PreparedModel = {
+  /** GLB pro Cesium: převedený OBJ nebo georeferencovaný model; null = vykreslit původní soubor */
+  glb: ArrayBuffer | null
+  /** nejnižší bod modelu (gltf Y-up = cesium Z-up); null = nezměřeno */
+  bottomZ: number | null
+  /** model usazený podle S-JTSK z geometrie: kotva a obrys(y) půdorysu ve světě (ECEF) */
+  geo: { anchor: Anchor; footprint: V3[][] | null } | null
+}
+
+const parseGltf = (buf: ArrayBuffer) => new Promise<THREE.Object3D>((res, rej) => {
+  getGltfLoader().parse(buf, '', g => res((g as unknown as { scene: THREE.Object3D }).scene), rej)
+})
+const exportGlb = (obj: THREE.Object3D) =>
+  new Promise<ArrayBuffer>((res, rej) => new GLTFExporter().parse(obj, r => res(r as ArrayBuffer), rej, { binary: true }))
+const bottomOf = (obj: THREE.Object3D) => {
+  const box = new THREE.Box3().setFromObject(obj)
+  return Number.isFinite(box.min.y) ? box.min.y : null
+}
+
+/**
+ * Model ze souboru → to, co se předá Cesiu. Soubor se parsuje JEDNOU (dřív zvlášť kvůli
+ * georeferenci a zvlášť kvůli nejnižšímu bodu).
+ *
+ * - OBJ se převede na GLB (otočení os jako náš export) a změří.
+ * - GLB/glTF s `georef` zkusí rozpoznat reálné S-JTSK souřadnice v geometrii a zapéct je;
+ *   jinak se jen změří a vykreslí se původní soubor.
+ * Soubor, který three nepřečte, vrátí prázdný výsledek — o chybě pak rozhodne Cesium. Se `strict`
+ * (ve workeru) je to chyba: klient to pak zkusí ještě na hlavním vlákně, kde three umí víc.
+ */
+export async function prepareModel(name: string, buf: ArrayBuffer, georef: boolean, opts?: { strict?: boolean }): Promise<PreparedModel> {
+  if (/\.obj$/i.test(name)) {
+    const group = new OBJLoader().parse(new TextDecoder().decode(buf))
+    group.traverse(o => {
+      const m = o as THREE.Mesh
+      if (m.isMesh && m.geometry) { m.geometry.rotateX(-Math.PI / 2); m.geometry.rotateY(-Math.PI / 2) }
     })
-    const box = new THREE.Box3().setFromObject(gltf.scene)
-    return Number.isFinite(box.min.y) ? box.min.y : null
-  } catch { return null }
+    const bottomZ = bottomOf(group)
+    return { glb: await exportGlb(group), bottomZ, geo: null }
+  }
+  let scene: THREE.Object3D
+  try { scene = await parseGltf(buf) } catch (e) {
+    if (opts?.strict) throw e
+    return { glb: null, bottomZ: null, geo: null }
+  }
+  scene.updateMatrixWorld(true)
+  // změřit předem: nepovedená georeference mohla scénu napůl přepsat
+  const bottomZ = bottomOf(scene)
+  if (georef) {
+    try {
+      const g = await georeferenceScene(scene)
+      if (g) return g
+    } catch (e) { console.error('Georeference selhala:', e) }
+  }
+  return { glb: null, bottomZ, geo: null }
 }
 
 /**
  * Model z 3ds Max s reálnými S-JTSK (EPSG:5514) souřadnicemi v geometrii → přemapuje každý vrchol
  * proj4 (S-JTSK→WGS84) + výška Bpv→elipsoid a zapeče do lokálního ENU rámce (E,U,-N) kolem těžiště,
- * stejnou konvencí jako náš export. Vrací glb URL + geo-kotvu. null = nevypadá jako S-JTSK (necháme ruční).
+ * stejnou konvencí jako náš export. Vrací glb + geo-kotvu. null = nevypadá jako S-JTSK (necháme ruční).
  * Osy/znaménko se detekují z dat: výška = osa s nejmenší velikostí, horizontály dle velikosti (v ČR |Y|>|X|),
  * proj4 chce záporné hodnoty.
  */
-
-export async function georeferenceSjtskGlb(file: File): Promise<{ url: string; anchor: Anchor; bottomZ: number; footprint: Cesium.Cartesian3[][] | null } | null> {
-  const buf = await file.arrayBuffer()
-  const gltf = await new Promise<{ scene: THREE.Object3D }>((res, rej) => {
-    getGltfLoader().parse(buf, '', g => res(g as unknown as { scene: THREE.Object3D }), rej)
-  })
-  const scene = gltf.scene
-  scene.updateMatrixWorld(true)
+async function georeferenceScene(scene: THREE.Object3D): Promise<PreparedModel | null> {
   const box = new THREE.Box3().setFromObject(scene)
   if (box.isEmpty()) return null
   const c = box.getCenter(new THREE.Vector3())
@@ -123,11 +194,12 @@ export async function georeferenceSjtskGlb(file: File): Promise<{ url: string; a
   // mění o milimetry a model tak zůstane tuhý
   const geoid = geoidN(aLon, aLat)
   const anchor: Anchor = { lon: aLon, lat: aLat, h: comp(c, upAxis) + geoid }
-  const anchorECEF = Cesium.Cartesian3.fromDegrees(anchor.lon, anchor.lat, anchor.h)
-  const inv = Cesium.Matrix4.inverseTransformation(Cesium.Transforms.eastNorthUpToFixedFrame(anchorECEF), new Cesium.Matrix4())
-  const s = new Cesium.Cartesian3(), o = new Cesium.Cartesian3(), vw = new THREE.Vector3()
+  const { o: O, east: E, north: N, up: U } = enuFrame(ecefOf(anchor.lon, anchor.lat, anchor.h))
+  const vw = new THREE.Vector3()
   let minU = Infinity
-  const allPts: [number, number][] = [] // ENU (east, north) všech vrcholů — fallback obrys celého modelu
+  // Obrys celého modelu: body jdou rovnou do mřížky obrysu. Dřív se sbíralo pole všech
+  // vrcholů — u modelu s miliony vrcholů stovky MB jen na tohle.
+  const grid = new FootprintGrid()
   const maskTris = new Map<string, [number, number][][]>() // ENU trojúhelníky maskovacích objektů (podle názvu)
 
   const meshes: THREE.Mesh[] = []
@@ -142,13 +214,16 @@ export async function georeferenceSjtskGlb(file: File): Promise<{ url: string; a
       vw.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(wm) // do světových souřadnic (respektuj hierarchii)
       const [sx, sy, up] = toSjtsk(vw)
       const [lon, lat] = wgsOf(sx, sy)
-      const e = Cesium.Cartesian3.fromDegrees(lon, lat, up + geoid)
-      s.x = e.x; s.y = e.y; s.z = e.z
-      Cesium.Matrix4.multiplyByPoint(inv, s, o) // (east, north, up) v ENU kolem kotvy
-      pos.setXYZ(i, o.x, o.z, -o.y)             // gltf (E, U, -N) — stejné jako buildExportScene
-      if (o.z < minU) minU = o.z
-      allPts.push([o.x, o.y])                   // ENU (east, north)
-      if (isMask) meshEN[i] = [o.x, o.y]
+      const p = ecefOf(lon, lat, up + geoid)
+      const dx = p[0] - O[0], dy = p[1] - O[1], dz = p[2] - O[2]
+      // (east, north, up) v ENU kolem kotvy
+      const oe = E[0] * dx + E[1] * dy + E[2] * dz
+      const on = N[0] * dx + N[1] * dy + N[2] * dz
+      const ou = U[0] * dx + U[1] * dy + U[2] * dz
+      pos.setXYZ(i, oe, ou, -on)                // gltf (E, U, -N) — stejné jako buildExportScene
+      if (ou < minU) minU = ou
+      grid.add(oe, on)
+      if (isMask) meshEN[i] = [oe, on]
     }
     if (isMask) {
       let tris = maskTris.get(m.name); if (!tris) { tris = []; maskTris.set(m.name, tris) }
@@ -164,15 +239,13 @@ export async function georeferenceSjtskGlb(file: File): Promise<{ url: string; a
   scene.traverse(obj => { obj.position.set(0, 0, 0); obj.quaternion.identity(); obj.scale.set(1, 1, 1); obj.updateMatrix() })
   scene.updateMatrixWorld(true)
 
-  const glbBuf = await new Promise<ArrayBuffer>((res, rej) => new GLTFExporter().parse(scene, r => res(r as ArrayBuffer), rej, { binary: true }))
-  const url = URL.createObjectURL(new Blob([glbBuf], { type: 'model/gltf-binary' }))
+  const glb = await exportGlb(scene)
 
   // obrys(y) půdorysu → svět přes kotvu (přesné, nezávislé na Cesium korekci os).
   // Maskovací objekty: přesný obrys geometrie (union trojúhelníků) → vhloubení zůstanou nevyříznutá.
   // Bez masek: konkávní obal celého modelu.
-  const F = Cesium.Transforms.eastNorthUpToFixedFrame(anchorECEF)
-  const enToWorld = (e: number, n: number) => Cesium.Matrix4.multiplyByPoint(F, new Cesium.Cartesian3(e, n, 0), new Cesium.Cartesian3())
-  const footprint: Cesium.Cartesian3[][] = []
+  const enToWorld = (e: number, n: number): V3 => [O[0] + E[0] * e + N[0] * n, O[1] + E[1] * e + N[1] * n, O[2] + E[2] * e + N[2] * n]
+  const footprint: V3[][] = []
   if (maskTris.size) {
     for (const [name, tris] of maskTris) {
       let rings: [number, number][][]
@@ -181,8 +254,12 @@ export async function georeferenceSjtskGlb(file: File): Promise<{ url: string; a
       for (const r of rings) { const simp = simplifyRingCapped(r); if (simp) footprint.push(simp.map(([e, n]) => enToWorld(e, n))) }
     }
   } else {
-    const ring = concaveFootprint(allPts)
+    const ring = concaveFootprint(grid.points())
     if (ring) footprint.push(ring.map(([e, n]) => enToWorld(e, n)))
   }
-  return { url, anchor, bottomZ: Number.isFinite(minU) ? minU : 0, footprint: footprint.length ? footprint : null }
+  return {
+    glb,
+    bottomZ: Number.isFinite(minU) ? minU : 0,
+    geo: { anchor, footprint: footprint.length ? footprint : null },
+  }
 }

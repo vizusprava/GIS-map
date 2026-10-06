@@ -20,7 +20,7 @@ import { createServer } from 'node:http'
 import { existsSync, statSync, createReadStream, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, extname, resolve } from 'node:path'
-import { inflateSync } from 'node:zlib'
+import { deflateSync, inflateSync } from 'node:zlib'
 
 const args = new Set(process.argv.slice(2))
 const FULL = args.has('--full')
@@ -114,6 +114,49 @@ const group = i => ev(`(() => { const b = document.querySelectorAll('button[aria
 /** Sekce panelu: existuje? rozbalená? obarvená? */
 const section = id => ev(`(() => { const d = document.querySelector('[data-sec="${id}"]'); if (!d) return null; const m = d.className.match(/border-(${COLORS})-500/); return { open: d.children.length > 1, color: m ? m[1] : null, title: d.querySelector('button')?.innerText.trim() } })()`)
 const clickText = (scope, text) => ev(`(() => { const bs = [...(${scope}).querySelectorAll('button')]; const b = bs.find(b => b.innerText.trim() === ${JSON.stringify(text)}) ?? bs.find(b => b.innerText.includes(${JSON.stringify(text)})); b?.click(); return !!b })()`)
+
+/**
+ * GLB jako z 3ds Maxu: mřížka n×n vrcholů po 0,4 m v S-JTSK u Kladna (kladné souřadnice, výška
+ * = osa Y) a textura t×t px — ať příprava ve workeru projde i dekódováním a exportem obrázku.
+ */
+function sjtskGlb(n, t) {
+  const crcT = new Uint32Array(256).map((_, k) => { let c = k; for (let i = 0; i < 8; i++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0 })
+  const crc = b => { let c = 0xffffffff; for (const x of b) c = crcT[(c ^ x) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0 }
+  const chunk = (type, d) => { const h = Buffer.alloc(8); h.writeUInt32BE(d.length); h.write(type, 4); const c = Buffer.alloc(4); c.writeUInt32BE(crc(Buffer.concat([h.subarray(4), d]))); return Buffer.concat([h, d, c]) }
+  const raw = Buffer.alloc((t * 3 + 1) * t)
+  for (let y = 0; y < t; y++) for (let x = 0; x < t; x++) raw.set([x * 4, y * 4, 128], y * (t * 3 + 1) + 1 + x * 3)
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(t, 0); ihdr.writeUInt32BE(t, 4); ihdr[8] = 8; ihdr[9] = 2
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
+  const pos = new Float32Array(n * n * 3), uv = new Float32Array(n * n * 2), idx = new Uint32Array((n - 1) * (n - 1) * 6)
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const k = j * n + i
+    pos.set([768000 + i * 0.4, 280 + Math.sin(i / 5), 1033000 + j * 0.4], k * 3); uv.set([i / (n - 1), j / (n - 1)], k * 2)
+  }
+  let q = 0
+  for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) { const a = j * n + i; idx.set([a, a + n, a + 1, a + 1, a + n, a + n + 1], q); q += 6 }
+  const pad = b => Buffer.concat([b, Buffer.alloc((4 - (b.length % 4)) % 4)])
+  const parts = [Buffer.from(pos.buffer), Buffer.from(uv.buffer), Buffer.from(idx.buffer), png].map(pad)
+  const offs = parts.map((_, i) => parts.slice(0, i).reduce((s, p) => s + p.length, 0))
+  const bin = Buffer.concat(parts)
+  const min = [0, 1, 2].map(a => Math.min(...pos.filter((_, i) => i % 3 === a))), max = [0, 1, 2].map(a => Math.max(...pos.filter((_, i) => i % 3 === a)))
+  const json = Buffer.from(JSON.stringify({
+    asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0, name: 'Teren' }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, indices: 2, material: 0 }] }],
+    materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 }, metallicFactor: 0 } }],
+    textures: [{ source: 0 }], images: [{ bufferView: 3, mimeType: 'image/png' }],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: n * n, type: 'VEC3', min, max },
+      { bufferView: 1, componentType: 5126, count: n * n, type: 'VEC2' },
+      { bufferView: 2, componentType: 5125, count: idx.length, type: 'SCALAR' },
+    ],
+    bufferViews: parts.map((p, i) => ({ buffer: 0, byteOffset: offs[i], byteLength: [pos.byteLength, uv.byteLength, idx.byteLength, png.length][i] })),
+    buffers: [{ byteLength: bin.length }],
+  }))
+  const js = Buffer.concat([json, Buffer.alloc((4 - (json.length % 4)) % 4, 0x20)])
+  const head = Buffer.alloc(12); head.writeUInt32LE(0x46546c67, 0); head.writeUInt32LE(2, 4); head.writeUInt32LE(28 + js.length + bin.length, 8)
+  const ch = (len, type) => { const b = Buffer.alloc(8); b.writeUInt32LE(len, 0); b.writeUInt32LE(type, 4); return b }
+  return Buffer.concat([head, ch(js.length, 0x4e4f534a), js, ch(bin.length, 0x004e4942), bin])
+}
 
 /** PNG z exportu: rozměr, jestli má alfu, a podíl průhledných / plných pixelů (filtr 0 jako náš zapisovač). */
 function pngStats(buf) {
@@ -479,6 +522,27 @@ async function main() {
     const moves = await ev('window.__moves')
     expect(JSON.stringify(moves) === JSON.stringify([['smoke-local-1', 'cloud'], ['smoke-local-1', 'local']]), `přesuny: ${JSON.stringify(moves)}`)
     await shot('soubory-uloziste')
+  })
+
+  // ── model z Maxu s S-JTSK v geometrii: georeference ve workeru (modelWorker.ts) ──
+  await check('model s S-JTSK souřadnicemi: příprava ve workeru, usazení u Kladna', async () => {
+    const glbPath = join(work, 'model-sjtsk.glb')
+    writeFileSync(glbPath, sjtskGlb(40, 64))
+    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html` })
+    await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa pro import modelu')
+    await page.send('DOM.enable')
+    const { result } = await page.send('Runtime.evaluate', { expression: `document.querySelector('input[type=file][accept=".glb,.gltf,.obj"]')` })
+    await page.send('DOM.setFileInputFiles', { files: [glbPath], objectId: result.result.objectId })
+    // boundingSphere nenačteného modelu hází DeveloperError — hledat podle readyEvent
+    const model = `window.__scene.primitives._primitives.find(p => p.constructor.name.includes('Model') && 'readyEvent' in p)`
+    await waitFor(`!!${model}?.ready`, 60_000, 'načtený model')
+    const at = await ev(`(() => { const c = ${model}.boundingSphere.center
+      return [Math.atan2(c.y, c.x) * 180 / Math.PI, Math.atan2(c.z, Math.hypot(c.x, c.y) * (1 - 0.00669438)) * 180 / Math.PI] })()`)
+    expect(Math.abs(at[0] - 14.05) < 0.01 && Math.abs(at[1] - 50.142) < 0.01, `model mimo Kladno: ${at.map(v => v.toFixed(4))}`)
+    expect((await ev(`document.body.innerText`)).includes('Model usazen podle S-JTSK'), 'chybí hláška o usazení podle S-JTSK')
+    const errs = await ev('window.__errors')
+    expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
+    return `${at[0].toFixed(4)}°, ${at[1].toFixed(4)}°`
   })
 
   // ── Nastavení účtu s podvrženým uživatelem (bez Supabase — jen formuláře a jejich kontroly) ──

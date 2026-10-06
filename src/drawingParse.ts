@@ -17,7 +17,4 @@ export async function parseDrawing(name: string, buf: ArrayBuffer): Promise<Draw
   return dxfToPrims(decodeDxf(buf))
 }
 
-export type DrawingRequest = { id: number; file: File }
-export type DrawingResponse =
-  | { id: number; ok: true; parse: DrawParse }
-  | { id: number; ok: false; message: string }
+export type DrawingRequest = { file: File }

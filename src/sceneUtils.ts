@@ -61,3 +61,41 @@ export function buildMatrix(p: Placement, centerOffset: Cesium.Cartesian3, yawDe
   const tneg = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.negate(centerOffset, new Cesium.Cartesian3()))
   return Cesium.Matrix4.multiply(scaled, tneg, new Cesium.Matrix4())
 }
+
+/** Další snímek prohlížeče — mezi kusy těžké práce, ať mapa mezitím překreslí a reaguje na myš. */
+export const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()))
+
+/**
+ * Počká, až se dotáhne podklad pod aktuálním pohledem (dlaždice glóbu i 3D dlaždice) —
+ * soubory scény se pak stavějí nad hotovou mapou, ne o překot s ní. Nejdéle `maxMs`:
+ * pomalé dlaždice nesmí soubory zdržet donekonečna.
+ */
+export function waitForMap(v: Cesium.Viewer, maxMs = 6000): Promise<void> {
+  return new Promise(resolve => {
+    if (v.isDestroyed()) { resolve(); return }
+    const scene = v.scene
+    // dokud se nic nenakreslilo, je fronta dlaždic prázdná jen proto, že ještě nic nechtěla
+    let frames = 0
+    const off = scene.postRender.addEventListener(() => { frames++ })
+    const t0 = performance.now()
+    let calm = 0
+    const done = () => { off(); resolve() }
+    const tilesets = () => {
+      const out: Cesium.Cesium3DTileset[] = []
+      for (let i = 0; i < scene.primitives.length; i++) {
+        const p = scene.primitives.get(i)
+        if (p instanceof Cesium.Cesium3DTileset && p.show) out.push(p)
+      }
+      return out
+    }
+    const tick = () => {
+      if (v.isDestroyed()) { done(); return }
+      const loaded = frames >= 3 && (!scene.globe?.show || scene.globe.tilesLoaded) && tilesets().every(t => t.tilesLoaded)
+      calm = loaded ? calm + 1 : 0
+      if (calm >= 2 || performance.now() - t0 > maxMs) { done(); return }
+      scene.requestRender() // v režimu kreslení na vyžádání by se stav dlaždic jinak neposunul
+      setTimeout(tick, 200)
+    }
+    setTimeout(tick, 200)
+  })
+}

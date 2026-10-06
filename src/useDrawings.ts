@@ -8,7 +8,7 @@ import { toast } from 'sonner'
 import { geoidN } from './geoid'
 import { wgsOf, sjtskOf } from './tiles'
 import { fetchElevSampler } from './elevation'
-import { viewCenterGround } from './sceneUtils'
+import { nextFrame, viewCenterGround } from './sceneUtils'
 import { buildTextPrims } from './dxfText'
 import { parseDrawingFile } from './drawingClient'
 import { krovakForm, toKrovakNeg, type DrawParse, type DrawPrim } from './dxf'
@@ -174,13 +174,34 @@ export function useDrawings(deps: {
     for (const p of parse.prims) { const arr = byLayer.get(p.layer); if (arr) arr.push(p); else byLayer.set(p.layer, [p]) }
 
     const layers: DrawLayer[] = []
+    // Uložený stav dostane každá hladina hned při stavbě (vypnutá se ani neukáže, posunutá
+    // neposkočí), protože výkres teď naskakuje po hladinách — viz `breathe`.
+    const hidden0 = new Set(restore?.config?.hiddenLayers ?? [])
+    const off0 = restore?.config?.heightOffset ?? 0
+    const m0 = off0 ? Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(up, off0, new Cesium.Cartesian3())) : null
+    /**
+     * Stavba po kouscích: velký výkres má stovky hladin a desetitisíce čar a postavit je
+     * najednou znamenalo vteřiny zamrzlé mapy (při otevření scény i celého počítače).
+     * Po ~12 ms práce dostane mapa snímek — překreslí se a chytí myš — a staví se dál.
+     * false = viewer mezitím zanikl (odchod ze scény), stavba končí.
+     */
+    let slice = performance.now()
+    const breathe = async () => {
+      if (performance.now() - slice < 12) return true
+      await nextFrame()
+      slice = performance.now()
+      return !v.isDestroyed()
+    }
     // Velké výkresy mají desetitisíce textů → strop na počet. Vzdálenostní LOD už není potřeba:
     // texty jsou teď v metrech, takže se při oddálení samy zmenší do neviditelna.
     let labelBudget = 30000
     for (const [lname, lprims] of byLayer) {
+      if (!(await breathe())) return null
       const instances: Cesium.GeometryInstance[] = []
       const polyMeta: { id: string; c: Cesium.Color }[] = []
-      for (const p of lprims) {
+      for (let k = 0; k < lprims.length; k++) {
+        const p = lprims[k]
+        if ((k & 1023) === 1023 && !(await breathe())) return null
         if (p.kind !== 'poly') continue
         const deg: number[] = []
         for (const [x, y] of p.pts) { const [lon, lat] = toLL(x, y); deg.push(lon, lat, h0); seen(lon, lat) }
@@ -230,7 +251,12 @@ export function useDrawings(deps: {
         v.scene.primitives.add(points)
       }
 
-      if (prim || labels.length || points) layers.push({ name: lname || '0', color: lprims[0].color, visible: true, prim, labels, points })
+      if (prim || labels.length || points) {
+        const ly: DrawLayer = { name: lname || '0', color: lprims[0].color, visible: true, prim, labels, points }
+        if (hidden0.has(ly.name)) { ly.visible = false; setLayerShow(ly, false) }
+        if (m0) setLayerMatrix(ly, m0)
+        layers.push(ly)
+      }
     }
     // materiály textů se dají nastavit kdykoliv (nejsou to atributy primitiva), takže až tady
     if (alpha0 !== 1) for (const mt of textMats) mt.uniforms.opacity = alpha0
@@ -340,13 +366,14 @@ export function useDrawings(deps: {
   }
 
   // ── posun výšky + průhlednost celého výkresu (živě, bez překreslení) ──
+  function setLayerMatrix(ly: DrawLayer, m: Cesium.Matrix4) {
+    if (ly.prim) ly.prim.modelMatrix = m
+    for (const lp of ly.labels) lp.modelMatrix = m
+    if (ly.points) ly.points.modelMatrix = m
+  }
   function applyDrawH(e: DrawingEntry, off: number) {
     const m = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(e.up, off, new Cesium.Cartesian3()))
-    for (const ly of e.layers) {
-      if (ly.prim) ly.prim.modelMatrix = m
-      for (const lp of ly.labels) lp.modelMatrix = m
-      if (ly.points) ly.points.modelMatrix = m
-    }
+    for (const ly of e.layers) setLayerMatrix(ly, m)
   }
   function applyDrawAlpha(e: DrawingEntry, a: number) {
     for (const mt of e.textMats) mt.uniforms.opacity = a
