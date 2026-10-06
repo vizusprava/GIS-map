@@ -7,7 +7,7 @@ import * as Cesium from 'cesium'
 import { toast } from 'sonner'
 import { geoidN } from './geoid'
 import { wgsOf, sjtskOf } from './tiles'
-import { fetchElevSampler } from './elevation'
+import { fetchElevGrid, fetchElevSampler } from './elevation'
 import { nextFrame, viewCenterGround } from './sceneUtils'
 import { buildTextPrims } from './dxfText'
 import { parseDrawingFile } from './drawingClient'
@@ -78,6 +78,11 @@ export function useDrawings(deps: {
     })
   }
 
+  // Strop zahušťování přilepeného výkresu: dlouhý úsek se rozdělí nejvýš na tolik kusů a celý
+  // výkres dostane nejvýš tolik bodů navíc — obří výkres pak terén kopíruje hruběji, ale vejde se.
+  const DRAPE_MAX_SPLIT = 400, DRAPE_MAX_VERTS = 3_000_000
+  const M_PER_LAT = 110_574
+
   /** vymaže primitivy hladin z mapy (odebraný výkres, přestavba po přilepení na terén) */
   function removeLayers(v: Cesium.Viewer, layers: DrawLayer[]) {
     for (const ly of layers) {
@@ -88,19 +93,22 @@ export function useDrawings(deps: {
   }
 
   /**
-   * Výška terénu pod výkresem (elipsoid) — jedním dotazem na DMR 5G přes jádro kresby, tedy
-   * na stejném terénu, ze kterého je mapa. Potřebují ji jen texty a body přilepeného výkresu,
-   * čáry si terén najdou samy. Stáhne se jednou na výkres; null = nejde (texty pak zůstanou
-   * v rovině výkresu).
+   * Výška terénu pod výkresem (elipsoid) — jedna mřížka DMR 5G přes jádro kresby, tedy stejný
+   * terén, ze kterého je mapa (viz `fetchElevGrid`: ~1,5 m, interpolovaná, v cache prohlížeče).
+   * Stáhne se jednou na výkres; null = nejde (výkres pak zůstane v rovině).
    */
   async function groundOf(geo: DrawGeo) {
     if (geo.ground !== undefined) return geo.ground
     const [w, s, e, n] = geo.core
     const pad = 0.002
     try {
-      const es = await fetchElevSampler('dmr5g', w - pad, s - pad, e + pad, n + pad, 512)
-      geo.ground = (lon, lat) => { const b = es(lon, lat); return b == null ? null : b + geoidN(lon, lat) }
-    } catch { geo.ground = null }
+      const g = await fetchElevGrid(w - pad, s - pad, e + pad, n + pad)
+      geo.ground = (lon, lat) => { const b = g.sample(lon, lat); return b == null ? null : b + geoidN(lon, lat) }
+      geo.groundStep = g.stepM
+    } catch (err) {
+      console.warn('Výšky terénu pod výkresem se nepodařilo stáhnout:', err)
+      geo.ground = null
+    }
     return geo.ground
   }
 
@@ -109,8 +117,12 @@ export function useDrawings(deps: {
    *
    * V rovině (`drape` vypnuté): všechno v jedné výšce `h0` blízko terénu a kreslí se přes
    * všechno (vypnutý depth test), takže je výkres vidět i tam, kde je místy pod terénem.
-   * Přilepený: čáry přes GroundPolylinePrimitive — Cesium je promítne na terén i na 3D dlaždice —
-   * a texty a body posazené na výšku terénu. Výškový posun tam nemá smysl, takže se nepoužije.
+   *
+   * Přilepený = „druhá verze" výkresu napečená na terén JEDNOU při stavbě: každá čára se
+   * zahustí body po kroku mřížky terénu (~1,5 m) a každý bod dostane výšku terénu; texty
+   * a body taky. Kreslí se pak úplně stejně levně jako v rovině. (Dřív to byly čáry
+   * GroundPolylinePrimitive, které Cesium promítá na terén v KAŽDÉM snímku — u velkého
+   * výkresu se pak mapa při posouvání sekala.) Výškový posun tu nemá smysl, nepoužije se.
    *
    * Stavba po kouscích: velký výkres má stovky hladin a desetitisíce čar a postavit je
    * najednou znamenalo vteřiny zamrzlé mapy (při otevření scény i celého počítače).
@@ -124,8 +136,12 @@ export function useDrawings(deps: {
     const { toLL, h0, up, east, north, conv } = geo
     const ground = opts.drape ? await groundOf(geo) : null
     if (v.isDestroyed()) return null
-    // texty a body přilepeného výkresu kousek nad terénem, ať jím neprobleskují
+    // přilepený výkres kousek nad terénem, ať jím neprobleskuje
     const at = (lon: number, lat: number) => (ground ? (ground(lon, lat) ?? h0) + 0.3 : h0)
+    // zahušťování čar: krok mřížky terénu (aspoň 1 m), v metrech přes místní měřítko
+    const step = Math.max(1, geo.groundStep ?? 1.5)
+    const mPerLon = M_PER_LAT * Math.cos((geo.core[1] + geo.core[3]) / 2 * Math.PI / 180)
+    let dense = 0
     const toXYZ = (x: number, y: number) => { const [lo, la] = toLL(x, y); return Cesium.Cartesian3.fromDegrees(lo, la, at(lo, la)) }
     const alpha0 = opts.alpha
     const textMats: DrawingEntry['textMats'] = []
@@ -166,20 +182,28 @@ export function useDrawings(deps: {
         const col = dwgColor(p.color)
         const iid = `${lname}#${polyMeta.length}`
         const attributes = { color: Cesium.ColorGeometryInstanceAttribute.fromColor(col.withAlpha(alpha0)) }
-        if (opts.drape) {
-          // Po terénu stačí lon/lat. Opakované body pryč: GroundPolylineGeometry je sama
-          // vyhazuje a čára, které by zbyl jediný bod, by shodila stavbu celé hladiny.
-          const ll: number[] = []
+        if (ground) {
+          // po terénu: úseky delší než krok mřížky se zahustí, ať čára kopíruje terén mezi body
+          const deg: number[] = []
+          let pl = NaN, pb = NaN
           for (const [x, y] of p.pts) {
             const [lon, lat] = toLL(x, y); seen(lon, lat)
-            const n = ll.length
-            if (n && Math.abs(ll[n - 2] - lon) < 1e-8 && Math.abs(ll[n - 1] - lat) < 1e-8) continue
-            ll.push(lon, lat)
+            if (deg.length && dense < DRAPE_MAX_VERTS) {
+              const len = Math.hypot((lon - pl) * mPerLon, (lat - pb) * M_PER_LAT)
+              const n = Math.min(DRAPE_MAX_SPLIT, Math.floor(len / step))
+              for (let i = 1; i <= n; i++) {
+                const t = i / (n + 1), ilon = pl + (lon - pl) * t, ilat = pb + (lat - pb) * t
+                deg.push(ilon, ilat, at(ilon, ilat))
+              }
+              dense += n
+            }
+            deg.push(lon, lat, at(lon, lat))
+            pl = lon; pb = lat
           }
-          if (ll.length < 4) continue
+          if (deg.length < 6) continue
           instances.push(new Cesium.GeometryInstance({
             id: iid, attributes,
-            geometry: new Cesium.GroundPolylineGeometry({ positions: Cesium.Cartesian3.fromDegreesArray(ll), width: 2 }),
+            geometry: new Cesium.PolylineGeometry({ positions: Cesium.Cartesian3.fromDegreesArrayHeights(deg), width: 2, arcType: Cesium.ArcType.NONE, vertexFormat: Cesium.PolylineColorAppearance.VERTEX_FORMAT }),
           }))
         } else {
           const deg: number[] = []
@@ -195,22 +219,15 @@ export function useDrawings(deps: {
       // Geometrie čar se staví ve workerech Cesia (asynchronous): u výkresu s desetitisíci
       // polyliniemi to na hlavním vlákně znamenalo několik sekund zamrzlé mapy. Texty zůstávají
       // synchronní — vlastní geometrie písmen se do workeru poslat nedá.
-      let prim: DrawLinePrim | null = null
-      if (instances.length && opts.drape) {
-        prim = v.scene.primitives.add(new Cesium.GroundPolylinePrimitive({
-          geometryInstances: instances,
-          appearance: new Cesium.PolylineColorAppearance(),
-          classificationType: Cesium.ClassificationType.BOTH,
-          asynchronous: true,
-        }))
-      } else if (instances.length) {
-        // depthTest vypnutý → čáry se kreslí přes vše, takže výkres je vidět i pod terénem
-        prim = v.scene.primitives.add(new Cesium.Primitive({
-          geometryInstances: instances,
-          appearance: new Cesium.PolylineColorAppearance({ renderState: { lineWidth: 1, depthTest: { enabled: false }, depthMask: false, blending: Cesium.BlendingState.ALPHA_BLEND } }),
-          asynchronous: true,
-        }))
-      }
+      // depthTest vypnutý → čáry se kreslí přes vše, takže výkres je vidět i pod terénem
+      // (u přilepeného tam, kde je terén v mapě hrubší než DMR, ze kterého jsou výšky)
+      const prim: DrawLinePrim | null = instances.length
+        ? v.scene.primitives.add(new Cesium.Primitive({
+            geometryInstances: instances,
+            appearance: new Cesium.PolylineColorAppearance({ renderState: { lineWidth: 1, depthTest: { enabled: false }, depthMask: false, blending: Cesium.BlendingState.ALPHA_BLEND } }),
+            asynchronous: true,
+          }))
+        : null
       if (prim) for (const m of polyMeta) polyRefs.push({ prim, id: m.id, c: m.c })
 
       // Texty jako geometrie v rovině výkresu (ne Labely) → drží rotaci i výšku v metrech z DXF.

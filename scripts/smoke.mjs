@@ -641,25 +641,52 @@ async function main() {
     await shot('soubory-uloziste')
   })
 
-  // ── výkres přilepený na terén: čáry jako GroundPolylinePrimitive, přepínač se uloží k výkresu ──
-  await check('výkres: přilepení na terén a zpátky, uloží se k výkresu', async () => {
+  // ── výkres přilepený na terén: napečená „druhá verze" (obyčejné čáry s výškami terénu, žádné
+  //    promítání v každém snímku), výšky terénu se stáhnou jednou a pak jdou z cache ──
+  await check('výkres: přilepení na terén a zpátky, výšky jednou a z cache, uloží se k výkresu', async () => {
     const dxfSize = statSync(join(work, 'mimo-uloziste.dxf')).size
-    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?localdxf=${dxfSize}` })
-    await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa s výkresem')
-    await waitFor(`!!document.querySelector('[data-sec="scena"] button[title^="Hladiny"]')`, 20_000, 'výkres v panelu Scéna')
-    await ev(`document.querySelector('[data-sec="scena"] button[title^="Hladiny"]').click()`)
-    await waitFor(`!!document.querySelector('[data-drape] input')`, 5_000, 'přepínač Přilepit na terén')
-    const ground = `window.__scene.primitives._primitives.filter(p => p.constructor.name.includes('GroundPolyline'))`
-    expect(await ev(`${ground}.length`) === 0, 'výkres je přilepený už od začátku')
-    await ev(`document.querySelector('[data-drape] input').click()`)
-    await waitFor(`${ground}.length > 0 && ${ground}.every(p => p.ready)`, 30_000, 'čáry přilepené na terén')
+    const open = async () => {
+      await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?localdxf=${dxfSize}` })
+      await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa s výkresem')
+      await waitFor(`!!document.querySelector('[data-sec="scena"] button[title^="Hladiny"]')`, 20_000, 'výkres v panelu Scéna')
+      await ev(`document.querySelector('[data-sec="scena"] button[title^="Hladiny"]').click()`)
+      await waitFor(`!!document.querySelector('[data-drape] input')`, 5_000, 'přepínač Přilepit na terén')
+    }
+    // čáry výkresu = primitiva s PolylineColorAppearance; přestavba = jiné objekty, všechny hotové
+    const lines = `window.__scene.primitives._primitives.filter(p => p.appearance?.constructor?.name?.includes('PolylineColorAppearance'))`
+    const rebuilt = async what => {
+      await waitFor(`${lines}.length > 0 && ${lines}.every(p => p.ready && !window.__oldLines.includes(p))`, 30_000, what)
+      await ev(`window.__oldLines = ${lines}`)
+    }
+    const gridFetches = `performance.getEntriesByName('geo:dmr-grid-fetch').length`
+    const toggle = () => ev(`document.querySelector('[data-drape] input').click()`)
+    const noGround = async () => expect(!(await ev(`window.__scene.primitives._primitives.some(p => p.constructor.name.includes('GroundPolyline'))`)), 'čáry se promítají na terén v každém snímku (GroundPolylinePrimitive)')
+    await open()
+    await waitFor(`${lines}.length > 0 && ${lines}.every(p => p.ready)`, 30_000, 'čáry výkresu v rovině')
+    await ev(`window.__oldLines = ${lines}`)
+    await toggle()
+    await rebuilt('čáry napečené na terén')
+    await noGround()
+    expect(await ev(gridFetches) === 1, `výšky terénu se stahovaly ${await ev(gridFetches)}×`)
     const cfg = await ev(`window.__assetCfg.at(-1)`)
     expect(cfg?.[0] === 'smoke-local-1' && cfg?.[1]?.drape === true, `uloženo k výkresu: ${JSON.stringify(cfg)}`)
     expect(await ev(`document.querySelector('[data-drape]').nextElementSibling.querySelector('input[type=range]').disabled`), 'výška u přilepeného výkresu jde dál měnit')
     await shot('vykres-na-terenu')
-    await ev(`document.querySelector('[data-drape] input').click()`)
-    await waitFor(`${ground}.length === 0`, 15_000, 'čáry zpátky v rovině')
+    // zpátky do roviny a znovu na terén: výšky už nic nestahuje
+    await toggle()
+    await rebuilt('čáry zpátky v rovině')
     expect((await ev(`window.__assetCfg.at(-1)`))?.[1]?.drape === false, 'vypnutí se neuložilo')
+    await toggle()
+    await rebuilt('čáry znovu na terénu')
+    expect(await ev(gridFetches) === 1, `výšky terénu se stáhly znovu (${await ev(gridFetches)}×)`)
+    // po znovuotevření scény jdou výšky z cache prohlížeče
+    await open()
+    await waitFor(`${lines}.length > 0 && ${lines}.every(p => p.ready)`, 30_000, 'čáry výkresu po znovuotevření')
+    await ev(`window.__oldLines = ${lines}`)
+    await toggle()
+    await rebuilt('čáry na terénu po znovuotevření')
+    await noGround()
+    expect(await ev(gridFetches) === 0, `po znovuotevření se výšky stahovaly znovu (${await ev(gridFetches)}×) místo z cache`)
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
   })

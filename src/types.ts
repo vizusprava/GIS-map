@@ -76,14 +76,15 @@ export type ModelEntry = {
 export type SceneObj = { id: string; kind: 'model' | 'parcel' | 'surface' | 'drawing'; name: string; visible: boolean }
 // jedna hladina výkresu — vlastní Cesium primitivy, aby šla samostatně zapnout/vypnout
 // `labels` = texty jako geometrie v rovině výkresu (viz dxfText.ts), jeden Primitive na barvu
-/** čáry hladiny: v rovině výkresu (Primitive), nebo přilepené na terén (GroundPolylinePrimitive) */
-export type DrawLinePrim = Cesium.Primitive | Cesium.GroundPolylinePrimitive
+/** čáry hladiny (v rovině výkresu i napečené na terén — viz `buildLayers` v useDrawings) */
+export type DrawLinePrim = Cesium.Primitive
 export type DrawLayer = { name: string; color: number; visible: boolean; prim: DrawLinePrim | null; labels: Cesium.Primitive[]; points: Cesium.PointPrimitiveCollection | null }
 /**
  * Umístění výkresu v mapě — spočítá se jednou při vykreslení a drží se kvůli přestavbě
  * (přilepení na terén a zpátky) bez nového parsování. `toLL` = souřadnice výkresu → lon/lat,
  * `h0` = výška roviny výkresu (elipsoid), `east`/`north`/`up`/`conv` = báze pro texty,
- * `core` = jádro kresby v lon/lat [z, j, v, s] a `ground` = výška terénu (elipsoid) po načtení.
+ * `core` = jádro kresby v lon/lat [z, j, v, s], `ground` = výška terénu (elipsoid) po načtení
+ * a `groundStep` = krok její mřížky v metrech (po něm se zahušťují čáry přilepeného výkresu).
  */
 export type DrawGeo = {
   toLL: (x: number, y: number) => [number, number]
@@ -94,6 +95,7 @@ export type DrawGeo = {
   conv: number
   core: [number, number, number, number]
   ground?: ((lon: number, lat: number) => number | null) | null
+  groundStep?: number
 }
 // `up` = svislý směr ve středu výkresu (pro posun výšky přes modelMatrix). *Refs = odkazy na prvky
 // + jejich základní barvy (pro živé nastavení průhlednosti celého výkresu).
