@@ -168,12 +168,16 @@ export function useModels(deps: {
       const model = await Cesium.Model.fromGltfAsync({
         url,
         modelMatrix: buildMatrix(p, Cesium.Cartesian3.ZERO, yawDeg),
+        /**
+         * Bez dynamické mapy prostředí (odlesky a osvětlení z okolní oblohy). Každý model si ji
+         * jinak počítá sám — při prvním modelu to byl i na silné grafice ~1 s zásek a s každým
+         * dalším znovu. Modely z Maxu mají jednoduché materiály bez odlesků, takže jim stačí
+         * výchozí osvětlení Cesia (slunce + okolní světlo) a vypadají stejně.
+         */
+        environmentMapOptions: { enabled: false },
       })
       if (v.isDestroyed()) { URL.revokeObjectURL(url); return }
       v.scene.primitives.add(model)
-      model.environmentMapManager.enabled = true
-      model.environmentMapManager.atmosphereScatteringIntensity = 4.0
-      model.environmentMapManager.brightness = 1.3
       // svítící obrys (glow) kolem modelu — výchozí VYPNUTÝ (jde zapnout v panelu modelu)
       model.silhouetteColor = MODEL_GLOW
       model.silhouetteSize = restore?.config.outline ? 2.0 : 0
