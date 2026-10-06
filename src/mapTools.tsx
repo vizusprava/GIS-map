@@ -31,7 +31,7 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type * as Cesium from 'cesium'
-import { Building2, Check, ChevronUp, Crosshair, Eye, EyeOff, Grid3x3, Hexagon, Image, Keyboard, Landmark, Layers, Loader2, Map as MapIcon, MapPin, Mountain, MousePointerClick, Move, PencilRuler, Ruler, Video, X } from 'lucide-react'
+import { Building2, Check, ChevronUp, Crosshair, Eye, EyeOff, Grid3x3, Hexagon, Image, Keyboard, Landmark, Layers, Loader2, LocateFixed, Map as MapIcon, MapPin, Mountain, MousePointerClick, Move, PencilRuler, Ruler, Video, X } from 'lucide-react'
 import { ENABLE_GOOGLE_3D } from './config'
 import { TILE_SIZES, type TileSize } from './tiles'
 import type { CamProj } from './ui'
@@ -80,6 +80,9 @@ type Props = {
   camProj: CamProj
   onPersp: () => void
   onOrtho: () => void
+  /** minimapa v rohu (poloha kamery shora) */
+  minimapOn: boolean
+  onMinimap: () => void
   /** obsah panelu Kamera (CameraMenu) a kolik je uložených pohledů */
   cameraMenu: ReactNode
   viewCount: number
@@ -114,6 +117,7 @@ function shortcuts(p: Props): Shortcut[] {
     { key: 'v', label: 'Posun modelu', run: p.onMove, when: p.canMove, note: 'jen s vybraným modelem', edit: true },
     { key: 'k', label: 'Katastr zap / vyp', run: () => p.layers.setKatastrOn(v => !v) },
     { key: 't', label: 'Shora / perspektiva', run: p.camProj === 'ortho' ? p.onPersp : p.onOrtho },
+    { key: 'n', label: 'Minimapa zap / vyp', run: p.onMinimap },
   ]
   // `edit` = nástroj, který ve veřejném prohlížeči není (vede k exportům nebo úpravám)
   return p.guest ? all.filter(s => !s.edit) : all
@@ -240,14 +244,15 @@ export function MapTools(p: Props) {
         </Group>
 
         <Group
-          {...group} id="pohled" title="Perspektiva, nebo pohled shora bez perspektivy"
+          {...group} id="pohled" title="Perspektiva, pohled shora bez perspektivy a minimapa"
           icon={p.camProj === 'ortho' ? <MapIcon size={15} /> : <Mountain size={15} />}
           label={p.camProj === 'ortho' ? 'Shora' : 'Perspektiva'}
         >
           <Item icon={<Mountain size={13} />} label="Perspektiva" active={p.camProj === 'persp'} onClick={pick(p.onPersp)} />
           <Item icon={<MapIcon size={13} />} label="Shora (půdorys)" active={p.camProj === 'ortho'} onClick={pick(p.onOrtho)} />
-          <Sep />
           <div className="px-2.5 pb-0.5 text-[10px] text-gray-500">Přepnout klávesou <Kbd>T</Kbd></div>
+          <Sep />
+          <Item icon={<LocateFixed size={13} />} label="Minimapa" active={p.minimapOn} kbd={kbd('Minimapa zap / vyp')} onClick={pick(p.onMinimap)} />
         </Group>
 
         <Group

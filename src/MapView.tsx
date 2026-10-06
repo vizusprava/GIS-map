@@ -24,6 +24,7 @@ import type { MapClickOwner, SceneObj } from './types'
 import type { ScenePersist } from './lib/scenePersist'
 import { CalloutLayer } from './callouts'
 import { Compass } from './compass'
+import { MiniMap, readMinimap, saveMinimap } from './miniMap'
 import { CoordsPanel } from './coords'
 import { MapTools } from './mapTools'
 import { MapSearch } from './mapSearch'
@@ -236,6 +237,10 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const { applyDof, dofOn, setDofOn } = look
   const motion = useCameraMotion({ viewerRef, presentOn, fov: look.fov, applyFovRaw: look.applyFovRaw })
   const { camProj, camPerspective, camTopOrtho } = motion
+  // minimapa v rohu: zapnutí a podklad si pamatuje tenhle počítač (miniMap.tsx)
+  const [mini, setMini] = useState(readMinimap)
+  useEffect(() => { saveMinimap(mini.on, mini.base) }, [mini])
+  const toggleMini = () => setMini(m => ({ ...m, on: !m.on }))
 
   // ── hledání a správní území (obojí píše do téže nabídky v liště nahoře) ──
   const search = useMapSearch({
@@ -950,6 +955,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           camProj={camProj}
           onPersp={camPerspective}
           onOrtho={camTopOrtho}
+          minimapOn={mini.on}
+          onMinimap={toggleMini}
           viewCount={camViews.length}
           cameraMenu={<CameraMenu views={views} look={look} motion={motion} presentOn={presentOn} readOnly={guest} />}
           presentOn={presentOn}
@@ -967,6 +974,19 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       <div className="pointer-events-none absolute bottom-5 right-4 z-20">
         <Compass viewer={viewerReady ? viewerRef.current : null} />
       </div>
+      {/* Minimapa nad kompasem (kompas končí ~92 px ode dna). Pod lištou (z-10), ať přes ni
+          nabídky skupin, které se otvírají nahoru, na úzké mapě nezajedou. */}
+      {mini.on && viewerReady && (
+        <div className="pointer-events-none absolute bottom-[104px] right-4 z-10">
+          <MiniMap
+            viewer={viewerRef.current}
+            base={mini.base}
+            onBase={base => setMini(m => ({ ...m, base }))}
+            onClose={toggleMini}
+            size={compactTools ? 160 : 208}
+          />
+        </div>
+      )}
 
       {/* Levý panel — jediné místo pro ovládání. Dřív se panely otevíraly jeden přes druhý,
           takže se překrývaly; teď je vše v jednom sloupci ve sbalitelných sekcích.

@@ -74,6 +74,12 @@ export function saveOrtoDetail(d: OrtoDetail): void {
 export function orthoTileUrl(level: number, x: number, y: number): string {
   return `${ORTO_CACHE}/${level}/${y}/${x}`
 }
+/** URL jedné dlaždice základní topografické mapy z cache (minimapa). */
+export function ztmTileUrl(level: number, x: number, y: number): string {
+  return `${ZTM_CACHE}/${level}/${y}/${x}`
+}
+/** Nejjemnější úroveň ZTM (stejně jako u `ztmProvider`). */
+export const ZTM_MAX_LEVEL = 19
 
 /**
  * Index napečených ortofoto dlaždic („lokální mapa") v paměti — synchronní kontrola v requestImage.
