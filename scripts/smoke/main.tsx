@@ -22,9 +22,11 @@ import { ShareHost, openShareDialog } from '../../src/shareDialog'
 import '../../src/index.css'
 import { MapView } from '../../src/MapView'
 import type { ScenePersist } from '../../src/lib/scenePersist'
-import { HashRouter, Route, Routes } from 'react-router-dom'
+import { HashRouter, Route, Routes, useLocation } from 'react-router-dom'
 import type { User } from '@supabase/supabase-js'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AccountPage } from '../../src/pages/AccountPage'
+import { ScenesPage } from '../../src/pages/ScenesPage'
 import { ViewPage } from '../../src/pages/ViewPage'
 import { Backdrop, type BackdropMode } from '../../src/backdrop/Backdrop'
 import { useAuthStore } from '../../src/stores/authStore'
@@ -112,16 +114,39 @@ const viewPage = () => {
   return <HashRouter><Routes><Route path="/view/:token" element={<ViewPage />} /></Routes></HashRouter>
 }
 
+// podvržený přihlášený uživatel pro stránky mimo mapu (účet, přehled scén)
+const fakeUser = () => useAuthStore.setState({
+  user: { id: 'u-smoke', email: 'test@example.cz', user_metadata: {}, app_metadata: {}, aud: 'authenticated', created_at: '' } as unknown as User,
+  profile: { id: 'u-smoke', email: 'test@example.cz', display_name: 'Test', created_at: '' },
+  loading: false,
+})
+
+function Navigated() {
+  return <div id="navigated" className="p-6 text-gray-200">{useLocation().pathname}</div>
+}
+
+// `?page=scenes`: přehled scén nad podvrženou databází (fakeRest.ts) i s pozadím jako v appce;
+// otevření scény / účtu jen ukáže, kam by appka šla
+const scenesPage = () => {
+  fakeUser()
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return (
+    <QueryClientProvider client={qc}>
+      <Backdrop mode="overview" />
+      <HashRouter>
+        <Routes>
+          <Route path="/" element={<ScenesPage />} />
+          <Route path="*" element={<Navigated />} />
+        </Routes>
+      </HashRouter>
+    </QueryClientProvider>
+  )
+}
+
 // `?page=account`: Nastavení účtu s podvrženým uživatelem — test projde formuláře bez Supabase
-const page = q.get('page') === 'backdrop' ? <BackdropDemo /> : q.get('page') === 'view' ? viewPage() : q.get('page') === 'account'
-  ? (() => {
-      useAuthStore.setState({
-        user: { id: 'u-smoke', email: 'test@example.cz', user_metadata: {}, app_metadata: {}, aud: 'authenticated', created_at: '' } as unknown as User,
-        profile: { id: 'u-smoke', email: 'test@example.cz', display_name: 'Test', created_at: '' },
-        loading: false,
-      })
-      return <HashRouter><AccountPage /></HashRouter>
-    })()
+const page = q.get('page') === 'backdrop' ? <BackdropDemo /> : q.get('page') === 'view' ? viewPage()
+  : q.get('page') === 'scenes' ? scenesPage()
+  : q.get('page') === 'account' ? (fakeUser(), <HashRouter><AccountPage /></HashRouter>)
   : <MapView scene={scene} />
 
 createRoot(document.getElementById('root')!, { onUncaughtError: note, onCaughtError: note })

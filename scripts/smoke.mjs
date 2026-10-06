@@ -507,12 +507,104 @@ async function main() {
     await shot('nastaveni-uctu')
   })
 
-  // ── sdílení scény: okno s lidmi a pozvánkami (podvržené REST API, viz smoke/fakeRest.ts) ──
+  // React si hodnotu pole bere z události input — nastavit přes nativní setter
   const setInput = (sel, v) => ev(`(() => {
     const el = document.querySelector(${JSON.stringify(sel)})
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(v)})
     el.dispatchEvent(new Event('input', { bubbles: true }))
   })()`)
+
+  // ── přehled scén nad podvrženou databází (smoke/fakeRest.ts): popisky, hledání, řazení, nabídky ──
+  await check('přehled scén: popsaná hlavička, karty, hledání, řazení, nabídky', async () => {
+    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?page=scenes` })
+    await waitFor(`document.querySelectorAll('[data-scene-card]').length === 4`, 30_000, 'čtyři karty scén')
+      .catch(async e => { throw new Error(`${e.message}; stránka: „${await ev(`document.body.innerText.slice(0, 300)`)}"`) })
+    const head = await ev(`document.querySelector('header').innerText`)
+    for (const t of ['Nová scéna', '3D dlaždice · klíč Cesium', 'sdílený', 'Účet']) expect(head.includes(t), `hlavička bez „${t}": ${head}`)
+    // scéna viditelná jen přes odkaz pro prohlížení do přehledu nepatří
+    expect(!(await ev(`!!document.querySelector('[data-scene-id="smoke-view"]')`)), 'v přehledu je scéna, kam mám jen odkaz')
+    const own = `[...document.querySelectorAll('[data-scene-card="owner"]')].map(c => c.dataset.sceneId).join(',')`
+    expect(await ev(own) === 'p-kladno,p-most,p-cb', `pořadí „naposledy otevřené": ${await ev(own)}`)
+    const card = id => ev(`document.querySelector('[data-scene-id="${id}"]').innerText`)
+    const kladno = await card('p-kladno'), most = await card('p-most'), cb = await card('p-cb'), jana = await card('p-jana')
+    expect(kladno.includes('2 soubory') && kladno.includes('otevřeno dnes') && kladno.includes('Sdíleno · 1 člověk'), `karta Kladna: ${kladno}`)
+    expect(most.includes('1 soubor') && most.includes('otevřeno včera') && most.includes('Veřejný odkaz') && !most.includes('Sdíleno'), `karta Mostu: ${most}`)
+    expect(cb.includes('0 souborů') && !cb.includes('Veřejný odkaz'), `karta Budějovic: ${cb}`)
+    expect(jana.includes('Sdílí Jana · může upravovat') && jana.includes('upraveno'), `cizí karta: ${jana}`)
+    await shot('prehled-scen')
+
+    // hledání bez diakritiky a velikosti písmen
+    await setInput('#scene-search', 'BUDEJOVICE')
+    await waitFor(`document.querySelectorAll('[data-scene-card]').length === 1`, 3_000, 'jedna nalezená scéna')
+    const found = await ev(`document.body.innerText`)
+    expect(found.includes('(1 z 3)') && found.includes('Žádná sdílená scéna neodpovídá'), 'počty a hláška při hledání')
+    await setInput('#scene-search', '')
+    await waitFor(`document.querySelectorAll('[data-scene-card]').length === 4`, 3_000, 'všechny scény po smazání hledání')
+
+    // řazení (select bere událost change)
+    const sortBy = v => ev(`(() => {
+      const el = document.querySelector('#scene-sort')
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(el, ${JSON.stringify(v)})
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+    })()`)
+    await sortBy('name'); await sleep(150)
+    expect(await ev(own) === 'p-cb,p-kladno,p-most', `podle názvu: ${await ev(own)}`)
+    await sortBy('created'); await sleep(150)
+    expect(await ev(own) === 'p-most,p-cb,p-kladno', `nejnovější: ${await ev(own)}`)
+    expect(await ev(`localStorage.getItem('geo.scenesSort')`) === 'created', 'řazení se nezapamatovalo')
+    await sortBy('opened'); await sleep(150)
+
+    // nabídka ⋯: u mé scény Sdílet i Smazat, u cizí jen Odejít; Esc ji zavře
+    const items = async id => {
+      await ev(`document.querySelector('[data-scene-id="${id}"] button[aria-haspopup="menu"]').click()`)
+      await waitFor(`!!document.querySelector('[role="menu"]')`, 3_000, `nabídka scény ${id}`)
+      const t = await ev(`[...document.querySelectorAll('[role="menu"] [role="menuitem"]')].map(b => b.innerText.trim()).join(' | ')`)
+      return t
+    }
+    const mine = await items('p-kladno')
+    expect(mine === 'Otevřít | Sdílet… | Přejmenovat | Smazat scénu…', `nabídka mé scény: ${mine}`)
+    await shot('prehled-scen-nabidka')
+    await press('Escape')
+    expect(!(await ev(`!!document.querySelector('[role="menu"]')`)), 'Esc nezavřel nabídku')
+    const theirs = await items('p-jana')
+    expect(theirs === 'Otevřít | Přejmenovat | Odejít ze scény…', `nabídka cizí scény: ${theirs}`)
+
+    // přejmenování z nabídky → PATCH a nový název na kartě
+    await press('Escape')
+    await items('p-cb')
+    await clickText(`document.querySelector('[role="menu"]')`, 'Přejmenovat')
+    await waitFor(`!!document.querySelector('[data-scene-id="p-cb"] form input')`, 3_000, 'pole pro nový název')
+    await setInput('[data-scene-id="p-cb"] form input', 'ČB – sever, 2. etapa')
+    await ev(`document.querySelector('[data-scene-id="p-cb"] form').requestSubmit()`)
+    await waitFor(`(document.querySelector('[data-scene-id="p-cb"]')?.innerText ?? '').includes('ČB – sever, 2. etapa')`, 5_000, 'nový název na kartě')
+    const patch = (await ev('window.__rest')).find(c => c.method === 'PATCH' && c.path === 'geo_scenes')
+    expect(patch?.body?.name === 'ČB – sever, 2. etapa', `přejmenování poslalo ${JSON.stringify(patch?.body)}`)
+
+    // účet: nabídka s e-mailem, nastavení a odhlášením
+    await ev(`document.querySelector('header button[aria-label="Účet"]').click()`)
+    await waitFor(`!!document.querySelector('[role="menu"]')`, 3_000, 'nabídka účtu')
+    const acc = await ev(`document.querySelector('[role="menu"]').innerText`)
+    for (const t of ['test@example.cz', 'Nastavení účtu', 'Odhlásit se']) expect(acc.includes(t), `nabídka účtu bez „${t}": ${acc}`)
+    await shot('prehled-scen-ucet')
+    await clickText(`document.querySelector('[role="menu"]')`, 'Nastavení účtu')
+    await waitFor(`document.querySelector('#navigated')?.innerText === '/account'`, 3_000, 'přechod na nastavení účtu')
+
+    // úzký telefon: hlavička i ovládání se zalomí, nic nepřeteče do strany
+    try {
+      await page.send('Emulation.setDeviceMetricsOverride', { width: 400, height: 860, deviceScaleFactor: 1, mobile: true })
+      await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?page=scenes` })
+      await waitFor(`document.querySelectorAll('[data-scene-card]').length === 4`, 30_000, 'karty na telefonu')
+      const sw = await ev(`document.documentElement.scrollWidth`)
+      expect(sw <= 400, `přehled přetéká na telefonu: ${sw} px`)
+      await shot('prehled-scen-telefon')
+    } finally {
+      await page.send('Emulation.clearDeviceMetricsOverride')
+    }
+    const errs = await ev('window.__errors')
+    expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
+  })
+
+  // ── sdílení scény: okno s lidmi a pozvánkami (podvržené REST API, viz smoke/fakeRest.ts) ──
   await check('sdílení: lidé, pozvánka, odebrání s potvrzením, Esc po vrstvách', async () => {
     await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html` })
     await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa vlastní scény')

@@ -6,31 +6,57 @@
  * MUSÍ se importovat jako první: klient Supabase si `fetch` bere při vytvoření, tedy hned
  * při načtení modulu lib/supabase.ts.
  *
- * Drží jednu sdílenou scénu (členka Jana, čekající pozvánka) a jednu scénu s odkazem pro
- * prohlížení. Volání si zapisuje do `window.__rest`, ať test vidí, co appka poslala.
+ * Drží jednu sdílenou scénu (členka Jana, čekající pozvánka), jednu scénu s odkazem pro
+ * prohlížení a pár scén pro přehled (`?page=scenes`). Volání si zapisuje do `window.__rest`,
+ * ať test vidí, co appka poslala.
  */
 type Row = Record<string, unknown>
 /** kód odkazu, který v podvržené databázi platí (test ho otevírá jako `#/view/tok-ukazka`) */
 const VIEW_TOKEN = 'tok-ukazka'
 const db = {
-  members: [{ scene_id: 'smoke', user_id: 'u-jana', role: 'editor', created_at: '2026-01-01T00:00:00Z' }] as Row[],
+  members: [
+    { scene_id: 'smoke', user_id: 'u-jana', role: 'editor', created_at: '2026-01-01T00:00:00Z' },
+    // přehled scén (?page=scenes): do Janiny scény mě pozvala jako editora, já jí nasdílel Kladno
+    { scene_id: 'p-jana', user_id: 'u-smoke', role: 'editor', created_at: '2026-01-01T00:00:00Z', opened_at: null },
+    { scene_id: 'p-kladno', user_id: 'u-jana', role: 'viewer', created_at: '2026-01-01T00:00:00Z' },
+  ] as Row[],
   invites: [{ scene_id: 'smoke', email: 'novy@example.cz', role: 'viewer', created_at: '2026-01-02T00:00:00Z' }] as Row[],
   profiles: [{ id: 'u-jana', display_name: 'Jana', email: 'jana@example.cz' }] as Row[],
-  links: [] as Row[],
+  links: [{ scene_id: 'p-most', token: 'tok-most' }] as Row[],
   scenes: [{
     id: 'smoke-view', owner: 'u-jana', name: 'Ukázka pro klienta', note: null, thumb_path: null, state: {},
     created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', opened_at: null,
-  }] as Row[],
-  assets: [] as Row[],
+  },
+  // přehled scén: tři moje (Kladno sdílené s Janou, Most s odkazem) a jedna Janina
+  ...([
+    ['p-kladno', 'u-smoke', 'Kladno – průtah', '2026-03-01', 0],
+    ['p-most', 'u-smoke', 'Most přes Vltavu', '2026-05-01', 1],
+    ['p-cb', 'u-smoke', 'České Budějovice – sever', '2026-04-01', 2],
+    ['p-jana', 'u-jana', 'Janina zakázka', '2026-02-01', null],
+  ] as const).map(([id, owner, name, created, opened]) => ({
+    id, owner, name, note: null, thumb_path: null, state: {},
+    created_at: `${created}T08:00:00Z`, updated_at: `${created}T08:00:00Z`,
+    // otevřeno před 0 / 1 / 2 dny — „naposledy otevřené" tak řadí jinak než název i datum vzniku
+    opened_at: opened === null ? null : new Date(Date.now() - opened * 86_400_000).toISOString(),
+  }))] as Row[],
+  assets: [
+    { id: 'a1', scene_id: 'p-kladno', kind: 'drawing' }, { id: 'a2', scene_id: 'p-kladno', kind: 'model' },
+    { id: 'a3', scene_id: 'p-most', kind: 'drawing' },
+  ] as Row[],
 }
 const calls: { method: string; path: string; body: unknown }[] = []
 Object.assign(window, { __rest: calls })
 
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } })
 
-/** `?user_id=eq.u-jana&email=eq.x` → [['user_id','u-jana'], …] */
-const filters = (q: URLSearchParams) => [...q.entries()].filter(([, v]) => v.startsWith('eq.')).map(([k, v]) => [k, v.slice(3)] as const)
-const matches = (r: Row, f: ReturnType<typeof filters>) => f.every(([k, v]) => String(r[k]) === v)
+/** `?user_id=eq.u-jana&scene_id=in.(a,b)` → [['user_id',['u-jana']], ['scene_id',['a','b']]] */
+type Filter = [column: string, values: string[]]
+const filters = (q: URLSearchParams) => [...q.entries()].flatMap(([k, v]): Filter[] => {
+  if (v.startsWith('eq.')) return [[k, [v.slice(3)]]]
+  const list = v.match(/^in\.\((.*)\)$/)?.[1]
+  return list === undefined ? [] : [[k, list.split(',').map(x => x.replace(/^"|"$/g, ''))]]
+})
+const matches = (r: Row, f: Filter[]) => f.every(([k, vs]) => vs.includes(String(r[k])))
 
 /** Anonymní přihlášení: session jako od GoTrue (token je tvarem JWT, podpis nikdo nekontroluje). */
 function anonSession() {
@@ -92,11 +118,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     geo_scene_links: 'links', geo_scenes: 'scenes', geo_assets: 'assets',
   } as const)[path] ?? null
   if (!table) return json([])
-  if (method === 'GET') {
-    // profiles?id=in.(u-jana,…)
-    const inIds = url.searchParams.get('id')?.match(/^in\.\((.*)\)$/)?.[1]?.split(',')
-    return json(db[table].filter(r => matches(r, f) && (!inIds || inIds.includes(String(r.id)))))
-  }
+  if (method === 'GET') return json(db[table].filter(r => matches(r, f)))
   if (method === 'PATCH') {
     const hit = db[table].filter(r => matches(r, f))
     for (const r of hit) Object.assign(r, body)

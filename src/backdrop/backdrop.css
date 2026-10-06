@@ -172,13 +172,13 @@
 .bd-ready .bd-veil { opacity: 0; }
 /* ztlumení: v přehledu je terén jen náznak pod kartami scén */
 .bd-shade { opacity: 0; transition: opacity 1.4s ease; }
-.bd-overview .bd-shade { opacity: .72; }
+.bd-overview .bd-shade { opacity: .8; }
 
 /* užší okno: stoh doprostřed za přihlášení, ztlumený a bez štítků */
 @media (max-width: 1279px) {
   .bd-stage { perspective-origin: 50% 40%; }
   .bd-shade { opacity: .55; }
-  .bd-overview .bd-shade { opacity: .76; }
+  .bd-overview .bd-shade { opacity: .84; }
 }
 
 /* omezený pohyb: stoh stojí rozjetý */

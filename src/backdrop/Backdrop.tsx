@@ -125,7 +125,9 @@ export function Backdrop({ mode }: { mode: BackdropMode }) {
       zRef.current = { c: zc.map(z => z - mc), o: zo.map(z => z - mo) }
       // Přehled: terén pod celou obrazovkou, ale jen tak přiblížený, aby zůstal ostrý (houpání
       // tam stojí, deska je natočená jen o 8°) — rohy, kam nedosáhne, schová vinětace.
-      const cover = Math.max(W * 1.04, Hh * 1.35)
+      // Na výšku (tablet) rozhoduje šířka: přiblížení podle výšky tam dělalo z terénu rozmazanou
+      // skvrnu, kraje nahoře a dole radši dořeší vinětace.
+      const cover = Math.max(W * 1.04, Hh * 0.9)
       const px = (v: number) => `${v.toFixed(1)}px`
       const vars: Record<string, string> = {
         '--bd-size': `${size}px`, '--bd-t': `${t}px`, '--bd-gap': `${gap}px`, '--bd-step': `${step.toFixed(2)}px`,
