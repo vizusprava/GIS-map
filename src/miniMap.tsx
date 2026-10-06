@@ -33,6 +33,18 @@ export function saveMinimap(on: boolean, base: MiniBase): void {
   try { localStorage.setItem(ON_KEY, on ? '1' : '0'); localStorage.setItem(BASE_KEY, base) } catch { /* privátní režim */ }
 }
 
+export type MinimapPref = { on: boolean; base: MiniBase; toggle: () => void; setBase: (b: MiniBase) => void }
+/** Zapnutí a podklad minimapy s pamětí v prohlížeči (lišta i roh mapy sahají na totéž). */
+export function useMinimapPref(): MinimapPref {
+  const [mini, setMini] = useState(readMinimap)
+  useEffect(() => { saveMinimap(mini.on, mini.base) }, [mini])
+  return {
+    ...mini,
+    toggle: () => setMini(m => ({ ...m, on: !m.on })),
+    setBase: base => setMini(m => ({ ...m, base })),
+  }
+}
+
 // ── Web Mercator v jednotkách světa 0..1 (dlaždice úrovně z mají 256 px, svět 256·2^z) ──
 const wx = (lon: number) => (lon + 180) / 360
 const wy = (lat: number) => { const s = Math.sin((lat * Math.PI) / 180); return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI) }
