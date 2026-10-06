@@ -76,7 +76,25 @@ export type ModelEntry = {
 export type SceneObj = { id: string; kind: 'model' | 'parcel' | 'surface' | 'drawing'; name: string; visible: boolean }
 // jedna hladina výkresu — vlastní Cesium primitivy, aby šla samostatně zapnout/vypnout
 // `labels` = texty jako geometrie v rovině výkresu (viz dxfText.ts), jeden Primitive na barvu
-export type DrawLayer = { name: string; color: number; visible: boolean; prim: Cesium.Primitive | null; labels: Cesium.Primitive[]; points: Cesium.PointPrimitiveCollection | null }
+/** čáry hladiny: v rovině výkresu (Primitive), nebo přilepené na terén (GroundPolylinePrimitive) */
+export type DrawLinePrim = Cesium.Primitive | Cesium.GroundPolylinePrimitive
+export type DrawLayer = { name: string; color: number; visible: boolean; prim: DrawLinePrim | null; labels: Cesium.Primitive[]; points: Cesium.PointPrimitiveCollection | null }
+/**
+ * Umístění výkresu v mapě — spočítá se jednou při vykreslení a drží se kvůli přestavbě
+ * (přilepení na terén a zpátky) bez nového parsování. `toLL` = souřadnice výkresu → lon/lat,
+ * `h0` = výška roviny výkresu (elipsoid), `east`/`north`/`up`/`conv` = báze pro texty,
+ * `core` = jádro kresby v lon/lat [z, j, v, s] a `ground` = výška terénu (elipsoid) po načtení.
+ */
+export type DrawGeo = {
+  toLL: (x: number, y: number) => [number, number]
+  h0: number
+  up: Cesium.Cartesian3
+  east: Cesium.Cartesian3
+  north: Cesium.Cartesian3
+  conv: number
+  core: [number, number, number, number]
+  ground?: ((lon: number, lat: number) => number | null) | null
+}
 // `up` = svislý směr ve středu výkresu (pro posun výšky přes modelMatrix). *Refs = odkazy na prvky
 // + jejich základní barvy (pro živé nastavení průhlednosti celého výkresu).
 export type DrawingEntry = {
@@ -92,7 +110,10 @@ export type DrawingEntry = {
   toSjtsk: (x: number, y: number) => [number, number]
   textMats: Cesium.Material[]
   pointRefs: { p: Cesium.PointPrimitive; c: Cesium.Color }[]
-  polyRefs: { prim: Cesium.Primitive; id: string; c: Cesium.Color }[]
+  polyRefs: { prim: DrawLinePrim; id: string; c: Cesium.Color }[]
   /** id řádku v `geo_assets` (viz `ModelEntry.assetId`) */
   assetId?: string
+  geo: DrawGeo
+  /** přilepený na terén (viz `AssetConfig.drape`) */
+  drape: boolean
 }

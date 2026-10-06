@@ -330,6 +330,14 @@ async function main() {
     expect(cx - g.cam[0] > 15 && Math.abs(cy - g.cam[1]) < 3, `kužel nemíří na východ: kamera ${g.cam}, těžiště ${cx.toFixed(0)},${cy.toFixed(0)}`)
     expect(g.img.includes('ORTOFOTO_WM'), `dlaždice ortofota: ${g.img}`)
     expect(/↑ [\d,]+ (m|km) nad terénem/.test(g.height) && /\d m n\. m\./.test(g.height), `výška kamery: „${g.height}"`)
+    // „nad terénem" opravdu odečítá terén — i když se dotáhl až po posledním pohybu kamery
+    await waitFor(`window.__scene.globe.tilesLoaded`, 20_000, 'načtený terén')
+    await sleep(400)
+    const shown = await ev(`document.querySelector('[data-minimap-height]').innerText`)
+    const mm = shown.match(/↑ ([\d,]+) (m|km)/)
+    const shownM = mm ? Number(mm[1].replace(',', '.')) * (mm[2] === 'km' ? 1000 : 1) : NaN
+    const realAgl = await ev(`(() => { const c = window.__scene.camera.positionCartographic; return c.height - (window.__scene.globe.getHeight(c) ?? 0) })()`)
+    expect(Math.abs(shownM - realAgl) < Math.max(15, realAgl * 0.06), `minimapa ukazuje „${shown.split('\n')[0]}", kamera je ${realAgl.toFixed(0)} m nad terénem`)
     await shot('minimapa')
     // naklonění na místě měřítko nemění (dřív se mapa podle sklonu přibližovala a oddalovala)
     await ev(`window.__scene.camera.setView({ orientation: { heading: Math.PI / 2, pitch: -1.2, roll: 0 } }); window.__scene.requestRender()`)
@@ -396,6 +404,18 @@ async function main() {
     expect(Math.abs(angle(hl) - angle(-50 * k)) < 0.3, `Shift + tažení: azimut ${angle(hl).toFixed(2)}°, čekal jsem ${angle(-50 * k).toFixed(2)}°`)
     expect(Math.abs(pl - (-28.648 - 70 * k)) < 0.3, `Shift + tažení: sklon ${pl.toFixed(2)}°, čekal jsem ${(-28.648 - 70 * k).toFixed(2)}°`)
     expect(Math.abs(rl) < 0.01 || Math.abs(rl - 360) < 0.01, `Shift + tažení naklonilo kameru do strany o ${rl.toFixed(2)}°`)
+    // výška kamery: klik na údaj v minimapě → 250 m nad terénem → kamera svisle na místě
+    const ll0 = await ev(`(() => { const c = window.__scene.camera.positionCartographic; return [c.longitude, c.latitude] })()`)
+    await ev(`document.querySelector('[data-minimap-height]').click()`)
+    await waitFor(`!!document.querySelector('[data-minimap-height-edit] input')`, 3_000, 'políčko na výšku kamery')
+    await ev(`(() => { const el = document.querySelector('[data-minimap-height-edit] input')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, '250')
+      el.dispatchEvent(new Event('input', { bubbles: true })); el.form.requestSubmit() })()`)
+    await sleep(1200)
+    const hgt = await ev(`(() => { const c = window.__scene.camera.positionCartographic, g = window.__scene.globe.getHeight(c); return { agl: c.height - (g ?? 0), lon: c.longitude, lat: c.latitude } })()`)
+    expect(Math.abs(hgt.agl - 250) < 10, `výška kamery po zadání 250 m: ${hgt.agl.toFixed(1)} m`)
+    expect(Math.abs(hgt.lon - ll0[0]) < 1e-7 && Math.abs(hgt.lat - ll0[1]) < 1e-7, 'změna výšky kamerou posunula do strany')
+    expect(!(await ev(`!!document.querySelector('[data-minimap-height-edit]')`)), 'políčko na výšku po potvrzení nezmizelo')
     // N zavře; zavřenou vrátí tlačítko nad kompasem
     await press('n')
     expect(!(await ev(`!!document.querySelector('[data-minimap]')`)), 'N minimapu nezavřela')
@@ -619,6 +639,29 @@ async function main() {
     const moves = await ev('window.__moves')
     expect(JSON.stringify(moves) === JSON.stringify([['smoke-local-1', 'cloud'], ['smoke-local-1', 'local']]), `přesuny: ${JSON.stringify(moves)}`)
     await shot('soubory-uloziste')
+  })
+
+  // ── výkres přilepený na terén: čáry jako GroundPolylinePrimitive, přepínač se uloží k výkresu ──
+  await check('výkres: přilepení na terén a zpátky, uloží se k výkresu', async () => {
+    const dxfSize = statSync(join(work, 'mimo-uloziste.dxf')).size
+    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?localdxf=${dxfSize}` })
+    await waitFor(mapReady, SOFT ? 120_000 : 60_000, 'mapa s výkresem')
+    await waitFor(`!!document.querySelector('[data-sec="scena"] button[title^="Hladiny"]')`, 20_000, 'výkres v panelu Scéna')
+    await ev(`document.querySelector('[data-sec="scena"] button[title^="Hladiny"]').click()`)
+    await waitFor(`!!document.querySelector('[data-drape] input')`, 5_000, 'přepínač Přilepit na terén')
+    const ground = `window.__scene.primitives._primitives.filter(p => p.constructor.name.includes('GroundPolyline'))`
+    expect(await ev(`${ground}.length`) === 0, 'výkres je přilepený už od začátku')
+    await ev(`document.querySelector('[data-drape] input').click()`)
+    await waitFor(`${ground}.length > 0 && ${ground}.every(p => p.ready)`, 30_000, 'čáry přilepené na terén')
+    const cfg = await ev(`window.__assetCfg.at(-1)`)
+    expect(cfg?.[0] === 'smoke-local-1' && cfg?.[1]?.drape === true, `uloženo k výkresu: ${JSON.stringify(cfg)}`)
+    expect(await ev(`document.querySelector('[data-drape]').nextElementSibling.querySelector('input[type=range]').disabled`), 'výška u přilepeného výkresu jde dál měnit')
+    await shot('vykres-na-terenu')
+    await ev(`document.querySelector('[data-drape] input').click()`)
+    await waitFor(`${ground}.length === 0`, 15_000, 'čáry zpátky v rovině')
+    expect((await ev(`window.__assetCfg.at(-1)`))?.[1]?.drape === false, 'vypnutí se neuložilo')
+    const errs = await ev('window.__errors')
+    expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
   })
 
   // ── model z Maxu s S-JTSK v geometrii: georeference ve workeru (modelWorker.ts) ──

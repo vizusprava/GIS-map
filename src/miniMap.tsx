@@ -82,6 +82,21 @@ function zoomFor(s: Snap, size: number, prev: number | null): number {
  * terénem, natočení i sklon zůstanou. (Dřív se tam posouval bod, na který se kamera dívá: shora
  * to vyšlo nastejno, ale u šikmého pohledu kamera skončila o kus dál, než se kliklo.)
  */
+/**
+ * Kamera na výšku `agl` metrů nad terénem, svisle na místě — poloha, natočení i sklon zůstanou.
+ * Terén pod kamerou z načtených dlaždic (stejně jako údaj v minimapě); rozumný rozsah 2 m až 100 km.
+ */
+function setCameraHeight(v: Cesium.Viewer, agl: number) {
+  const cam = v.camera, c = cam.positionCartographic
+  const g = v.scene.globe?.getHeight(c)
+  const ground = g !== undefined && Number.isFinite(g) ? g : 0
+  cam.flyTo({
+    destination: Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, ground + Math.min(100_000, Math.max(2, agl))),
+    orientation: { heading: cam.heading, pitch: cam.pitch, roll: cam.roll },
+    duration: 0.6,
+  })
+}
+
 function moveCameraTo(v: Cesium.Viewer, lon: number, lat: number) {
   const cam = v.camera, globe = v.scene.globe
   const here = cam.positionCartographic
@@ -107,6 +122,8 @@ export function MiniMap({ viewer, base, onBase, onClose, size }: {
   size: number
 }) {
   const [frame, setFrame] = useState<{ snap: Snap; z: number } | null>(null)
+  /** rozepsaná nová výška kamery nad terénem (null = nepíše se) */
+  const [editH, setEditH] = useState<string | null>(null)
   const sizeRef = useRef(size)
   sizeRef.current = size
   // jiná velikost (úzké okno) → přepočítat měřítko nad posledním záběrem
@@ -139,9 +156,16 @@ export function MiniMap({ viewer, base, onBase, onClose, size }: {
       timer = setTimeout(run, Math.max(0, 50 - (performance.now() - last)))
     }
     v.scene.postRender.addEventListener(onRender)
+    // Výška nad terénem se bere z načtených dlaždic terénu. Když se dotáhnou až po posledním
+    // pohybu kamery (typicky po otevření scény), přepočítat i bez pohybu — jinak by minimapa
+    // dál ukazovala výšku nad elipsoidem jako „nad terénem".
+    const offTiles = v.scene.globe?.tileLoadProgressEvent.addEventListener((queued: number) => {
+      if (queued === 0 && !timer) timer = setTimeout(run, 100)
+    })
     v.scene.requestRender()
     return () => {
       clearTimeout(timer)
+      offTiles?.()
       if (!v.isDestroyed()) v.scene.postRender.removeEventListener(onRender)
     }
   }, [viewer])
@@ -275,15 +299,43 @@ export function MiniMap({ viewer, base, onBase, onClose, size }: {
         className="absolute right-1.5 top-1.5 rounded-md border border-gray-700 bg-gray-900/90 p-0.5 text-gray-400 hover:text-gray-100 pointer-coarse:p-1.5"
       ><X size={12} /></button>
       {/* výška kamery: nad terénem (to, co člověk vnímá) a nadmořská; na malé minimapě jen ta první */}
-      {snap && (
-        <div
+      {/* Výška kamery: nad terénem (to, co člověk vnímá) a nadmořská; na malé minimapě jen ta
+          první. Klik otevře políčko na novou výšku nad terénem. */}
+      {snap && editH === null && (
+        <button
           data-minimap-height
-          title={`Kamera ${fmtHeight(snap.agl)} nad terénem, ${Math.round(snap.asl).toLocaleString('cs-CZ')} m n. m. (Bpv)`}
-          className="pointer-events-none absolute bottom-1.5 left-1.5 rounded-md bg-gray-900/85 px-1.5 py-0.5 leading-tight"
+          onClick={e => { e.stopPropagation(); setEditH(String(Math.round(snap.agl))) }}
+          title={`Kamera ${fmtHeight(snap.agl)} nad terénem, ${Math.round(snap.asl).toLocaleString('cs-CZ')} m n. m. (Bpv) — klikni a zadej novou výšku`}
+          className="absolute bottom-1.5 left-1.5 rounded-md bg-gray-900/85 px-1.5 py-0.5 text-left leading-tight hover:bg-gray-800 pointer-coarse:py-1.5"
         >
           <div className="text-[10px] font-medium text-gray-100">↑ {fmtHeight(snap.agl)}{size >= 160 ? ' nad terénem' : ''}</div>
           {size >= 160 && <div className="text-[9px] text-gray-400">{Math.round(snap.asl).toLocaleString('cs-CZ')} m n. m.</div>}
-        </div>
+        </button>
+      )}
+      {editH !== null && (
+        <form
+          data-minimap-height-edit
+          onSubmit={e => {
+            e.preventDefault()
+            const m = Number(editH.replace(',', '.'))
+            const v = viewer
+            if (v && !v.isDestroyed() && Number.isFinite(m)) setCameraHeight(v, m)
+            setEditH(null)
+          }}
+          className="absolute bottom-1.5 left-1.5 flex items-center gap-1 rounded-md border border-gray-600 bg-gray-900/95 px-1.5 py-1 text-[10px] text-gray-300"
+        >
+          ↑
+          <input
+            autoFocus inputMode="decimal" value={editH}
+            onChange={e => setEditH(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setEditH(null) } }}
+            onBlur={() => setEditH(null)}
+            onFocus={e => e.target.select()}
+            aria-label="Výška kamery nad terénem v metrech"
+            className="w-14 rounded bg-gray-800 px-1 py-0.5 text-[11px] text-gray-100 outline-none focus:ring-1 focus:ring-emerald-500/70"
+          />
+          m nad terénem
+        </form>
       )}
       <div className="pointer-events-none absolute bottom-0.5 right-1.5 text-[9px] text-white/70 [text-shadow:0_0_2px_#000]">© ČÚZK</div>
     </div>

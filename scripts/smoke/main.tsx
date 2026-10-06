@@ -54,8 +54,8 @@ const assets: ScenePersist['assets'] = localDxf ? [{
   size_bytes: Number(localDxf), config: {}, sort_order: 0, created_at: '', updated_at: '',
 }] : []
 // co mapa ohlásila ke stavu scény a které soubory přesouvala — pro test přepínače úložiště
-const patches: unknown[] = [], moves: [string, string][] = []
-Object.assign(window, { __patches: patches, __moves: moves })
+const patches: unknown[] = [], moves: [string, string][] = [], assetCfg: [string, unknown][] = []
+Object.assign(window, { __patches: patches, __moves: moves, __assetCfg: assetCfg })
 const access = q.get('access') === 'viewer' ? 'viewer' : q.get('access') === 'editor' ? 'editor' : 'owner'
 const start = Cesium.Cartesian3.fromDegrees(Number(q.get('lon') ?? 14.4746), Number(q.get('lat') ?? 48.9745), Number(q.get('h') ?? 1500))
 const scene: ScenePersist = {
@@ -74,7 +74,7 @@ const scene: ScenePersist = {
     a.file_path = to === 'local' ? `local:${id}/file` : `nikdo/smoke/${id}.dxf`
     return { ...a }
   },
-  patchAssetConfig: () => {},
+  patchAssetConfig: (id, cfg) => { assetCfg.push([id, cfg]) },
   renameAsset: async () => {},
   deleteAsset: async () => {},
   // náhled scény při odchodu: test zkontroluje typ, rozměr a že není černý

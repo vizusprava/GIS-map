@@ -76,6 +76,8 @@ export type AssetConfig = {
   alpha?: number
   /** vypnuté hladiny výkresu (jméno hladiny) — zapnuté je výchozí stav */
   hiddenLayers?: string[]
+  /** výkres přilepený na terén (čáry po terénu, texty a body na jeho výšce) místo jedné roviny */
+  drape?: boolean
 
   // rastr
   crsId?: string

@@ -13,7 +13,7 @@ import { buildTextPrims } from './dxfText'
 import { parseDrawingFile } from './drawingClient'
 import { krovakForm, toKrovakNeg, type DrawParse, type DrawPrim } from './dxf'
 import type { DrawOverlay } from './export/drawOverlay'
-import type { DrawLayer, DrawingEntry, SceneObj } from './types'
+import type { DrawGeo, DrawLayer, DrawLinePrim, DrawingEntry, SceneObj } from './types'
 import type { AssetConfig } from './lib/types'
 import type { ScenePersist } from './lib/scenePersist'
 
@@ -34,6 +34,7 @@ export function useDrawings(deps: {
   const drawingsRef = useRef<Map<string, DrawingEntry>>(new Map())
   const [drawH, setDrawH] = useState<Record<string, number>>({})   // svislý posun výkresu (m)
   const [drawA, setDrawA] = useState<Record<string, number>>({})   // průhlednost výkresu (0..1)
+  const [drawDrape, setDrawDrape] = useState<Record<string, boolean>>({}) // přilepený na terén
   // Zrcadla pro ukládání: `saveDrawingCfg` se volá i z asynchronního uploadu, kde by closure
   // viděla hodnoty staré několik sekund — a přepsala by tím, co mezitím uživatel nastavil.
   const drawHRef = useRef(drawH); drawHRef.current = drawH
@@ -68,19 +69,249 @@ export function useDrawings(deps: {
   function removeDrawing(id: string) {
     const v = viewerRef.current
     const d = drawingsRef.current.get(id)
-    if (d && v && !v.isDestroyed()) {
-      for (const ly of d.layers) {
-        if (ly.prim) v.scene.primitives.remove(ly.prim)
-        for (const lp of ly.labels) v.scene.primitives.remove(lp)
-        if (ly.points) v.scene.primitives.remove(ly.points)
-      }
-    }
+    if (d && v && !v.isDestroyed()) removeLayers(v, d.layers)
     drawingsRef.current.delete(id)
     removeObj(`drawing-${id}`)
     if (d?.assetId) void sceneRef.current.deleteAsset(d.assetId).catch(err => {
       console.error('Smazání výkresu z úložiště selhalo:', err)
       toast.error('Výkres zmizel z mapy, ale v úložišti zůstal — zkus to znovu po refreshi')
     })
+  }
+
+  /** vymaže primitivy hladin z mapy (odebraný výkres, přestavba po přilepení na terén) */
+  function removeLayers(v: Cesium.Viewer, layers: DrawLayer[]) {
+    for (const ly of layers) {
+      if (ly.prim) v.scene.primitives.remove(ly.prim)
+      for (const lp of ly.labels) v.scene.primitives.remove(lp)
+      if (ly.points) v.scene.primitives.remove(ly.points)
+    }
+  }
+
+  /**
+   * Výška terénu pod výkresem (elipsoid) — jedním dotazem na DMR 5G přes jádro kresby, tedy
+   * na stejném terénu, ze kterého je mapa. Potřebují ji jen texty a body přilepeného výkresu,
+   * čáry si terén najdou samy. Stáhne se jednou na výkres; null = nejde (texty pak zůstanou
+   * v rovině výkresu).
+   */
+  async function groundOf(geo: DrawGeo) {
+    if (geo.ground !== undefined) return geo.ground
+    const [w, s, e, n] = geo.core
+    const pad = 0.002
+    try {
+      const es = await fetchElevSampler('dmr5g', w - pad, s - pad, e + pad, n + pad, 512)
+      geo.ground = (lon, lat) => { const b = es(lon, lat); return b == null ? null : b + geoidN(lon, lat) }
+    } catch { geo.ground = null }
+    return geo.ground
+  }
+
+  /**
+   * Hladiny výkresu jako primitivy Cesia (každá hladina vlastní, aby šla samostatně vypínat).
+   *
+   * V rovině (`drape` vypnuté): všechno v jedné výšce `h0` blízko terénu a kreslí se přes
+   * všechno (vypnutý depth test), takže je výkres vidět i tam, kde je místy pod terénem.
+   * Přilepený: čáry přes GroundPolylinePrimitive — Cesium je promítne na terén i na 3D dlaždice —
+   * a texty a body posazené na výšku terénu. Výškový posun tam nemá smysl, takže se nepoužije.
+   *
+   * Stavba po kouscích: velký výkres má stovky hladin a desetitisíce čar a postavit je
+   * najednou znamenalo vteřiny zamrzlé mapy (při otevření scény i celého počítače).
+   * Po ~12 ms práce dostane mapa snímek — překreslí se a chytí myš — a staví se dál.
+   * null = viewer mezitím zanikl (odchod ze scény), stavba končí.
+   */
+  async function buildLayers(
+    v: Cesium.Viewer, prims: DrawPrim[], geo: DrawGeo,
+    opts: { drape: boolean; alpha: number; hidden: Set<string>; offset: number },
+  ) {
+    const { toLL, h0, up, east, north, conv } = geo
+    const ground = opts.drape ? await groundOf(geo) : null
+    if (v.isDestroyed()) return null
+    // texty a body přilepeného výkresu kousek nad terénem, ať jím neprobleskují
+    const at = (lon: number, lat: number) => (ground ? (ground(lon, lat) ?? h0) + 0.3 : h0)
+    const toXYZ = (x: number, y: number) => { const [lo, la] = toLL(x, y); return Cesium.Cartesian3.fromDegrees(lo, la, at(lo, la)) }
+    const alpha0 = opts.alpha
+    const textMats: DrawingEntry['textMats'] = []
+    const pointRefs: DrawingEntry['pointRefs'] = []
+    const polyRefs: DrawingEntry['polyRefs'] = []
+
+    let wlon = Infinity, elon = -Infinity, slat = Infinity, nlat = -Infinity
+    const seen = (lon: number, lat: number) => { if (lon < wlon) wlon = lon; if (lon > elon) elon = lon; if (lat < slat) slat = lat; if (lat > nlat) nlat = lat }
+
+    // seskup prvky podle hladiny → každá hladina má vlastní čáry/popisky/body, aby šla samostatně vypínat
+    const byLayer = new Map<string, DrawPrim[]>()
+    for (const p of prims) { const arr = byLayer.get(p.layer); if (arr) arr.push(p); else byLayer.set(p.layer, [p]) }
+
+    const layers: DrawLayer[] = []
+    // Uložený stav dostane každá hladina hned při stavbě (vypnutá se ani neukáže, posunutá
+    // neposkočí), protože výkres naskakuje po hladinách.
+    const m0 = !opts.drape && opts.offset
+      ? Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(up, opts.offset, new Cesium.Cartesian3()))
+      : null
+    let slice = performance.now()
+    const breathe = async () => {
+      if (performance.now() - slice < 12) return true
+      await nextFrame()
+      slice = performance.now()
+      return !v.isDestroyed()
+    }
+    // Velké výkresy mají desetitisíce textů → strop na počet. Vzdálenostní LOD už není potřeba:
+    // texty jsou teď v metrech, takže se při oddálení samy zmenší do neviditelna.
+    let labelBudget = 30000
+    for (const [lname, lprims] of byLayer) {
+      if (!(await breathe())) return null
+      const instances: Cesium.GeometryInstance[] = []
+      const polyMeta: { id: string; c: Cesium.Color }[] = []
+      for (let k = 0; k < lprims.length; k++) {
+        const p = lprims[k]
+        if ((k & 1023) === 1023 && !(await breathe())) return null
+        if (p.kind !== 'poly') continue
+        const col = dwgColor(p.color)
+        const iid = `${lname}#${polyMeta.length}`
+        const attributes = { color: Cesium.ColorGeometryInstanceAttribute.fromColor(col.withAlpha(alpha0)) }
+        if (opts.drape) {
+          // Po terénu stačí lon/lat. Opakované body pryč: GroundPolylineGeometry je sama
+          // vyhazuje a čára, které by zbyl jediný bod, by shodila stavbu celé hladiny.
+          const ll: number[] = []
+          for (const [x, y] of p.pts) {
+            const [lon, lat] = toLL(x, y); seen(lon, lat)
+            const n = ll.length
+            if (n && Math.abs(ll[n - 2] - lon) < 1e-8 && Math.abs(ll[n - 1] - lat) < 1e-8) continue
+            ll.push(lon, lat)
+          }
+          if (ll.length < 4) continue
+          instances.push(new Cesium.GeometryInstance({
+            id: iid, attributes,
+            geometry: new Cesium.GroundPolylineGeometry({ positions: Cesium.Cartesian3.fromDegreesArray(ll), width: 2 }),
+          }))
+        } else {
+          const deg: number[] = []
+          for (const [x, y] of p.pts) { const [lon, lat] = toLL(x, y); deg.push(lon, lat, h0); seen(lon, lat) }
+          if (deg.length < 6) continue
+          instances.push(new Cesium.GeometryInstance({
+            id: iid, attributes,
+            geometry: new Cesium.PolylineGeometry({ positions: Cesium.Cartesian3.fromDegreesArrayHeights(deg), width: 2, arcType: Cesium.ArcType.NONE, vertexFormat: Cesium.PolylineColorAppearance.VERTEX_FORMAT }),
+          }))
+        }
+        polyMeta.push({ id: iid, c: col })   // základní (neprůhledná) barva — z ní počítá slider
+      }
+      // Geometrie čar se staví ve workerech Cesia (asynchronous): u výkresu s desetitisíci
+      // polyliniemi to na hlavním vlákně znamenalo několik sekund zamrzlé mapy. Texty zůstávají
+      // synchronní — vlastní geometrie písmen se do workeru poslat nedá.
+      let prim: DrawLinePrim | null = null
+      if (instances.length && opts.drape) {
+        prim = v.scene.primitives.add(new Cesium.GroundPolylinePrimitive({
+          geometryInstances: instances,
+          appearance: new Cesium.PolylineColorAppearance(),
+          classificationType: Cesium.ClassificationType.BOTH,
+          asynchronous: true,
+        }))
+      } else if (instances.length) {
+        // depthTest vypnutý → čáry se kreslí přes vše, takže výkres je vidět i pod terénem
+        prim = v.scene.primitives.add(new Cesium.Primitive({
+          geometryInstances: instances,
+          appearance: new Cesium.PolylineColorAppearance({ renderState: { lineWidth: 1, depthTest: { enabled: false }, depthMask: false, blending: Cesium.BlendingState.ALPHA_BLEND } }),
+          asynchronous: true,
+        }))
+      }
+      if (prim) for (const m of polyMeta) polyRefs.push({ prim, id: m.id, c: m.c })
+
+      // Texty jako geometrie v rovině výkresu (ne Labely) → drží rotaci i výšku v metrech z DXF.
+      const labels: Cesium.Primitive[] = []
+      const texts = lprims.filter((p): p is Extract<DrawPrim, { kind: 'text' }> => p.kind === 'text')
+      if (texts.length && labelBudget > 0) {
+        const take = texts.slice(0, Math.max(0, labelBudget))
+        labelBudget -= take.length
+        for (const t of take) { const [lon, lat] = toLL(t.pt[0], t.pt[1]); seen(lon, lat) }
+        const built = buildTextPrims({
+          texts: take, anchor: toXYZ, east, north, up, conv,
+          colorCss: rgb => `#${(rgb & 0xffffff).toString(16).padStart(6, '0')}`,
+        })
+        for (const tp of built.prims) { v.scene.primitives.add(tp); labels.push(tp) }
+        textMats.push(...built.mats)
+      }
+
+      let points: Cesium.PointPrimitiveCollection | null = null
+      const pts = lprims.filter((p): p is Extract<DrawPrim, { kind: 'point' }> => p.kind === 'point')
+      if (pts.length) {
+        points = new Cesium.PointPrimitiveCollection()
+        for (const pt of pts) {
+          const [lon, lat] = toLL(pt.pt[0], pt.pt[1]); seen(lon, lat)
+          const pc = dwgColor(pt.color)
+          const pp = points.add({ position: Cesium.Cartesian3.fromDegrees(lon, lat, at(lon, lat)), pixelSize: 5, color: pc.withAlpha(alpha0), disableDepthTestDistance: Number.POSITIVE_INFINITY })
+          pointRefs.push({ p: pp, c: pc })
+        }
+        v.scene.primitives.add(points)
+      }
+
+      if (prim || labels.length || points) {
+        const ly: DrawLayer = { name: lname || '0', color: lprims[0].color, visible: true, prim, labels, points }
+        if (opts.hidden.has(ly.name)) { ly.visible = false; setLayerShow(ly, false) }
+        if (m0) setLayerMatrix(ly, m0)
+        layers.push(ly)
+      }
+    }
+    // materiály textů se dají nastavit kdykoliv (nejsou to atributy primitiva), takže až tady
+    if (alpha0 !== 1) for (const mt of textMats) mt.uniforms.opacity = alpha0
+    layers.sort((a, b) => a.name.localeCompare(b.name, 'cs'))
+    return { layers, textMats, pointRefs, polyRefs, ext: [wlon, elon, slat, nlat] as [number, number, number, number] }
+  }
+
+  /**
+   * Srovnání po dostavění čar. Dokud se geometrie staví ve workeru, atributy barev neexistují
+   * (`applyDrawAlpha` je přeskočí) a Cesium na konci stavby přepíše `modelMatrix` hodnotou
+   * z jejího začátku. Kdo stihl mezitím pohnout průhledností nebo výškou, měl by v mapě
+   * něco jiného, než ukazuje posuvník — tak se aktuální stav po dokončení použije znovu.
+   */
+  function watchBuilt(v: Cesium.Viewer, id: string, entry: DrawingEntry, offFallback: number, alphaBuilt: number) {
+    const layersNow = entry.layers
+    const building = layersNow.flatMap(l => l.prim ? [l.prim] : [])
+    if (!building.length) return
+    const scene = v.scene
+    const off = scene.postRender.addEventListener(() => {
+      // výkres mezitím odebraný nebo přestavěný (přilepení na terén)
+      if (drawingsRef.current.get(id) !== entry || entry.layers !== layersNow) { off(); return }
+      if (!building.every(p => p.ready)) return
+      off()
+      // záloha na uložené hodnoty pro případ, že React ještě nepropsal stav do refů
+      applyDrawH(entry, drawHRef.current[id] ?? offFallback)
+      const a = drawARef.current[id] ?? alphaBuilt
+      if (a !== alphaBuilt) applyDrawAlpha(entry, a)
+      scene.requestRender()
+    })
+  }
+
+  /**
+   * Přilepit výkres na terén, nebo ho vrátit do roviny. Výkres se přestaví z kresby, kterou
+   * si drží (`prims`), bez nového parsování; vypnuté hladiny, průhlednost i posun zůstanou.
+   * Nové prvky se do mapy přidají dřív, než zmizí staré, ať výkres mezitím neproblikne.
+   * Rychlé přepnutí tam a zpátky: platí poslední volba, rozestavěná přestavba se zahodí.
+   */
+  const drapeSeq = useRef(new Map<string, number>())
+  async function setDrawingDrape(did: string, on: boolean) {
+    const v = viewerRef.current
+    const e = drawingsRef.current.get(did)
+    if (!v || v.isDestroyed() || !e) return
+    const seq = (drapeSeq.current.get(did) ?? 0) + 1
+    drapeSeq.current.set(did, seq)
+    setDrawDrape(s => ({ ...s, [did]: on }))
+    if (e.drape === on) return // zpátky na to, co v mapě už je — rozestavěné se zahodí
+    const alpha = drawARef.current[did] ?? 1
+    const built = await buildLayers(v, e.prims, e.geo, {
+      drape: on, alpha, hidden: new Set(e.layers.filter(l => !l.visible).map(l => l.name)), offset: drawHRef.current[did] ?? 0,
+    })
+    if (!built || v.isDestroyed()) return
+    if (drapeSeq.current.get(did) !== seq || drawingsRef.current.get(did) !== e) { removeLayers(v, built.layers); return }
+    // co se mezitím přepnulo v panelu, platí i pro nové hladiny
+    const master = objects.find(o => o.id === `drawing-${did}`)?.visible ?? true
+    for (const ly of built.layers) {
+      ly.visible = e.layers.find(o => o.name === ly.name)?.visible ?? ly.visible
+      setLayerShow(ly, master && ly.visible)
+    }
+    removeLayers(v, e.layers)
+    e.layers = built.layers; e.textMats = built.textMats; e.pointRefs = built.pointRefs; e.polyRefs = built.polyRefs
+    e.drape = on
+    watchBuilt(v, did, e, drawHRef.current[did] ?? 0, alpha)
+    saveDrawingCfg(did)
+    setObjects(list => [...list])
+    v.scene.requestRender()
   }
 
   // Nakreslí parse na mapu: čáry/popisky/body seskupené po hladinách (každá hladina = vlastní
@@ -129,9 +360,9 @@ export function useDrawings(deps: {
       mode = 'lokální (umístěno do středu pohledu)'
     }
 
-    // Jedna plochá výška blízko terénu (vzorek DMR ve středu výkresu). Výkres se ZÁMĚRNĚ nedrapuje
-    // na terén — leží v jedné rovině a vykresluje se s vypnutým depth testem, aby byl vidět vždy,
-    // i když je místy pod terénem.
+    // Jedna plochá výška blízko terénu (vzorek DMR ve středu výkresu). Výchozí výkres leží v jedné
+    // rovině a vykresluje se s vypnutým depth testem, aby byl vidět vždy, i když je místy pod
+    // terénem; přilepit na terén jde na přání (`AssetConfig.drape`, viz `buildLayers`).
     const [clon, clat] = toLL(cx, cy)
     let h0 = 300 + geoidN(clon, clat)
     try {
@@ -142,11 +373,8 @@ export function useDrawings(deps: {
     } catch { /* nech výchozí */ }
     if (v.isDestroyed()) return null
 
-    // svislý směr ve středu (pro posun výšky) + sběr odkazů na prvky (pro živou průhlednost)
+    // svislý směr ve středu (pro posun výšky)
     const up = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(Cesium.Cartesian3.fromDegrees(clon, clat, h0), new Cesium.Cartesian3())
-    const textMats: DrawingEntry['textMats'] = []
-    const pointRefs: DrawingEntry['pointRefs'] = []
-    const polyRefs: DrawingEntry['polyRefs'] = []
 
     // Uloženou průhlednost ZAPÉKÁME rovnou do barev při stavbě primitiv. Dodatečné doobarvení
     // tady nejde: Cesium vyrábí atributy primitiva až v prvním `update()` ve scéně, takže
@@ -160,107 +388,26 @@ export function useDrawings(deps: {
     const north = Cesium.Matrix4.getColumn(enuC, 1, new Cesium.Cartesian4())
     const eastC = new Cesium.Cartesian3(east.x, east.y, east.z)
     const northC = new Cesium.Cartesian3(north.x, north.y, north.z)
-    const toXYZ = (x: number, y: number) => { const [lo, la] = toLL(x, y); return Cesium.Cartesian3.fromDegrees(lo, la, h0) }
+    const flatXYZ = (x: number, y: number) => { const [lo, la] = toLL(x, y); return Cesium.Cartesian3.fromDegrees(lo, la, h0) }
     // Konvergence poledníků: osa +X výkresu v S-JTSK NENÍ východ (Křovák je šikmá kuželová
     // projekce), takže bez téhle korekce by byly všechny texty stočené o několik stupňů.
-    const dv = Cesium.Cartesian3.subtract(toXYZ(cx + 1, cy), toXYZ(cx, cy), new Cesium.Cartesian3())
+    const dv = Cesium.Cartesian3.subtract(flatXYZ(cx + 1, cy), flatXYZ(cx, cy), new Cesium.Cartesian3())
     const conv = Math.atan2(Cesium.Cartesian3.dot(dv, northC), Cesium.Cartesian3.dot(dv, eastC))
+    // jádro kresby (2.–98. percentil) v lon/lat — pro přelet i pro výšky terénu pod výkresem
+    const cLL = [toLL(parse.coreMinX, parse.coreMinY), toLL(parse.coreMaxX, parse.coreMaxY)]
+    const cw = Math.min(cLL[0][0], cLL[1][0]), ce = Math.max(cLL[0][0], cLL[1][0])
+    const cs = Math.min(cLL[0][1], cLL[1][1]), cn = Math.max(cLL[0][1], cLL[1][1])
+    const geo: DrawGeo = { toLL, h0, up, east: eastC, north: northC, conv, core: [cw, cs, ce, cn] }
 
-    let wlon = Infinity, elon = -Infinity, slat = Infinity, nlat = -Infinity
-    const seen = (lon: number, lat: number) => { if (lon < wlon) wlon = lon; if (lon > elon) elon = lon; if (lat < slat) slat = lat; if (lat > nlat) nlat = lat }
-
-    // seskup prvky podle hladiny → každá hladina má vlastní čáry/popisky/body, aby šla samostatně vypínat
-    const byLayer = new Map<string, DrawPrim[]>()
-    for (const p of parse.prims) { const arr = byLayer.get(p.layer); if (arr) arr.push(p); else byLayer.set(p.layer, [p]) }
-
-    const layers: DrawLayer[] = []
-    // Uložený stav dostane každá hladina hned při stavbě (vypnutá se ani neukáže, posunutá
-    // neposkočí), protože výkres teď naskakuje po hladinách — viz `breathe`.
-    const hidden0 = new Set(restore?.config?.hiddenLayers ?? [])
-    const off0 = restore?.config?.heightOffset ?? 0
-    const m0 = off0 ? Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(up, off0, new Cesium.Cartesian3())) : null
-    /**
-     * Stavba po kouscích: velký výkres má stovky hladin a desetitisíce čar a postavit je
-     * najednou znamenalo vteřiny zamrzlé mapy (při otevření scény i celého počítače).
-     * Po ~12 ms práce dostane mapa snímek — překreslí se a chytí myš — a staví se dál.
-     * false = viewer mezitím zanikl (odchod ze scény), stavba končí.
-     */
-    let slice = performance.now()
-    const breathe = async () => {
-      if (performance.now() - slice < 12) return true
-      await nextFrame()
-      slice = performance.now()
-      return !v.isDestroyed()
-    }
-    // Velké výkresy mají desetitisíce textů → strop na počet. Vzdálenostní LOD už není potřeba:
-    // texty jsou teď v metrech, takže se při oddálení samy zmenší do neviditelna.
-    let labelBudget = 30000
-    for (const [lname, lprims] of byLayer) {
-      if (!(await breathe())) return null
-      const instances: Cesium.GeometryInstance[] = []
-      const polyMeta: { id: string; c: Cesium.Color }[] = []
-      for (let k = 0; k < lprims.length; k++) {
-        const p = lprims[k]
-        if ((k & 1023) === 1023 && !(await breathe())) return null
-        if (p.kind !== 'poly') continue
-        const deg: number[] = []
-        for (const [x, y] of p.pts) { const [lon, lat] = toLL(x, y); deg.push(lon, lat, h0); seen(lon, lat) }
-        if (deg.length < 6) continue
-        const col = dwgColor(p.color)
-        const iid = `${lname}#${polyMeta.length}`
-        instances.push(new Cesium.GeometryInstance({
-          id: iid,
-          geometry: new Cesium.PolylineGeometry({ positions: Cesium.Cartesian3.fromDegreesArrayHeights(deg), width: 2, arcType: Cesium.ArcType.NONE, vertexFormat: Cesium.PolylineColorAppearance.VERTEX_FORMAT }),
-          attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(col.withAlpha(alpha0)) },
-        }))
-        polyMeta.push({ id: iid, c: col })   // základní (neprůhledná) barva — z ní počítá slider
-      }
-      // depthTest vypnutý → čáry se kreslí přes vše, takže výkres je vidět i pod terénem.
-      // Geometrie čar se staví ve workerech Cesia (asynchronous): u výkresu s desetitisíci
-      // polyliniemi to na hlavním vlákně znamenalo několik sekund zamrzlé mapy. Texty zůstávají
-      // synchronní — vlastní geometrie písmen se do workeru poslat nedá.
-      const prim = instances.length
-        ? v.scene.primitives.add(new Cesium.Primitive({
-            geometryInstances: instances,
-            appearance: new Cesium.PolylineColorAppearance({ renderState: { lineWidth: 1, depthTest: { enabled: false }, depthMask: false, blending: Cesium.BlendingState.ALPHA_BLEND } }),
-            asynchronous: true,
-          }))
-        : null
-      if (prim) for (const m of polyMeta) polyRefs.push({ prim, id: m.id, c: m.c })
-
-      // Texty jako geometrie v rovině výkresu (ne Labely) → drží rotaci i výšku v metrech z DXF.
-      const labels: Cesium.Primitive[] = []
-      const texts = lprims.filter((p): p is Extract<DrawPrim, { kind: 'text' }> => p.kind === 'text')
-      if (texts.length && labelBudget > 0) {
-        const take = texts.slice(0, Math.max(0, labelBudget))
-        labelBudget -= take.length
-        for (const t of take) { const [lon, lat] = toLL(t.pt[0], t.pt[1]); seen(lon, lat) }
-        const built = buildTextPrims({
-          texts: take, anchor: toXYZ, east: eastC, north: northC, up, conv,
-          colorCss: rgb => `#${(rgb & 0xffffff).toString(16).padStart(6, '0')}`,
-        })
-        for (const tp of built.prims) { v.scene.primitives.add(tp); labels.push(tp) }
-        textMats.push(...built.mats)
-      }
-
-      let points: Cesium.PointPrimitiveCollection | null = null
-      const pts = lprims.filter((p): p is Extract<DrawPrim, { kind: 'point' }> => p.kind === 'point')
-      if (pts.length) {
-        points = new Cesium.PointPrimitiveCollection()
-        for (const pt of pts) { const [lon, lat] = toLL(pt.pt[0], pt.pt[1]); seen(lon, lat); const pc = dwgColor(pt.color); const pp = points.add({ position: Cesium.Cartesian3.fromDegrees(lon, lat, h0), pixelSize: 5, color: pc.withAlpha(alpha0), disableDepthTestDistance: Number.POSITIVE_INFINITY }); pointRefs.push({ p: pp, c: pc }) }
-        v.scene.primitives.add(points)
-      }
-
-      if (prim || labels.length || points) {
-        const ly: DrawLayer = { name: lname || '0', color: lprims[0].color, visible: true, prim, labels, points }
-        if (hidden0.has(ly.name)) { ly.visible = false; setLayerShow(ly, false) }
-        if (m0) setLayerMatrix(ly, m0)
-        layers.push(ly)
-      }
-    }
-    // materiály textů se dají nastavit kdykoliv (nejsou to atributy primitiva), takže až tady
-    if (alpha0 !== 1) for (const mt of textMats) mt.uniforms.opacity = alpha0
-    layers.sort((a, b) => a.name.localeCompare(b.name, 'cs'))
+    // uložený stav výkresu dostane každá hladina hned při stavbě (viz `buildLayers`)
+    const cfg = restore?.config
+    const drape = !!cfg?.drape
+    const built = await buildLayers(v, parse.prims, geo, {
+      drape, alpha: alpha0, hidden: new Set(cfg?.hiddenLayers ?? []), offset: cfg?.heightOffset ?? 0,
+    })
+    if (!built) return null
+    const { layers, textMats, pointRefs, polyRefs } = built
+    const [wlon, elon, slat, nlat] = built.ext
 
     const id = `${Date.now()}`
     const pad = 0.0004
@@ -273,47 +420,21 @@ export function useDrawings(deps: {
      * Průnik s obálkou je tu pro jistotu: kdyby percentily kvůli divné kresbě vyšly mimo,
      * vrátí se to k původnímu chování místo prázdného obdélníku.
      */
-    const cLL = [toLL(parse.coreMinX, parse.coreMinY), toLL(parse.coreMaxX, parse.coreMaxY)]
-    const cw = Math.min(cLL[0][0], cLL[1][0]), ce = Math.max(cLL[0][0], cLL[1][0])
-    const cs = Math.min(cLL[0][1], cLL[1][1]), cn = Math.max(cLL[0][1], cLL[1][1])
     const bw = Math.max(wlon, cw), be = Math.min(elon, ce), bs = Math.max(slat, cs), bn = Math.min(nlat, cn)
     const ok = be > bw && bn > bs
     const [fw, fe, fs2, fn] = ok ? [bw, be, bs, bn] : [wlon, elon, slat, nlat]
     const bounds = (fe > fw && fn > fs2) ? Cesium.Rectangle.fromDegrees(fw - pad, fs2 - pad, fe + pad, fn + pad) : null
-    const entry: DrawingEntry = { layers, bounds, up, textMats, pointRefs, polyRefs, prims: parse.prims, toSjtsk, assetId: restore?.assetId }
+    const entry: DrawingEntry = { layers, bounds, up, textMats, pointRefs, polyRefs, prims: parse.prims, toSjtsk, assetId: restore?.assetId, geo, drape }
     drawingsRef.current.set(id, entry)
 
-    // uložený stav výkresu: vypnuté hladiny, výška nad terénem a průhlednost
-    const cfg = restore?.config
+    // uložený stav do posuvníků a přepínače (prvky samotné ho mají už ze stavby)
     if (cfg) {
-      const hidden = new Set(cfg.hiddenLayers ?? [])
-      for (const ly of layers) if (hidden.has(ly.name)) { ly.visible = false; setLayerShow(ly, false) }
       const off = cfg.heightOffset ?? 0
-      if (off) { applyDrawH(entry, off); setDrawH(s => ({ ...s, [id]: off })) }
-      // barvy už mají `alpha0` zapečenou ze stavby primitiv — tady zbývá jen srovnat slider
+      if (off) setDrawH(s => ({ ...s, [id]: off }))
       if (alpha0 !== 1) setDrawA(s => ({ ...s, [id]: alpha0 }))
+      if (drape) setDrawDrape(s => ({ ...s, [id]: true }))
     }
-
-    /**
-     * Srovnání po dostavění čar. Dokud se geometrie staví ve workeru, atributy barev neexistují
-     * (`applyDrawAlpha` je přeskočí) a Cesium na konci stavby přepíše `modelMatrix` hodnotou
-     * z jejího začátku. Kdo stihl mezitím pohnout průhledností nebo výškou, měl by v mapě
-     * něco jiného, než ukazuje posuvník — tak se aktuální stav po dokončení použije znovu.
-     */
-    const building = layers.flatMap(l => l.prim ? [l.prim] : [])
-    if (building.length) {
-      const scene = v.scene
-      const off = scene.postRender.addEventListener(() => {
-        if (drawingsRef.current.get(id) !== entry) { off(); return } // výkres mezitím odebraný
-        if (!building.every(p => p.ready)) return
-        off()
-        // záloha na uložené hodnoty pro případ, že React ještě nepropsal stav do refů
-        applyDrawH(entry, drawHRef.current[id] ?? cfg?.heightOffset ?? 0)
-        const a = drawARef.current[id] ?? alpha0
-        if (a !== alpha0) applyDrawAlpha(entry, a)
-        scene.requestRender()
-      })
-    }
+    watchBuilt(v, id, entry, cfg?.heightOffset ?? 0, alpha0)
 
     upsertObj({ id: `drawing-${id}`, kind: 'drawing', name: `Výkres ${name}`, visible: true })
     const spanX = maxX - minX, spanY = maxY - minY
@@ -362,16 +483,19 @@ export function useDrawings(deps: {
       heightOffset: over?.heightOffset ?? drawHRef.current[did] ?? 0,
       alpha: over?.alpha ?? drawARef.current[did] ?? 1,
       hiddenLayers: d.layers.filter(l => !l.visible).map(l => l.name),
+      drape: d.drape,
     })
   }
 
   // ── posun výšky + průhlednost celého výkresu (živě, bez překreslení) ──
   function setLayerMatrix(ly: DrawLayer, m: Cesium.Matrix4) {
-    if (ly.prim) ly.prim.modelMatrix = m
+    // čáry přilepené na terén matici nemají — leží na terénu, posouvat je nejde
+    if (ly.prim instanceof Cesium.Primitive) ly.prim.modelMatrix = m
     for (const lp of ly.labels) lp.modelMatrix = m
     if (ly.points) ly.points.modelMatrix = m
   }
   function applyDrawH(e: DrawingEntry, off: number) {
+    if (e.drape) return // přilepený výkres leží na terénu, výškový posun se nepoužívá
     const m = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(e.up, off, new Cesium.Cartesian3()))
     for (const ly of e.layers) setLayerMatrix(ly, m)
   }
@@ -455,6 +579,7 @@ export function useDrawings(deps: {
 
   return {
     drawA,
+    drawDrape,
     drawH,
     drawingLoading,
     drawingOverlays,
@@ -464,6 +589,7 @@ export function useDrawings(deps: {
     removeDrawing,
     renderDrawing,
     setDrawingAlpha,
+    setDrawingDrape,
     setDrawingHeight,
     setDrawingVisible,
     setLayersVisibility,

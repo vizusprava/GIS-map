@@ -114,7 +114,7 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
     clearLayerSel, dragOverLayer, expandedDrawings, layerFilter, layerSel, renameDraft, renamingId,
     selectAllLayers, setLayerFilter, setRenameDraft, setRenamingId, startLayerDrag, toggleExpand,
   } = ui
-  const { drawingsRef, drawH, drawA, setDrawingHeight, setDrawingAlpha, setLayersVisibility, toggleLayer } = drawings
+  const { drawingsRef, drawH, drawA, drawDrape, setDrawingHeight, setDrawingAlpha, setDrawingDrape, setLayersVisibility, toggleLayer } = drawings
 
   function commitRename() {
     const id = renamingId
@@ -187,10 +187,15 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
           const bulk = selCount > 0 ? [...sel] : shownNames // očka pracují nad výběrem, jinak nad zobrazenými
           return (
           <div className="ml-5 mb-1 mt-0.5 flex flex-col gap-0.5 border-l border-gray-700 pl-2">
-            <div className="flex items-center gap-1.5 px-1 pb-0.5 text-[10px] text-gray-400" onClick={e => e.stopPropagation()}>
+            {/* přilepit na terén: čáry po terénu, texty a body na jeho výšce — výškový posun pak nemá smysl */}
+            <label data-drape={did} title="Čáry se promítnou na terén (i na 3D realitu), texty a body se posadí na jeho výšku" className="flex cursor-pointer items-center gap-1.5 px-1 pb-0.5 text-[10px] text-gray-300" onClick={e => e.stopPropagation()}>
+              <input type="checkbox" checked={!!drawDrape[did]} onChange={e => void setDrawingDrape(did, e.target.checked)} className="accent-emerald-500" />
+              Přilepit na terén
+            </label>
+            <div className={`flex items-center gap-1.5 px-1 pb-0.5 text-[10px] text-gray-400 ${drawDrape[did] ? 'opacity-40' : ''}`} onClick={e => e.stopPropagation()}>
               <span className="w-10 shrink-0">Výška</span>
-              <input type="range" min={-100} max={100} step={0.5} value={drawH[did] ?? 0} onChange={e => setDrawingHeight(did, Number(e.target.value))} className="flex-1 min-w-0" />
-              <span className="w-10 text-right tabular-nums shrink-0">{(drawH[did] ?? 0).toFixed(1)} m</span>
+              <input type="range" min={-100} max={100} step={0.5} value={drawH[did] ?? 0} disabled={!!drawDrape[did]} onChange={e => setDrawingHeight(did, Number(e.target.value))} className="flex-1 min-w-0" />
+              <span className="w-10 text-right tabular-nums shrink-0">{drawDrape[did] ? 'terén' : `${(drawH[did] ?? 0).toFixed(1)} m`}</span>
             </div>
             <div className="flex items-center gap-1.5 px-1 pb-0.5 text-[10px] text-gray-400" onClick={e => e.stopPropagation()}>
               <span className="w-10 shrink-0">Průhled.</span>
