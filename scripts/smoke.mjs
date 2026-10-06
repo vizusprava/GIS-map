@@ -329,7 +329,7 @@ async function main() {
     const cx = g.pts.reduce((s, p) => s + p[0], 0) / g.pts.length, cy = g.pts.reduce((s, p) => s + p[1], 0) / g.pts.length
     expect(cx - g.cam[0] > 15 && Math.abs(cy - g.cam[1]) < 3, `kužel nemíří na východ: kamera ${g.cam}, těžiště ${cx.toFixed(0)},${cy.toFixed(0)}`)
     expect(g.img.includes('ORTOFOTO_WM'), `dlaždice ortofota: ${g.img}`)
-    expect(/↑ [\d,]+ (m|km)/.test(g.height), `výška kamery: „${g.height}"`)
+    expect(/↑ [\d,]+ (m|km) nad terénem/.test(g.height) && /\d m n\. m\./.test(g.height), `výška kamery: „${g.height}"`)
     await shot('minimapa')
     // naklonění na místě měřítko nemění (dřív se mapa podle sklonu přibližovala a oddalovala)
     await ev(`window.__scene.camera.setView({ orientation: { heading: Math.PI / 2, pitch: -1.2, roll: 0 } }); window.__scene.requestRender()`)
@@ -339,12 +339,19 @@ async function main() {
     // podklad Topo
     await clickText(`document.querySelector('[data-minimap]')`, 'Topo')
     await waitFor(`!!document.querySelector('[data-minimap="ztm"]') && document.querySelector('[data-minimap] img').src.includes('ZTM_WM')`, 5_000, 'minimapa s topografickou mapou')
-    // klik kus vedle kamery → kamera se posune
+    // klik kus vedle kamery při ŠIKMÉM pohledu → kamera (ne bod, na který se dívá) skončí
+    // přesně tam, kam se kliklo
+    const merc = `const s = Math.sin(c.latitude); return [(c.longitude * 180 / Math.PI + 180) / 360, 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)]`
     const before = await ev(cam)
+    const world = await ev(`256 * 2 ** Number(document.querySelector('[data-minimap]').dataset.zoom)`)
+    const [ax, ay] = await ev(`(() => { const c = window.__scene.camera.positionCartographic; ${merc} })()`)
     await ev(`(() => { const el = document.querySelector('[data-minimap] [title^="Minimapa"]'); const r = el.getBoundingClientRect()
       el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: r.left + r.width / 2 + 40, clientY: r.top + r.height / 2 + 30 })) })()`)
     await waitFor(`(() => { const p = window.__scene.camera.positionWC, b = ${JSON.stringify(before)}; return Math.hypot(p.x - b[0], p.y - b[1], p.z - b[2]) > 20 })()`, 5_000, 'posun kamery po kliku do minimapy')
-    await sleep(1000) // dolet
+    await sleep(1200) // dolet
+    const [gx, gy] = await ev(`(() => { const c = window.__scene.camera.positionCartographic; ${merc} })()`)
+    const miss = Math.hypot(gx - (ax + 40 / world), gy - (ay + 30 / world)) * world
+    expect(miss < 3, `kamera skončila ${miss.toFixed(1)} px od místa kliku na minimapě`)
     // N zavře; zavřenou vrátí tlačítko nad kompasem
     await press('n')
     expect(!(await ev(`!!document.querySelector('[data-minimap]')`)), 'N minimapu nezavřela')

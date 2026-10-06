@@ -11,13 +11,13 @@
  * ho nemění (dřív se mapa přizpůsobovala tomu, co kamera vidí, a při každém naklonění se
  * přiblížila nebo oddálila). Mění se po půl úrovních a až když se výška změní znatelně.
  * Směr ukazuje kužel široký jako zorný úhel kamery — vždycky stejně dlouhý.
- * Klik do minimapy posune pohled tak, aby se díval na to místo — natočení i sklon zůstanou.
+ * Klik do minimapy přesune kameru na to místo — výška nad terénem, natočení i sklon zůstanou.
  */
 import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import { X } from 'lucide-react'
 import { ORTO_MAX_LEVEL, ZTM_MAX_LEVEL, orthoTileUrl, ztmTileUrl } from './imagery'
-import { viewCenterGround } from './sceneUtils'
+import { geoidN } from './geoid'
 
 export type MiniBase = 'orto' | 'ztm'
 
@@ -41,8 +41,11 @@ const DEG = 180 / Math.PI
 const M_PER_PX0 = 156543.03392
 
 type Pt = [number, number]
-/** Kamera pro minimapu: poloha (jednotky světa), azimut, vodorovný zorný úhel a výška nad terénem. */
-type Snap = { cam: Pt; lat: number; heading: number; hfov: number; agl: number }
+/**
+ * Kamera pro minimapu: poloha (jednotky světa), azimut, vodorovný zorný úhel, výška nad
+ * terénem a nadmořská výška (Bpv: elipsoid minus kvazigeoid, jako všude jinde v appce).
+ */
+type Snap = { cam: Pt; lat: number; heading: number; hfov: number; agl: number; asl: number }
 
 function snapCamera(v: Cesium.Viewer): Snap {
   const cam = v.camera, canvas = v.scene.canvas
@@ -56,8 +59,8 @@ function snapCamera(v: Cesium.Viewer): Snap {
     const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight)
     hfov = aspect >= 1 ? f.fov : 2 * Math.atan(Math.tan(f.fov / 2) * aspect)
   }
-  const lat = carto.latitude * DEG
-  return { cam: [wx(carto.longitude * DEG), wy(lat)], lat, heading: cam.heading, hfov, agl }
+  const lat = carto.latitude * DEG, lon = carto.longitude * DEG
+  return { cam: [wx(lon), wy(lat)], lat, heading: cam.heading, hfov, agl, asl: carto.height - geoidN(lon, lat) }
 }
 
 /**
@@ -72,18 +75,21 @@ function zoomFor(s: Snap, size: number, prev: number | null): number {
   return Math.round(want * 2) / 2
 }
 
-/** Posune kameru tak, aby se dívala na bod (lon, lat) — stejná výška nad zemí, natočení i sklon. */
-function lookAt(v: Cesium.Viewer, lon: number, lat: number) {
-  const cam = v.camera
-  const c0 = viewCenterGround(v)
-  const from = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(c0.lon, c0.lat, c0.height))
-  // kamera vůči bodu, na který se teď dívá, v jeho místním rámci…
-  const off = Cesium.Matrix4.multiplyByPoint(Cesium.Matrix4.inverseTransformation(from, new Cesium.Matrix4()), cam.positionWC, new Cesium.Cartesian3())
-  const h = v.scene.globe?.getHeight(Cesium.Cartographic.fromDegrees(lon, lat))
-  // …a totéž kolem nového bodu
-  const to = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(lon, lat, h ?? c0.height))
+/**
+ * Přesune KAMERU na bod (lon, lat) — tečka v minimapě skončí tam, kam se kliklo. Výška nad
+ * terénem, natočení i sklon zůstanou. (Dřív se tam posouval bod, na který se kamera dívá: shora
+ * to vyšlo nastejno, ale u šikmého pohledu kamera skončila o kus dál, než se kliklo.)
+ */
+function moveCameraTo(v: Cesium.Viewer, lon: number, lat: number) {
+  const cam = v.camera, globe = v.scene.globe
+  const here = cam.positionCartographic
+  const g0 = globe?.getHeight(here)
+  const ground0 = g0 !== undefined && Number.isFinite(g0) ? g0 : 0
+  // terén v cíli nemusí být načtený (daleký skok) — pak se počítá s terénem pod kamerou
+  const g1 = globe?.getHeight(Cesium.Cartographic.fromDegrees(lon, lat))
+  const ground1 = g1 !== undefined && Number.isFinite(g1) ? g1 : ground0
   cam.flyTo({
-    destination: Cesium.Matrix4.multiplyByPoint(to, off, new Cesium.Cartesian3()),
+    destination: Cesium.Cartesian3.fromDegrees(lon, lat, ground1 + (here.height - ground0)),
     orientation: { heading: cam.heading, pitch: cam.pitch, roll: cam.roll },
     duration: 0.8,
   })
@@ -179,7 +185,7 @@ export function MiniMap({ viewer, base, onBase, onClose, size }: {
     if (!v || v.isDestroyed() || !snap || z === null) return
     const r = e.currentTarget.getBoundingClientRect()
     const world = 256 * 2 ** z
-    lookAt(v, lonOf(snap.cam[0] + (e.clientX - r.left - half) / world), latOf(snap.cam[1] + (e.clientY - r.top - half) / world))
+    moveCameraTo(v, lonOf(snap.cam[0] + (e.clientX - r.left - half) / world), latOf(snap.cam[1] + (e.clientY - r.top - half) / world))
   }
 
   const btn = (b: MiniBase, label: string) => (
@@ -198,7 +204,7 @@ export function MiniMap({ viewer, base, onBase, onClose, size }: {
     >
       <div
         onClick={onClick}
-        title="Minimapa — klikni a pohled se posune na to místo"
+        title="Minimapa — klikni a kamera se přesune na to místo"
         className="absolute inset-0 cursor-crosshair"
       >
         {tiles.map(t => (
@@ -238,9 +244,15 @@ export function MiniMap({ viewer, base, onBase, onClose, size }: {
         title="Zavřít minimapu (N)"
         className="absolute right-1.5 top-1.5 rounded-md border border-gray-700 bg-gray-900/90 p-0.5 text-gray-400 hover:text-gray-100 pointer-coarse:p-1.5"
       ><X size={12} /></button>
+      {/* výška kamery: nad terénem (to, co člověk vnímá) a nadmořská; na malé minimapě jen ta první */}
       {snap && (
-        <div data-minimap-height title="Výška kamery nad terénem" className="pointer-events-none absolute bottom-1.5 left-1.5 rounded-md bg-gray-900/85 px-1.5 py-0.5 text-[10px] font-medium text-gray-100">
-          ↑ {fmtHeight(snap.agl)}
+        <div
+          data-minimap-height
+          title={`Kamera ${fmtHeight(snap.agl)} nad terénem, ${Math.round(snap.asl).toLocaleString('cs-CZ')} m n. m. (Bpv)`}
+          className="pointer-events-none absolute bottom-1.5 left-1.5 rounded-md bg-gray-900/85 px-1.5 py-0.5 leading-tight"
+        >
+          <div className="text-[10px] font-medium text-gray-100">↑ {fmtHeight(snap.agl)}{size >= 160 ? ' nad terénem' : ''}</div>
+          {size >= 160 && <div className="text-[9px] text-gray-400">{Math.round(snap.asl).toLocaleString('cs-CZ')} m n. m.</div>}
         </div>
       )}
       <div className="pointer-events-none absolute bottom-0.5 right-1.5 text-[9px] text-white/70 [text-shadow:0_0_2px_#000]">© ČÚZK</div>
