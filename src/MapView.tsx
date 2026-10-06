@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { toast } from 'sonner'
-import { ChevronLeft, ChevronRight, Cloud, Eye, HardDrive, Layers, Loader2, Sparkles, Trash2, Upload, Users } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Cloud, Eye, HardDrive, Layers, Loader2, LocateFixed, Sparkles, Trash2, Upload, Users } from 'lucide-react'
 import { NEEDS_ION, SHARP_KEY } from './config'
 import { effectiveIonToken, useUserIonToken } from './lib/ionKey'
 import { openIonKeyDialog } from './ionKeyDialog'
@@ -976,15 +976,27 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       </div>
       {/* Minimapa nad kompasem (kompas končí ~92 px ode dna). Pod lištou (z-10), ať přes ni
           nabídky skupin, které se otvírají nahoru, na úzké mapě nezajedou. */}
-      {mini.on && viewerReady && (
+      {viewerReady && (
         <div className="pointer-events-none absolute bottom-[104px] right-4 z-10">
-          <MiniMap
-            viewer={viewerRef.current}
-            base={mini.base}
-            onBase={base => setMini(m => ({ ...m, base }))}
-            onClose={toggleMini}
-            size={compactTools ? 160 : 208}
-          />
+          {mini.on ? (
+            <MiniMap
+              viewer={viewerRef.current}
+              base={mini.base}
+              onBase={base => setMini(m => ({ ...m, base }))}
+              onClose={toggleMini}
+              size={winW - mapLeft < 560 ? 132 : compactTools ? 160 : 208}
+            />
+          ) : (
+            // zavřená minimapa: malé tlačítko nad kompasem, ať se dá vrátit i bez klávesy N
+            <div className="flex w-16 justify-center">
+              <button
+                onClick={toggleMini}
+                title="Zobrazit minimapu (N)"
+                data-minimap-open
+                className="pointer-events-auto rounded-lg border border-gray-700 bg-gray-900/90 p-1.5 text-gray-300 shadow-lg hover:text-gray-100 pointer-coarse:p-2.5"
+              ><LocateFixed size={16} /></button>
+            </div>
+          )}
         </div>
       )}
 

@@ -311,24 +311,31 @@ async function main() {
     await waitFor(`${label} === 'Perspektiva'`, 5000, 'přepnutí klávesou T zpátky na perspektivu')
   })
 
-  await check('minimapa: klávesa N, výseč ve směru pohledu, podklad, posun klikem', async () => {
+  await check('minimapa: zapnutá od startu, směr pohledu, měřítko nezávislé na sklonu, podklad, klik, N', async () => {
     const cam = `(() => { const p = window.__scene.camera.positionWC; return [p.x, p.y, p.z] })()`
     const start = await ev(cam)
-    // šikmo na východ: výseč musí ležet od kamery na východ (vpravo)
+    await waitFor(`!!document.querySelector('[data-minimap="orto"] [data-minimap-view]') && !!document.querySelector('[data-minimap] img')`, 10_000, 'minimapa zapnutá od startu')
+    // šikmo na východ: kužel musí mířit od kamery na východ (vpravo)
     await ev(`window.__scene.camera.setView({ orientation: { heading: Math.PI / 2, pitch: -0.45, roll: 0 } }); window.__scene.requestRender()`)
-    await press('n')
-    await waitFor(`!!document.querySelector('[data-minimap="orto"] [data-minimap-view]') && !!document.querySelector('[data-minimap] img')`, 10_000, 'minimapa s výsečí a dlaždicemi')
     const geo = () => ev(`(() => {
       const pts = document.querySelector('[data-minimap-view]').getAttribute('points').trim().split(/\\s+/).map(p => p.split(',').map(Number))
-      const t = document.querySelector('[data-minimap-cam]').getAttribute('transform').match(/translate\\(([-\\d.]+) ([-\\d.]+)\\)/)
-      return { pts, cam: [Number(t[1]), Number(t[2])], img: document.querySelector('[data-minimap] img').src }
+      const t = document.querySelector('[data-minimap-cam]').getAttribute('transform').match(/translate\\(([-\\d.]+) ([-\\d.]+)\\) rotate\\(([-\\d.]+)\\)/)
+      const m = document.querySelector('[data-minimap]')
+      return { pts, cam: [Number(t[1]), Number(t[2])], rot: Number(t[3]), zoom: m.dataset.zoom, img: m.querySelector('img').src,
+        height: document.querySelector('[data-minimap-height]')?.innerText ?? '' }
     })()`)
+    await waitFor(`Math.abs(Number(document.querySelector('[data-minimap-cam]').getAttribute('transform').match(/rotate\\(([-\\d.]+)\\)/)[1]) - 90) < 1`, 5_000, 'otočení kamery na minimapě')
     const g = await geo()
     const cx = g.pts.reduce((s, p) => s + p[0], 0) / g.pts.length, cy = g.pts.reduce((s, p) => s + p[1], 0) / g.pts.length
-    expect(g.pts.length === 4, `výseč má ${g.pts.length} rohů`)
-    expect(cx - g.cam[0] > 20 && Math.abs(cy - g.cam[1]) < cx - g.cam[0], `výseč není na východ od kamery: kamera ${g.cam}, těžiště ${cx.toFixed(0)},${cy.toFixed(0)}`)
+    expect(cx - g.cam[0] > 15 && Math.abs(cy - g.cam[1]) < 3, `kužel nemíří na východ: kamera ${g.cam}, těžiště ${cx.toFixed(0)},${cy.toFixed(0)}`)
     expect(g.img.includes('ORTOFOTO_WM'), `dlaždice ortofota: ${g.img}`)
+    expect(/↑ [\d,]+ (m|km)/.test(g.height), `výška kamery: „${g.height}"`)
     await shot('minimapa')
+    // naklonění na místě měřítko nemění (dřív se mapa podle sklonu přibližovala a oddalovala)
+    await ev(`window.__scene.camera.setView({ orientation: { heading: Math.PI / 2, pitch: -1.2, roll: 0 } }); window.__scene.requestRender()`)
+    await sleep(400)
+    const g2 = await geo()
+    expect(g2.zoom === g.zoom, `naklonění změnilo měřítko minimapy: ${g.zoom} → ${g2.zoom}`)
     // podklad Topo
     await clickText(`document.querySelector('[data-minimap]')`, 'Topo')
     await waitFor(`!!document.querySelector('[data-minimap="ztm"]') && document.querySelector('[data-minimap] img').src.includes('ZTM_WM')`, 5_000, 'minimapa s topografickou mapou')
@@ -338,9 +345,12 @@ async function main() {
       el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: r.left + r.width / 2 + 40, clientY: r.top + r.height / 2 + 30 })) })()`)
     await waitFor(`(() => { const p = window.__scene.camera.positionWC, b = ${JSON.stringify(before)}; return Math.hypot(p.x - b[0], p.y - b[1], p.z - b[2]) > 20 })()`, 5_000, 'posun kamery po kliku do minimapy')
     await sleep(1000) // dolet
+    // N zavře; zavřenou vrátí tlačítko nad kompasem
     await press('n')
     expect(!(await ev(`!!document.querySelector('[data-minimap]')`)), 'N minimapu nezavřela')
     expect(await ev(`localStorage.getItem('geo.minimap')`) === '0' && await ev(`localStorage.getItem('geo.minimapBase')`) === 'ztm', 'stav minimapy se nezapamatoval')
+    await ev(`document.querySelector('[data-minimap-open]').click()`)
+    await waitFor(`!!document.querySelector('[data-minimap="ztm"]')`, 3_000, 'minimapa zpátky tlačítkem')
     await ev(`localStorage.removeItem('geo.minimapBase')`)
     // zpátky na výchozí pohled, ať další kontroly začínají stejně
     await ev(`window.__scene.camera.setView({ destination: { x: ${start[0]}, y: ${start[1]}, z: ${start[2]} }, orientation: { heading: 0, pitch: -Math.PI / 2 + 0.0017, roll: 0 } }); window.__scene.requestRender()`)
