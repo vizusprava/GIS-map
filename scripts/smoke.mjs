@@ -340,7 +340,7 @@ async function main() {
     await sleep(1200)
     expect(await bubble() === 'zaklady/posun' && /pokračuju za \d+ s/.test(await ev(`document.querySelector('[data-tour-task]').innerText`)), `po splnění hned dál, nebo bez odpočtu: ${await bubble()}`)
     // nic neztmavuje obrazovku: v překryvu je jen bublina (a případně rámeček)
-    expect(!(await ev(`!!document.querySelector('[data-tour-overlay] > :not([data-tour-bubble]):not([data-tour-ring])')`)), 'průvodce ztmavuje obrazovku')
+    expect(!(await ev(`!!document.querySelector('[data-tour-overlay] > :not([data-tour-bubble]):not([data-tour-marks])')`)), 'průvodce ztmavuje obrazovku')
     await ev(`document.querySelector('[data-tour-next]').click()`)
     await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'zaklady/zoom'`, 2_000, 'Další po splněném úkolu')
     // kolečko přeskočit; přiblížení pravým tlačítkem se kolečkem splnit nedá, tažením ano

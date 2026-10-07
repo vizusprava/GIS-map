@@ -27,6 +27,8 @@ type View = 'step' | 'done' | 'menu' | 'finale'
 const EDGE = 12, PAD = 6
 /** jak dlouho zůstane splněný úkol, než průvodce sám pokračuje */
 const DONE_WAIT_S = 10
+/** zhasnutí starého a rozsvícení nového zvýraznění při změně kroku (ms) */
+const FADE_MS = 280
 /** spodní okraj bubliny pod středem obrazovky (px) — bublina průměrné výšky je pak zhruba uprostřed */
 const BOTTOM_BELOW_MID = 120
 /** odtažení bubliny ze středu — drží se pro celé sezení (další kroky, znovuotevření) */
@@ -181,37 +183,36 @@ function Tour({ ctx }: { ctx: TourCtx }) {
   const ring = rect && !big ? { top: rect.top - PAD, left: rect.left - PAD, width: rect.width + 2 * PAD, height: rect.height + 2 * PAD } : null
   const ray = ring ? beam(box, ring) : null
 
+  // Při přechodu na další krok se zvýraznění nepřesouvá: staré zhasne (kopie na chvíli
+  // zůstane a vybledne) a nové se o chvilku později rozsvítí na svém místě.
+  const last = useRef<{ key: string; ring: Rect | null; ray: Ray | null } | null>(null)
+  const [ghost, setGhost] = useState<{ id: string; ring: Rect | null; ray: Ray | null } | null>(null)
+  useEffect(() => {
+    const p = last.current
+    if (!p || p.key === stepKey || (!p.ring && !p.ray)) return
+    setGhost({ id: p.key, ring: p.ring, ray: p.ray })
+    const t = setTimeout(() => setGhost(null), FADE_MS)
+    return () => clearTimeout(t)
+  }, [stepKey])
+  useEffect(() => { last.current = { key: stepKey, ring, ray } })
+
   const stepNo = pos >= 0 ? steps.indexOf(pos) + 1 : 0
   const actions = step?.actions?.(ctx, chapterStart.current.get(chapter.id) ?? null)
 
   return (
     <div className="pointer-events-none fixed inset-0 z-[60]" data-tour-overlay>
-      {/* paprsek od bubliny k zvýrazněnému místu: svítící čára, čárky běží k cíli */}
-      {ray && (
-        <svg data-tour-beam className="absolute inset-0 h-full w-full overflow-visible">
-          <style>{'@keyframes tour-beam { to { stroke-dashoffset: -28 } }'}</style>
-          <line x1={ray.x1} y1={ray.y1} x2={ray.x2} y2={ray.y2} stroke="rgba(56,189,248,0.25)" strokeWidth={8} strokeLinecap="round" />
-          <line
-            x1={ray.x1} y1={ray.y1} x2={ray.x2} y2={ray.y2}
-            stroke="#38bdf8" strokeWidth={2.5} strokeLinecap="round" strokeDasharray="10 4"
-            style={{ animation: 'tour-beam 0.9s linear infinite', filter: 'drop-shadow(0 0 4px rgba(56,189,248,0.9))' }}
-          />
-          <circle cx={ray.x1} cy={ray.y1} r={4} fill="#38bdf8" />
-          <circle cx={ray.x2} cy={ray.y2} r={5} fill="#38bdf8" style={{ filter: 'drop-shadow(0 0 6px rgba(56,189,248,1))' }} />
-        </svg>
-      )}
-
-      {/* zvýraznění: modrý svítící rámeček; obrazovka se neztmavuje. Velké místo (mapa) bez
-          rámečku i paprsku — ukazovalo by se na všechno */}
-      {ring && (
-        <div
-          data-tour-ring
-          className="absolute rounded-xl ring-2 ring-sky-400 transition-all duration-300"
-          style={{ ...ring, boxShadow: '0 0 0 4px rgba(56, 189, 248, 0.25), 0 0 18px rgba(56, 189, 248, 0.45)' }}
-        >
-          <div className="absolute inset-0 animate-pulse rounded-xl ring-2 ring-sky-300/60" />
-        </div>
-      )}
+      {/* zvýraznění: modrý svítící rámeček a paprsek k němu; obrazovka se neztmavuje. Velké
+          místo (mapa) bez rámečku i paprsku — ukazovalo by se na všechno */}
+      <div data-tour-marks>
+        <style>{`
+          @keyframes tour-beam { to { stroke-dashoffset: -28 } }
+          @keyframes tour-in { from { opacity: 0 } to { opacity: 1 } }
+          @keyframes tour-out { from { opacity: 1 } to { opacity: 0 } }
+        `}</style>
+        {ghost && <Marks key={`g-${ghost.id}`} ring={ghost.ring} ray={ghost.ray} anim={`tour-out ${FADE_MS}ms ease-in forwards`} />}
+        {/* stálé zpoždění: změněná hodnota `animation` by rozsvícení v půlce spustila znovu */}
+        <Marks key={stepKey} ring={ring} ray={ray} anim={`tour-in ${FADE_MS}ms ease-out ${Math.round(FADE_MS * 0.6)}ms both`} current />
+      </div>
 
       <div
         ref={bubbleRef}
@@ -305,11 +306,45 @@ function Tour({ ctx }: { ctx: TourCtx }) {
   )
 }
 
+type Ray = { x1: number; y1: number; x2: number; y2: number }
+
+/**
+ * Rámeček kolem zvýrazněného místa a paprsek k němu z bubliny (čárky běží k cíli).
+ * `anim` = rozsvícení / zhasnutí při změně kroku; `current` nese značky pro testy.
+ */
+function Marks({ ring, ray, anim, current }: { ring: Rect | null; ray: Ray | null; anim: string; current?: boolean }) {
+  return (
+    <div className="absolute inset-0" style={{ animation: anim }}>
+      {ray && (
+        <svg data-tour-beam={current || undefined} className="absolute inset-0 h-full w-full overflow-visible">
+          <line x1={ray.x1} y1={ray.y1} x2={ray.x2} y2={ray.y2} stroke="rgba(56,189,248,0.25)" strokeWidth={8} strokeLinecap="round" />
+          <line
+            x1={ray.x1} y1={ray.y1} x2={ray.x2} y2={ray.y2}
+            stroke="#38bdf8" strokeWidth={2.5} strokeLinecap="round" strokeDasharray="10 4"
+            style={{ animation: 'tour-beam 0.9s linear infinite', filter: 'drop-shadow(0 0 4px rgba(56,189,248,0.9))' }}
+          />
+          <circle cx={ray.x1} cy={ray.y1} r={4} fill="#38bdf8" />
+          <circle cx={ray.x2} cy={ray.y2} r={5} fill="#38bdf8" style={{ filter: 'drop-shadow(0 0 6px rgba(56,189,248,1))' }} />
+        </svg>
+      )}
+      {ring && (
+        <div
+          data-tour-ring={current || undefined}
+          className="absolute rounded-xl ring-2 ring-sky-400"
+          style={{ ...ring, boxShadow: '0 0 0 4px rgba(56, 189, 248, 0.25), 0 0 18px rgba(56, 189, 248, 0.45)' }}
+        >
+          <div className="absolute inset-0 animate-pulse rounded-xl ring-2 ring-sky-300/60" />
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * Paprsek od bubliny k zvýrazněnému místu: z okraje bubliny ve směru k cíli na okraj cíle
  * (průsečík spojnice středů s obvodem obou obdélníků). null, když se překrývají.
  */
-function beam(a: Rect, b: Rect): { x1: number; y1: number; x2: number; y2: number } | null {
+function beam(a: Rect, b: Rect): Ray | null {
   const ax = a.left + a.width / 2, ay = a.top + a.height / 2
   const bx = b.left + b.width / 2, by = b.top + b.height / 2
   const dx = bx - ax, dy = by - ay
