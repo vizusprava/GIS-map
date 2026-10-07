@@ -13,7 +13,7 @@ export function TourWelcome() {
   if (!offer) return null
   const later = () => {
     set({ asked: true, on: false })
-    toast.info('Průvodce najdeš kdykoliv v nastavení účtu nebo v mapě v přehledu zkratek (?).', { duration: 5000 })
+    toast.info('Průvodce najdeš kdykoliv v nastavení účtu nebo v mapě v přehledu zkratek (klávesa pod Esc).', { duration: 5000 })
   }
   return (
     <div className="fixed bottom-6 right-6 z-40 w-[min(360px,calc(100vw-48px))] rounded-xl border border-sky-500/50 bg-gray-900/97 p-4 text-gray-200 shadow-2xl" data-tour-welcome>

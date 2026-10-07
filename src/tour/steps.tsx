@@ -122,7 +122,7 @@ export const CHAPTERS: TourChapter[] = [
       {
         id: 'vitej',
         title: 'Vítej v mapě scény',
-        body: <>Za pár minut ti ukážu, jak se tu pohybovat a kde co najdeš. U některých kroků tě nechám si to rovnou zkusit — stačí udělat, co je napsané, a průvodce pokračuje sám. Zavřít ho můžeš kdykoliv křížkem; vrátíš se k němu přes přehled zkratek (<K>?</K>) nebo v nastavení účtu.</>,
+        body: <>Za pár minut ti ukážu, jak se tu pohybovat a kde co najdeš. U některých kroků tě nechám si to rovnou zkusit — stačí udělat, co je napsané, a průvodce pokračuje sám. Zavřít ho můžeš kdykoliv křížkem; vrátíš se k němu přes přehled zkratek (klávesa pod <K>Esc</K>) nebo v nastavení účtu.</>,
       },
       {
         id: 'posun',
@@ -183,8 +183,8 @@ export const CHAPTERS: TourChapter[] = [
         id: 'zkratky',
         target: '[data-tour="zkratky"]',
         title: 'Klávesové zkratky',
-        body: <>Skoro všechno má zkratku — písmeno vidíš v nabídkách u každé položky. Celý přehled otevře klávesa <K>?</K> nebo tohle tlačítko. V přehledu je i tlačítko, kterým průvodce kdykoliv spustíš znovu.</>,
-        task: { label: 'Otevři přehled zkratek klávesou ?', done: () => has('[data-tour="prehled-zkratek"]') },
+        body: <>Skoro všechno má zkratku — písmeno vidíš v nabídkách u každé položky. Celý přehled otevře klávesa pod <K>Esc</K> (vlevo nahoře na klávesnici) nebo tohle tlačítko. V přehledu je i tlačítko, kterým průvodce kdykoliv spustíš znovu.</>,
+        task: { label: 'Otevři přehled zkratek klávesou pod Esc', done: () => has('[data-tour="prehled-zkratek"]') },
       },
     ],
   },

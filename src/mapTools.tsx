@@ -27,7 +27,8 @@
  * barvu parcel, „Dlaždice uvnitř" barvu dlaždic —, ať je vidět, ve které sekci panelu skončí.
  *
  * Nástroje jdou zapnout i klávesou (`SHORTCUTS` níž); písmeno je vidět v nabídce a celý přehled
- * pod tlačítkem „?" nebo klávesou ?. Vedle lišty se točí kolečko, dokud se mapa dotahuje.
+ * pod tlačítkem s klávesnicí nebo klávesou pod Esc (i ?). Vedle lišty se točí kolečko, dokud se
+ * mapa dotahuje.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type * as Cesium from 'cesium'
@@ -169,7 +170,9 @@ export function MapTools(p: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return
-      if (e.key === '?') { if (!e.repeat) { e.preventDefault(); setHelp(h => !h) } return }
+      // přehled: klávesa pod Esc podle POLOHY (e.code) — na české klávesnici je na ní „;",
+      // na anglické „`", a otazník jde na české klávesnici v různých systémech různě
+      if (e.code === 'Backquote' || e.key === '?') { if (!e.repeat) { e.preventDefault(); setHelp(h => !h) } return }
       const k = e.key.toLowerCase()
       const sc = keysRef.current.find(s => s.key === k && !!s.shift === e.shiftKey && s.when !== false)
       // podržená klávesa opakuje jen to, co opakovat má (otáčení), ne přepínače
@@ -281,7 +284,7 @@ export function MapTools(p: Props) {
         {/* na dotykovém zařízení bez klávesnice zkratky nemají smysl */}
         <button
           onClick={() => setHelp(h => !h)}
-          title="Klávesové zkratky (?)"
+          title="Klávesové zkratky (klávesa pod Esc)"
           data-tour="zkratky"
           aria-pressed={help}
           className={`rounded-lg p-1.5 transition-colors pointer-coarse:hidden ${help ? 'bg-gray-700 text-gray-100' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'}`}
@@ -333,6 +336,7 @@ function Group({ id, open, setOpen, pinned, setPinned, compact, icon, label, bad
     <div
       className="relative"
       data-tour={`lista-${id}`}
+      data-tour-panel={panel || undefined}
       onPointerEnter={e => {
         if (e.pointerType !== 'mouse' || (pinned && open !== id)) return
         clearTimeout(timer.current); setOpen(id)
@@ -409,7 +413,7 @@ function KeyHelp({ keys, onClose, onTour }: { keys: Shortcut[]; onClose: () => v
     { k: 'Esc', label: 'Vypnout nástroj, podruhé zrušit výběr' },
     { k: '← →', label: 'Předchozí / další uložený pohled' },
     { k: '⇧ + tah', label: 'Rozhlédnout se na místě', note: 'myší v mapě' },
-    { k: '?', label: 'Tenhle přehled' },
+    { k: 'pod Esc', label: 'Tenhle přehled', note: 'nebo ?' },
   ]
   return (
     <div onPointerDown={e => e.stopPropagation()} data-tour="prehled-zkratek" className="max-w-[min(92vw,520px)] rounded-lg border border-gray-700 bg-gray-900/95 px-3 py-2 text-[11px] text-gray-300 shadow-lg">

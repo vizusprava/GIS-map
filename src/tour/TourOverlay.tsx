@@ -69,11 +69,11 @@ function Tour({ ctx }: { ctx: TourCtx }) {
   const goChapter = (ci: number) => { set({ chapter: ci, step: 0 }); setView('step') }
   const quit = () => {
     stop()
-    toast.info('Průvodce je vypnutý — zapneš ho v přehledu zkratek (?) nebo v nastavení účtu.', { duration: 5000 })
+    toast.info('Průvodce je vypnutý — zapneš ho v přehledu zkratek (klávesa pod Esc) nebo v nastavení účtu.', { duration: 5000 })
   }
   const finishAll = () => {
     set({ on: false, chapter: 0, step: 0, done: CHAPTERS.map(c => c.id) })
-    toast.success('Průvodce dokončen. Kdykoliv ho projdeš znovu z přehledu zkratek (?).')
+    toast.success('Průvodce dokončen. Kdykoliv ho projdeš znovu z přehledu zkratek (klávesa pod Esc).')
   }
 
   // uložený krok za koncem kapitoly (průvodce se zavřel na obrazovce „hotovo")
@@ -117,44 +117,49 @@ function Tour({ ctx }: { ctx: TourCtx }) {
   const target = view === 'step' ? step?.target : undefined
   const [rect, setRect] = useState<Rect | null>(null)
   const [mapLeft, setMapLeft] = useState(0)
-  /** co bublina nesmí zakrýt: otevřené nabídky a panely lišty, nápověda nad lištou */
+  /**
+   * Co bublina nesmí zakrýt — změří se JEDNOU na začátku kroku: lišta a místo nad ní, kam se
+   * rozbalují její nabídky a panely (i zavřené), nápověda nad lištou, panel, minimapa. Pak už
+   * bublinou nic nehýbe: otevřená nabídka ji neodstrčí, protože pro ni bylo místo nechané.
+   */
   const [obstacles, setObstacles] = useState<Rect[]>([])
-  /** zvýrazněné místo je v liště dole — bublina vedle lišty, ne nad ní (nabídky se otvírají nahoru) */
+  /** zvýrazněné místo je v liště dole — bublina vedle lišty nebo nad místem pro její nabídky */
   const [inBar, setInBar] = useState(false)
   const [barRect, setBarRect] = useState<Rect | null>(null)
   // změřit hned před vykreslením nového kroku — jinak bublina na snímek skočí doprostřed
   // obrazovky (bez místa) a teprve pak odjede, kam patří
   useLayoutEffect(() => {
-    let scrolled = false
+    let scrolled = false, obsDone = false
     const measure = () => {
       const panel = document.querySelector('[data-tour="panel"]')?.getBoundingClientRect()
       setMapLeft(l => { const v = panel && panel.right > 1 ? panel.right : 0; return Math.abs(v - l) > 1 ? v : l })
       const bar = document.querySelector('[data-tour="lista"]')
       const el = target ? document.querySelector(target) : null
-      const obs: Rect[] = []
-      if (bar) {
-        for (const m of bar.querySelectorAll('[role="menu"], [role="dialog"]')) obs.push(rectOf(m))
-        for (const sib of bar.parentElement?.children ?? []) if (sib !== bar) obs.push(rectOf(sib))
-      }
-      // panel a minimapu nezakrývat (kromě případu, kdy se ukazuje právě na ně)
-      for (const sel of ['[data-tour="panel"]', '[data-tour="roh"]', '[data-tour="lista"]']) {
-        const o = document.querySelector(sel)
-        if (o && (!el || (!o.contains(el) && !el.contains(o)))) obs.push(rectOf(o))
-      }
-      // co zvýrazněné místo rozbalí (výsledky hledání, nabídka) — malé podstromy, ať to nic nestojí
-      if (el && el.getElementsByTagName('*').length < 150) {
-        const base = el.getBoundingClientRect()
-        for (const d of el.querySelectorAll('*')) {
-          const dr = d.getBoundingClientRect()
-          if (dr.width > 0 && dr.height > 0 && (dr.bottom > base.bottom + 2 || dr.top < base.top - 2 || dr.left < base.left - 2 || dr.right > base.right + 2)) obs.push(rectOf(d))
+      const inside = !!bar && !!el && bar.contains(el)
+      if (!obsDone && (el || !target)) {
+        obsDone = true
+        const obs: Rect[] = []
+        if (bar) {
+          // místo nad každou skupinou lišty, kam se rozbalí její nabídka (krátká), nebo panel
+          // (Kamera, Prezentace — vysoký); otevírají se nahoru, vystředěné nad skupinou
+          for (const g of bar.querySelectorAll('[data-tour^="lista-"]')) {
+            const r = rectOf(g), panel = g.hasAttribute('data-tour-panel')
+            const w = panel ? 336 : 208, h = panel ? Math.min(0.7 * window.innerHeight, 620) + 8 : 250
+            obs.push({ left: r.left + r.width / 2 - w / 2, width: w, top: Math.max(0, r.top - h), height: Math.min(h, r.top) })
+          }
+          for (const sib of bar.parentElement?.children ?? []) if (sib !== bar) obs.push(rectOf(sib))
         }
+        // panel, minimapu, lištu a hledání nezakrývat (kromě případu, kdy se ukazuje právě na ně)
+        for (const sel of ['[data-tour="panel"]', '[data-tour="roh"]', '[data-tour="lista"]', '[data-tour="hledani"]']) {
+          const o = document.querySelector(sel)
+          if (o && (!el || (!o.contains(el) && !el.contains(o)))) obs.push(rectOf(o))
+        }
+        setObstacles(obs.filter(r => r.width > 0 && r.height > 0))
       }
-      const seen = obs.filter(r => r.width > 0 && r.height > 0)
-      setObstacles(o => (sameRects(o, seen) ? o : seen))
       setBarRect(o => { const n = bar ? rectOf(bar) : null; return n && o && sameRects([o], [n]) ? o : n })
       const r = el?.getBoundingClientRect()
       if (!el || !r || r.width < 1 || r.height < 1) { setRect(null); return }
-      setInBar(!!bar && bar.contains(el))
+      setInBar(inside)
       // místo v panelu může být odscrollované — jednou ho přisunout do pohledu
       if (!scrolled) { scrolled = true; el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }) }
       setRect(o => (o && sameRects([o], [r]) ? o : { top: r.top, left: r.left, width: r.width, height: r.height }))
@@ -176,10 +181,23 @@ function Tour({ ctx }: { ctx: TourCtx }) {
   const vw = window.innerWidth, vh = window.innerHeight
   const big = !!rect && rect.width * rect.height > 0.45 * vw * vh
   const prefer = view === 'step' ? step?.prefer : undefined
-  const place = useMemo(
-    () => bubblePlace({ rect, big, size, vw, vh, mapLeft, obstacles, inBar, bar: barRect, prefer }),
-    [rect, big, size, vw, vh, mapLeft, obstacles, inBar, barRect, prefer],
-  )
+  // Bublina se postaví na začátku kroku a pak STOJÍ — nehýbe s ní otevírání nabídek ani drobné
+  // změny (popisek skupiny lišty se přepíše, přibude řádek „Výborně"). Znovu jen když se
+  // zvýrazněné místo opravdu posune (panel doroluje k sekci), změní se okno nebo bublina
+  // znatelně vyroste.
+  const frozen = useRef<{ key: string; rect: Rect | null; size: { w: number; h: number }; vw: number; vh: number; obs: Rect[]; at: Pos } | null>(null)
+  const place = useMemo(() => {
+    const f = frozen.current
+    const far = (a: Rect | null, b: Rect | null) => (!a || !b ? a !== b : Math.abs(a.top - b.top) > 40 || Math.abs(a.left - b.left) > 40)
+    // překážky se mění jen jednou, když se na začátku kroku změří
+    if (f && f.key === stepKey && f.obs === obstacles && !far(f.rect, rect) && f.vw === vw && f.vh === vh && Math.abs(f.size.h - size.h) < 40) {
+      // stejné místo; jen kdyby bublina trochu narostla, ať nevyleze z okna
+      return { top: Math.max(EDGE, Math.min(vh - size.h - EDGE, f.at.top)), left: Math.max(EDGE, Math.min(vw - size.w - EDGE, f.at.left)) }
+    }
+    const at = bubblePlace({ rect, big, size, vw, vh, mapLeft, obstacles, inBar, bar: barRect, prefer })
+    frozen.current = { key: stepKey, rect, size, vw, vh, obs: obstacles, at }
+    return at
+  }, [rect, big, size, vw, vh, mapLeft, obstacles, inBar, barRect, prefer, stepKey])
 
   const stepNo = pos >= 0 ? steps.indexOf(pos) + 1 : 0
   const actions = step?.actions?.(ctx, chapterStart.current.get(chapter.id) ?? null)
@@ -255,7 +273,7 @@ function Tour({ ctx }: { ctx: TourCtx }) {
 
         {view === 'finale' && <>
           <div className="flex items-center gap-1.5 text-sm font-semibold text-emerald-300"><Check size={16} /> Hotovo!</div>
-          <div className="mt-1 text-xs leading-relaxed text-gray-300">Prošel jsi všechno důležité. Průvodce kdykoliv znovu spustíš v přehledu zkratek (<span className="text-gray-100">?</span>) nebo v nastavení účtu — kapitoly jdou projít i jednotlivě.</div>
+          <div className="mt-1 text-xs leading-relaxed text-gray-300">Prošel jsi všechno důležité. Průvodce kdykoliv znovu spustíš v přehledu zkratek (klávesa pod <span className="text-gray-100">Esc</span>) nebo v nastavení účtu — kapitoly jdou projít i jednotlivě.</div>
           <div className="mt-3 flex justify-end">
             <button onClick={finishAll} data-tour-next className="rounded-lg bg-sky-600 px-2.5 py-1 text-xs text-white hover:bg-sky-500">Zavřít průvodce</button>
           </div>
@@ -293,16 +311,21 @@ const overlap = (a: Rect, b: Rect) =>
   Math.max(0, Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)) *
   Math.max(0, Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top))
 
+/** mezera mezi dvěma obdélníky (0, když se dotýkají nebo překrývají) */
+const gapBetween = (a: Rect, b: Rect) => Math.hypot(
+  Math.max(0, a.left - (b.left + b.width), b.left - (a.left + a.width)),
+  Math.max(0, a.top - (b.top + b.height), b.top - (a.top + a.height)),
+)
+
 /**
- * Kam s bublinou. Kandidáti se zkoušejí popořadě a vyhraje první, který nezakryje zvýrazněné
- * místo ani překážky (otevřené nabídky a panely lišty, nápověda nad lištou); když se nevejde
- * nikdo, ten s nejmenším překryvem.
+ * Kam s bublinou. Zkusí se rozumná místa (vedle zvýrazněného místa, vedle lišty, mřížka přes
+ * obrazovku) a vyhraje NEJBLIŽŠÍ ke zvýrazněnému místu z těch, které nic nezakrývají —
+ * zvýrazněné místo, lištu, místo nad skupinami lišty, kam se rozbalí jejich nabídky a panely,
+ * nápovědu nad lištou, panel, minimapu, hledání. Když nic takového není, to s nejmenším
+ * překryvem.
  *
- * - velké místo (mapa): nahoře uprostřed viditelné mapy, pod hledáním,
- * - místo v liště dole: vedle lišty (vlevo, vpravo), jinak nahoru pod hledání — nad lištou
- *   ne, nabídky lišty se otvírají nahoru a bublina by je zakryla, sotva by je uživatel rozbalil,
- * - jinak vedle místa: pod, nad, vlevo, vpravo (u míst v panelu vlevo nejdřív vpravo);
- *   `prefer` kroku jde první.
+ * Velké místo (mapa) má bublinu nahoře uprostřed viditelné mapy, pod hledáním; `prefer`
+ * kroku (třeba vpravo od hledání, pod ním se rozbalí výsledky) vyhraje, když je volné.
  */
 function bubblePlace(o: {
   rect: Rect | null; big: boolean; size: { w: number; h: number }; vw: number; vh: number
@@ -315,41 +338,42 @@ function bubblePlace(o: {
   if (!rect) return { top: clampY((vh - size.h) / 2), left: mapCenterX }
 
   const t: Rect = { top: rect.top - PAD, left: rect.left - PAD, width: rect.width + 2 * PAD, height: rect.height + 2 * PAD }
-  // místo, kam se nad skupinou lišty rozbalí její nabídka (i když ještě zavřená) — ať ji
-  // bublina nezakryje, až ji uživatel otevře
-  const menuZone: Rect | null = inBar && bar
-    ? { left: rect.left + rect.width / 2 - 175, width: 350, top: Math.max(0, bar.top - 360), height: Math.min(360, bar.top) }
-    : null
-  const blockers = big ? obstacles : inBar && bar ? [t, bar, menuZone!, ...obstacles] : [t, ...obstacles]
-  const cx = clampX(rect.left + rect.width / 2 - size.w / 2), cy = clampY(rect.top + rect.height / 2 - size.h / 2)
-  const top: Pos = { top: TOP_Y, left: big ? clampX(Math.max(rect.left, mapLeft) + (rect.left + rect.width - Math.max(rect.left, mapLeft) - size.w) / 2) : cx }
-  const topMap: Pos = { top: TOP_Y, left: mapCenterX }
-  const below: Pos = { top: t.top + t.height + GAP, left: cx }
-  const above: Pos = { top: t.top - GAP - size.h, left: cx }
-  const right: Pos = { top: cy, left: t.left + t.width + GAP }
-  const left: Pos = { top: cy, left: t.left - GAP - size.w }
+  const blockers = big ? obstacles : inBar && bar ? [t, bar, ...obstacles] : [t, ...obstacles]
+  const cost = (p: Pos) => { const b = { ...p, width: size.w, height: size.h }; return blockers.reduce((s, x) => s + overlap(b, x), 0) }
+  const at = (p: Pos): Pos => ({ top: clampY(p.top), left: clampX(p.left) })
+  const cx = rect.left + rect.width / 2 - size.w / 2, cy = rect.top + rect.height / 2 - size.h / 2
 
-  // vedle lišty: spodním okrajem u spodního okraje lišty
-  const barLeft: Pos | null = bar && { top: bar.top + bar.height - size.h, left: bar.left - GAP - size.w }
-  const barRight: Pos | null = bar && { top: bar.top + bar.height - size.h, left: bar.left + bar.width + GAP }
-  // nad lištou těsně vedle místa pro nabídku zvýrazněné skupiny, na straně ke středu lišty
-  const awayAbove: Pos | null = bar && menuZone && {
-    top: bar.top - GAP - size.h,
-    left: rect.left + rect.width / 2 > bar.left + bar.width / 2 ? menuZone.left - GAP - size.w : menuZone.left + menuZone.width + GAP,
+  if (big) {
+    const l = Math.max(rect.left, mapLeft)
+    for (const p of [{ top: TOP_Y, left: l + (rect.left + rect.width - l - size.w) / 2 }, { top: TOP_Y, left: mapCenterX }]) {
+      const q = at(p)
+      if (cost(q) === 0) return q
+    }
   }
-  const sides = { below, above, left, right }
-  const base = big ? [top, topMap, below]
-    : inBar ? [barLeft, barRight, awayAbove, top, topMap, left, right]
-    : rect.left + rect.width < 420 ? [right, below, above, left, topMap]
-    : [below, above, left, right, topMap]
-  const order = [...(prefer && !big ? [sides[prefer]] : []), ...base].filter((p): p is Pos => !!p)
-  let best: Pos = order[0], bestCost = Infinity
-  for (const p of order) {
-    const at = { top: clampY(p.top), left: clampX(p.left) }
-    const b = { ...at, width: size.w, height: size.h }
-    const cost = blockers.reduce((s, x) => s + overlap(b, x), 0)
-    if (cost === 0) return at
-    if (cost < bestCost) { bestCost = cost; best = at }
+  const sides = {
+    below: { top: t.top + t.height + GAP, left: cx },
+    above: { top: t.top - GAP - size.h, left: cx },
+    right: { top: cy, left: t.left + t.width + GAP },
+    left: { top: cy, left: t.left - GAP - size.w },
   }
-  return best
+  if (prefer && !big) { const q = at(sides[prefer]); if (cost(q) === 0) return q }
+
+  const cands: Pos[] = [sides.below, sides.above, sides.right, sides.left]
+  if (bar) {
+    // vedle lišty, spodním okrajem u spodního okraje lišty
+    cands.push({ top: bar.top + bar.height - size.h, left: bar.left - GAP - size.w }, { top: bar.top + bar.height - size.h, left: bar.left + bar.width + GAP })
+  }
+  const xs = [cx, rect.left, rect.left + rect.width - size.w, mapLeft + EDGE, mapCenterX, vw - size.w - EDGE]
+  const ys = [cy, TOP_Y, vh - size.h - EDGE, ...(bar ? [bar.top - GAP - size.h, bar.top - 262 - size.h] : [])]
+  for (const x of xs) for (const y of ys) cands.push({ top: y, left: x })
+
+  let best: Pos | null = null, bestKey = Infinity, fallback: Pos = at(cands[0]), fallbackCost = Infinity
+  for (const p of cands) {
+    const q = at(p), c = cost(q)
+    if (c === 0) {
+      const d = gapBetween({ ...q, width: size.w, height: size.h }, t)
+      if (d < bestKey) { bestKey = d; best = q }
+    } else if (c < fallbackCost) { fallbackCost = c; fallback = q }
+  }
+  return best ?? fallback
 }

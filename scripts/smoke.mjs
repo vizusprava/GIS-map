@@ -301,6 +301,12 @@ async function main() {
     expect(!(await ev(`document.body.innerText.includes('Klávesové zkratky')`)), 'přehled se nezavřel')
     expect((await group(1)).label === 'Dlaždice', 'Esc s otevřeným přehledem vypnul i nástroj')
     await press('Escape')
+    // přehled otevře i klávesa pod Esc — podle polohy, na české klávesnici je na ní „;"
+    await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ';', code: 'Backquote', text: ';', windowsVirtualKeyCode: 192 })
+    await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ';', code: 'Backquote', windowsVirtualKeyCode: 192 })
+    await sleep(350)
+    expect(await ev(`document.body.innerText.includes('Klávesové zkratky')`), 'klávesa pod Esc přehled neotevřela')
+    await press('Escape')
   })
 
   // ── průvodce aplikací (src/tour): spuštění z přehledu zkratek, úkol „zkus to", kapitoly ──
@@ -358,12 +364,23 @@ async function main() {
       return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom })()`)
     expect(await hits('[data-tour="lista-kamera"]') === false, 'bublina průvodce zakrývá zvýrazněné místo')
     expect(await hits('[data-tour="lista"]') === false, 'bublina zakrývá lištu nástrojů')
+    expect(await hits('[data-tour="hledani"]') === false, 'bublina zakrývá hledání')
+    // otevřené nabídky lištu bublinou nehnou a bublina je nezakryje (místo pro ně je nechané)
+    const at = () => ev(`(() => { const r = document.querySelector('[data-tour-bubble]').getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top)] })()`)
+    const at0 = await at()
     await ev(`document.querySelector('[data-tour="lista-kamera"] button').click()`)
     await waitFor(`!!document.querySelector('[data-panel="kamera"]')`, 2_000, 'otevřený panel Kamera')
     await sleep(400)
     expect(await hits('[data-panel="kamera"]') === false, 'bublina zakrývá otevřený panel Kamera')
     await shot('pruvodce')
     await press('Escape') // zavřít panel Kamera
+    await ev(`document.querySelector('[data-tour="lista-podklad"] button').click()`)
+    await waitFor(`!!document.querySelector('[data-tour="lista-podklad"] [role="menu"]')`, 2_000, 'otevřená nabídka podkladu')
+    await sleep(400)
+    expect(await hits('[data-tour="lista-podklad"] [role="menu"]') === false, 'bublina zakrývá nabídku podkladu')
+    const at1 = await at()
+    expect(at1[0] === at0[0] && at1[1] === at0[1], `bublina se po otevření nabídek posunula: ${at0} → ${at1}`)
+    await press('Escape')
     // ukončit křížkem → zmizí a pamatuje si to
     await ev(`document.querySelector('[data-tour-quit]').click()`)
     await waitFor(`!document.querySelector('[data-tour-bubble]')`, 2_000, 'zavřený průvodce')
