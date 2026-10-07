@@ -3,7 +3,7 @@ import * as Cesium from 'cesium'
 import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { toast } from 'sonner'
 import { ChevronRight, Loader2, Sparkles, Trash2 } from 'lucide-react'
-import { NEEDS_ION, SHARP_KEY } from './config'
+import { ENABLE_MODEL_SECTION, NEEDS_ION, SHARP_KEY } from './config'
 import { effectiveIonToken, useUserIonToken } from './lib/ionKey'
 import { geoidN } from './geoid'
 import { perfSettings, readPerfChoice, resolvePerf, savePerfChoice, type PerfChoice } from './perfProfile'
@@ -220,8 +220,10 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const layers = useMapLayers({ viewer, sceneRef, perf, parcelsRef, modelsRef, setObjects })
 
   // ── řez modelem v mapě: veškerý jeho stav a obsluha žije v `useSectionTool` ──
+  // (zatím vypnutý přepínačem ENABLE_MODEL_SECTION — sekce v panelu i výkresy se nevykreslí)
   const sec = useSectionTool({
     viewerRef, modelsRef, selectedId, selectedIdRef: models.selectedIdRef, setSelectedId: models.setSelectedId, viewerReady,
+    enabled: ENABLE_MODEL_SECTION,
     sceneRef, initialSections: scene.initial.sections ?? [],
   })
 
@@ -519,7 +521,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
 
   // Soustředění panelu na zapnutý nástroj (barva nástroje, sbalení ostatních) — viz usePanelSections.
   // Bez nástroje drží panel vybraný model: jeho sekce i řez, Scéna zůstane (kliká se v ní na model).
-  const modelSecs = { also: ['rez'], keep: ['scena'] }
+  const modelSecs = { also: ENABLE_MODEL_SECTION ? ['rez'] : [], keep: ['scena'] }
   const focusTarget: FocusTarget | null =
     parcelMode ? (parcelCount > 0 ? { id: 'parcely', tool: 'parcel' } : null)
     : areaMode ? { id: 'vyber', tool: 'area' }
@@ -807,7 +809,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
             <ModelPanel models={models} objects={objects} placement={placement} />
           </Section>
           )}
-          {placement && !guest && (
+          {ENABLE_MODEL_SECTION && placement && !guest && (
           <Section id="rez" title="Řez modelem" dflt={true} open={openSec} onToggle={toggleSec}>
             <SectionPanel sec={sec} setMoveMode={setMoveMode} />
           </Section>
@@ -819,7 +821,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
       </div>
 
       {/* Výkresy řezu jako plovoucí okna — ať je pod nimi pořád vidět model v mapě */}
-      {sec.secDrawings.map((d, i) => sec.secShown.has(d.key) && (
+      {ENABLE_MODEL_SECTION && sec.secDrawings.map((d, i) => sec.secShown.has(d.key) && (
         <SectionDrawing
           key={d.key}
           float

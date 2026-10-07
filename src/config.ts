@@ -27,6 +27,10 @@ export const ENABLE_GOOGLE_3D = true
 export const ENABLE_OSM_BUILDINGS = false
 export const ENABLE_LIBEREC_DISTRICTS = false
 export const NEEDS_ION = ENABLE_GOOGLE_3D || ENABLE_OSM_BUILDINGS
+// Řez modelem (sekce „Řez modelem", 2D výkresy) — zatím odložený. Vypnutý se nespouští vůbec:
+// sekce v panelu zmizí, `useSectionTool` nic nenaslouchá ani neukládá (uložené řezy ve scénách
+// zůstanou, jak byly). Celý kód i testy geometrie (test:section) zůstávají — stačí přepnout na true.
+export const ENABLE_MODEL_SECTION = false
 
 // Google Photorealistic 3D Tiles streamované přes Cesium ion (stačí ion token, žádný Google klíč).
 // Asset je nutné jednorázově přidat ve svém ion účtu (Asset Depot → Google Photorealistic 3D Tiles).

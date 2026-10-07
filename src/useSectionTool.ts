@@ -34,10 +34,16 @@ export function useSectionTool(deps: {
   selectedIdRef: React.RefObject<string | null>
   setSelectedId: (id: string | null) => void
   viewerReady: boolean
+  /**
+   * Vypnutý řez (config `ENABLE_MODEL_SECTION`): hook se volá dál (pravidla hooků), ale nic
+   * nenaslouchá ani neukládá. Ostatní efekty čekají na zapnutý řez nebo zadávání, které bez
+   * panelu nejde spustit.
+   */
+  enabled: boolean
   sceneRef: React.RefObject<ScenePersist>
   initialSections: SavedSection[]
 }) {
-  const { viewerRef, modelsRef, selectedId, selectedIdRef, setSelectedId, viewerReady, sceneRef } = deps
+  const { viewerRef, modelsRef, selectedId, selectedIdRef, setSelectedId, viewerReady, enabled, sceneRef } = deps
 
   // ── řez modelem přímo v mapě ──
   const [secOn, setSecOn] = useState(false)
@@ -215,7 +221,8 @@ export function useSectionTool(deps: {
    */
   useEffect(() => {
     const v = viewerRef.current
-    if (!v || v.isDestroyed()) return
+    // vypnutý řez nedává modelu ani vypnuté roviny (jinak by se při výběru modelu přeložil shader)
+    if (!v || v.isDestroyed() || !enabled) return
     const sel = selectedId ? modelsRef.current.get(selectedId) : null
     for (const [id, coll] of secClipRef.current) if (!sel || id !== sel.id) coll.enabled = false
     if (!sel) { v.scene.requestRender(); return }
@@ -270,7 +277,7 @@ export function useSectionTool(deps: {
       console.warn('Přípravu textury ořezu se nepodařilo vynutit:', err)
     }
     v.scene.requestRender()
-  }, [selectedId, secOn, secClipMap, secLine, secFlip, secOffset, secLen, secHeight, secDepth, viewerReady]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedId, secOn, secClipMap, secLine, secFlip, secOffset, secLen, secHeight, secDepth, viewerReady, enabled]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * „Duch" modelu — průsvitná kopie bez ořezu.
@@ -328,7 +335,7 @@ export function useSectionTool(deps: {
   // Duch musí sedět na modelu i při jeho posouvání — matice se sesynchronizuje před snímkem.
   useEffect(() => {
     const v = viewerRef.current
-    if (!v || v.isDestroyed() || !viewerReady) return
+    if (!v || v.isDestroyed() || !viewerReady || !enabled) return
     const sync = () => {
       for (const [id, g] of secGhostRef.current) {
         if (!g.show) continue
@@ -338,7 +345,7 @@ export function useSectionTool(deps: {
     }
     v.scene.preUpdate.addEventListener(sync)
     return () => { if (!v.isDestroyed()) v.scene.preUpdate.removeEventListener(sync) }
-  }, [viewerReady])
+  }, [viewerReady, enabled])
 
   /** Čára řezu v mapě, ať je vidět, kudy rovina vede. */
   useEffect(() => {
@@ -1087,8 +1094,8 @@ export function useSectionTool(deps: {
     toast.success('Nový řez z výkresu — přepočítávám')
   }
 
-  // uložené řezy putují do stavu scény, tedy i do databáze
-  useEffect(() => { sceneRef.current.patchState({ sections: secSaved }) }, [secSaved])
+  // uložené řezy putují do stavu scény, tedy i do databáze (vypnutý řez je nechá, jak jsou)
+  useEffect(() => { if (enabled) sceneRef.current.patchState({ sections: secSaved }) }, [secSaved, enabled])
 
   /**
    * Uloží právě nastavený řez pod jménem.

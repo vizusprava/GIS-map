@@ -718,11 +718,14 @@ async function main() {
     expect((await ev(`document.body.innerText`)).includes('Model usazen podle S-JTSK'), 'chybí hláška o usazení podle S-JTSK')
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
-    // vybraný (právě importovaný) model drží panel jako nástroj: jeho sekce a řez v barvě
-    // modelu, Scéna zůstane otevřená; po zrušení výběru (Esc) zvýraznění zmizí
+    // vybraný (právě importovaný) model drží panel jako nástroj: jeho sekce v barvě modelu,
+    // Scéna zůstane otevřená; po zrušení výběru (Esc) zvýraznění zmizí. Řez modelem je zatím
+    // vypnutý (config ENABLE_MODEL_SECTION) — jeho sekce v panelu nesmí být; po zapnutí ji
+    // tu čekat zvýrazněnou jako Vybraný model.
     const accented = id => ev(`!!document.querySelector('[data-sec="${id}"]')?.className.includes('border-sky-500')`)
     await waitFor(`!!document.querySelector('[data-sec="model"]')`, 5_000, 'sekce Vybraný model')
-    expect(await accented('model') && await accented('rez'), 'sekce Vybraný model a Řez nejsou zvýrazněné')
+    expect(await accented('model'), 'sekce Vybraný model není zvýrazněná')
+    expect(!(await ev(`!!document.querySelector('[data-sec="rez"]')`)), 'vypnutý řez modelem je pořád v panelu')
     expect(!(await accented('scena')) && await ev(`!!document.querySelector('[data-sec="scena"] [data-selected]')`), 'Scéna: zvýrazněný řádek modelu, sekce sama ne')
     // skrytí mapy pod modelem: půdorys z modelu (footprint.ts) → kusy ořezu glóbu, vypnout zase zruší
     await clickText(`document.querySelector('[data-sec="model"]')`, 'Skrýt mapu pod modelem')
