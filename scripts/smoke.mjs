@@ -781,7 +781,42 @@ async function main() {
     await look('Textury')
     await ev(`document.querySelector('[data-sec="scena"] [data-layer-item="Teren (2)"] button').click()`)
     await sleep(300)
-    return `${at[0].toFixed(4)}°, ${at[1].toFixed(4)}°, jas modelu ${lum.toFixed(0)}`
+
+    // měření na modelu: bod na modelu jde přetáhnout po modelu a zůstane na něm (model se vznáší
+    // ~34 m nad terénem — převýšení v popisku to pozná). Dřív tažený bod pod kurzorem zakryl
+    // model a bod spadl na terén.
+    await ev(`(() => { const s = ${model}.boundingSphere, c = s.center, l = Math.hypot(c.x, c.y, c.z), d = s.radius * 12
+      window.__scene.camera.setView({ destination: { x: c.x + c.x / l * d, y: c.y + c.y / l * d, z: c.z + c.z / l * d }, orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 } }) })()`)
+    await sleep(1500)
+    // střed modelu na obrazovce a kolik pixelů je metr (zorný úhel kamery se mezi běhy liší)
+    const [mx, my, ppm] = await ev(`(() => { const s = window.__scene, c = ${model}.boundingSphere.center, R = s.camera.rightWC, r = s.canvas.getBoundingClientRect()
+      const p = s.cartesianToCanvasCoordinates(c), q = s.cartesianToCanvasCoordinates({ x: c.x + R.x, y: c.y + R.y, z: c.z + R.z })
+      return [r.left + p.x, r.top + p.y, Math.hypot(q.x - p.x, q.y - p.y)] })()`)
+    // model má stranu ~15,6 m: 3 m od středu je na modelu, 25 m od středu terén (ne pod panelem)
+    const on = Math.round(3 * ppm), off = Math.round(Math.min(25 * ppm, mx - 340))
+    const rise = async () => {
+      const t = await ev(`(() => { const out = []; const walk = p => { if (!p) return; if (p._labels) for (const l of p._labels) if (l.show && l.text?.startsWith('Σ')) out.push(l.text); if (p._primitives) p._primitives.forEach(walk); if (p._labelCollection) walk(p._labelCollection) }; window.__scene.primitives._primitives.forEach(walk); return out.join(' | ') })()`)
+      const m = t.match(/\(([+−])([\d.]+) m\)/)
+      return { t, v: m ? (m[1] === '−' ? -1 : 1) * Number(m[2]) : 0 }
+    }
+    const held = (type, x, y) => page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: type === 'mouseMoved' ? 0 : 1 })
+    await press('m')
+    await clickAt(mx - off, my) // terén vedle modelu
+    await clickAt(mx + on, my)  // na model
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: mx + on, y: my + off / 2, button: 'right', buttons: 2, clickCount: 1 })
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: mx + on, y: my + off / 2, button: 'right', buttons: 0, clickCount: 1 })
+    await sleep(400)
+    const placed = await rise()
+    expect(placed.v > 25, `bod klikem na model se nechytil na model: ${placed.t}`)
+    // tažení po modelu z jedné strany středu na druhou
+    await mouse('mouseMoved', mx + on, my); await held('mousePressed', mx + on, my)
+    for (let i = 1; i <= 15; i++) { await held('mouseMoved', mx + on - (2 * on * i) / 15, my); await sleep(40) }
+    await held('mouseReleased', mx - on, my)
+    await sleep(500)
+    const dragged = await rise()
+    expect(dragged.v > 25, `bod přetažený po modelu spadl na terén: ${placed.t} → ${dragged.t}`)
+    await press('Escape')
+    return `${at[0].toFixed(4)}°, ${at[1].toFixed(4)}°, jas modelu ${lum.toFixed(0)}, bod na modelu po tažení ${dragged.v} m nad terénem`
   })
 
   // ── pojistka: model, na kterém vykreslování spadne, se odebere a mapa kreslí dál (bez F5) ──

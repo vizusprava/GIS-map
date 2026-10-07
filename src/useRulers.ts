@@ -153,6 +153,7 @@ export function useRulers(deps: {
     handler.setInputAction((e: Cesium.ScreenSpaceEventHandler.MotionEvent) => {
       if (press && !drag && Math.hypot(e.endPosition.x - press.x, e.endPosition.y - press.y) > DRAG_PX) {
         drag = press.hit
+        layer.setDragging(drag) // tažený bod nesmí zakrýt model pod kurzorem (viz setDragging)
         showSnap(null)
       }
       if (drag) {
@@ -170,6 +171,7 @@ export function useRulers(deps: {
       if (drag) {
         const moved = drag
         drag = null
+        layer.setDragging(null)
         justDragged = true
         // živá data vrstvy jsou zdroj pravdy — přepiš z nich stav, ať se posun uloží
         persistRulers(rulersRef.current.map(r => r.id === moved.id ? { ...r, pts: [...r.pts] } : r))
@@ -206,6 +208,7 @@ export function useRulers(deps: {
       handler.destroy()
       ssc.enableInputs = true
       layer.setSnap(null)
+      layer.setDragging(null)
       canvas.style.cursor = ''
       setRulerSnap(null)
     }

@@ -108,6 +108,8 @@ export class RulerLayer {
   private areaCache = new Map<string, ReturnType<typeof rulerArea>>()
   // bod, ke kterému se právě přichytí klik (zvětšený) — viz `setSnap`
   private snap: Hit | null = null
+  // bod, který se právě táhne (kreslí se průhledně) — viz `setDragging`
+  private dragging: Hit | null = null
   private scratchWin = new Cesium.Cartesian2()
 
   constructor(viewer: Cesium.Viewer) { this.viewer = viewer }
@@ -141,6 +143,28 @@ export class RulerLayer {
     setConst(dot(this.snap)?.point?.pixelSize, 10)
     this.snap = h
     setConst(dot(h)?.point?.pixelSize, 16)
+    if (!this.viewer.isDestroyed()) this.viewer.scene.requestRender()
+  }
+
+  /**
+   * Tažený bod (null = nic se netáhne) se kreslí průhledně (alfa 0,99 — okem stejný).
+   *
+   * Body jsou vidět skrz terén (`disableDepthTestDistance`) a Cesium jim do hloubky zapíše
+   * hloubku terénu, a to ještě bez modelů. `pickPosition` pod bodem proto vidí jen terén —
+   * a tažený bod je pořád pod kurzorem, takže by se chytal na terén i přes model. Průhledné
+   * body do hloubky nezapisují, pod kurzorem tak zůstane model.
+   */
+  setDragging(h: Hit | null) {
+    const dot = (x: Hit | null) => (x ? this.live.get(x.id)?.dots[x.idx] : undefined)
+    const color = Cesium.Color.fromCssColorString(RULER_COLOR)
+    const style = (x: Hit | null, alpha: number) => {
+      const p = dot(x)?.point
+      setConst(p?.color, color.withAlpha(alpha))
+      setConst(p?.outlineColor, Cesium.Color.WHITE.withAlpha(alpha))
+    }
+    style(this.dragging, 1)
+    this.dragging = h
+    style(h, 0.99)
     if (!this.viewer.isDestroyed()) this.viewer.scene.requestRender()
   }
 
