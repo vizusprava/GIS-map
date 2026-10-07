@@ -335,17 +335,29 @@ async function main() {
     expect(!(await ev(`!!document.querySelector('[data-tour-overlay] > :not([data-tour-bubble]):not([data-tour-ring])')`)), 'průvodce ztmavuje obrazovku')
     await ev(`document.querySelector('[data-tour-next]').click()`)
     await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'zaklady/zoom'`, 2_000, 'Další po splněném úkolu')
+    // kolečko přeskočit; přiblížení pravým tlačítkem se kolečkem splnit nedá, tažením ano
+    await ev(`document.querySelector('[data-tour-next]').click()`)
+    await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'zaklady/prave-tlacitko'`, 2_000, 'krok Pravé tlačítko')
+    await sleep(400)
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 820, y: 480, deltaX: 0, deltaY: -400 })
+    await sleep(1200)
+    expect(await task() === 'ceka', `úkol pravého tlačítka splnilo kolečko: ${await task()}`)
+    await mouse('mouseMoved', 820, 480)
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 820, y: 480, button: 'right', buttons: 2, clickCount: 1 })
+    for (let i = 1; i <= 12; i++) { await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 820, y: 480 + 12 * i, button: 'right', buttons: 2 }); await sleep(30) }
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 820, y: 624, button: 'right', buttons: 0, clickCount: 1 })
+    await waitFor(`document.querySelector('[data-tour-task]')?.dataset.tourTask === 'hotovo'`, 4_000, 'splněný úkol pravého tlačítka')
     // přehled kapitol → poslední kapitola → zvýraznění sedí na skupině lišty
     await ev(`[...document.querySelectorAll('[data-tour-bubble] button')].find(b => b.innerText.includes('Kapitoly')).click()`)
     await waitFor(`!!document.querySelector('[data-tour-chapter="pohledy"]')`, 2_000, 'přehled kapitol')
     await ev(`document.querySelector('[data-tour-chapter="pohledy"]').click()`)
     await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'pohledy/kamera'`, 3_000, 'kapitola Pohledy')
     await sleep(500)
-    // bublina u lišty patří nahoru (nabídky lišty se otvírají nahoru) a nesmí zakrýt skupinu ani otevřený panel
+    // bublina u lišty nesmí zakrýt lištu, zvýrazněnou skupinu ani panel, který se nad ní rozbalí
     const hits = sel => ev(`(() => { const a = document.querySelector('[data-tour-bubble]').getBoundingClientRect(), e = document.querySelector('${sel}'); if (!e) return null; const b = e.getBoundingClientRect()
       return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom })()`)
     expect(await hits('[data-tour="lista-kamera"]') === false, 'bublina průvodce zakrývá zvýrazněné místo')
-    expect(await ev(`document.querySelector('[data-tour-bubble]').getBoundingClientRect().top < 140`), 'bublina u lišty není nahoře')
+    expect(await hits('[data-tour="lista"]') === false, 'bublina zakrývá lištu nástrojů')
     await ev(`document.querySelector('[data-tour="lista-kamera"] button').click()`)
     await waitFor(`!!document.querySelector('[data-panel="kamera"]')`, 2_000, 'otevřený panel Kamera')
     await sleep(400)

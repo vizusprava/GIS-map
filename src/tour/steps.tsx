@@ -4,7 +4,7 @@
  *
  * Krok:
  * - `target` — CSS selektor zvýrazněného místa (značky `data-tour`, `data-sec`, `data-minimap`);
- *   bez něj bublina uprostřed obrazovky,
+ *   bez něj bublina uprostřed obrazovky; `prefer` — kam s bublinou nejdřív,
  * - `task` — „zkus to": krok pokračuje sám, až úkol platí (Další se změní na Přeskočit).
  *   Úkol, který platí už na začátku kroku, se nezadává — krok je pak jen ukázka,
  * - `before` — příprava (rozbalit panel nebo sekci, ať je na co ukázat),
@@ -36,6 +36,8 @@ export type TourCtx = {
 
 /** Stav ve chvíli, kdy krok (nebo kapitola) začal — úkoly porovnávají, co se od té doby změnilo. */
 export type TourSnap = {
+  /** kdy krok začal (performance.now) */
+  at: number
   cam: { x: number; y: number; z: number; heading: number; pitch: number; height: number } | null
   rulerIds: Set<string>
   parcelCount: number
@@ -47,6 +49,8 @@ export type TourAction = { label: string; primary?: boolean; run: () => void }
 export type TourStep = {
   id: string
   target?: string
+  /** kam s bublinou nejdřív (třeba vedle hledání — pod ním se rozbalí výsledky) */
+  prefer?: 'below' | 'above' | 'left' | 'right'
   title: string
   body: ReactNode
   task?: { label: string; done: (ctx: TourCtx, start: TourSnap) => boolean }
@@ -64,8 +68,13 @@ export function snapOf(ctx: TourCtx): TourSnap {
     const p = v.camera.positionWC
     cam = { x: p.x, y: p.y, z: p.z, heading: v.camera.heading, pitch: v.camera.pitch, height: v.camera.positionCartographic.height }
   }
-  return { cam, rulerIds: new Set(ctx.rulers.map(r => r.id)), parcelCount: ctx.parcelCount, viewCount: ctx.viewCount }
+  return { at: performance.now(), cam, rulerIds: new Set(ctx.rulers.map(r => r.id)), parcelCount: ctx.parcelCount, viewCount: ctx.viewCount }
 }
+
+// Poslední stisk pravého tlačítka — úkol „přibliž pravým tlačítkem" se nesmí splnit kolečkem.
+// Jeden posluchač na celou dobu, levný; bez něj by to musela hlásit kamera.
+let lastRightDown = 0
+if (typeof window !== 'undefined') window.addEventListener('pointerdown', e => { if (e.button === 2) lastRightDown = performance.now() }, true)
 
 // ── pohyb kamery od začátku kroku ──
 const camNow = (ctx: TourCtx) => snapOf(ctx).cam
@@ -81,6 +90,16 @@ const panned = (ctx: TourCtx, s: TourSnap) => {
 const zoomed = (ctx: TourCtx, s: TourSnap) => {
   const c = camNow(ctx), o = s.cam
   return !!c && !!o && Math.abs(c.height - o.height) > 0.15 * Math.max(o.height, 1)
+}
+const rightZoomed = (ctx: TourCtx, s: TourSnap) => lastRightDown > s.at && zoomed(ctx, s)
+/** kamera nad Prahou (do 30 km od centra) — úkol z hledání místa */
+const nearPrague = (ctx: TourCtx) => {
+  const v = ctx.viewer
+  if (!v || v.isDestroyed()) return false
+  const c = v.camera.positionCartographic
+  const lat = (c.latitude * 180) / Math.PI, lon = (c.longitude * 180) / Math.PI
+  const km = Math.hypot((lat - 50.0755) * 111.2, (lon - 14.4378) * 111.2 * Math.cos((50.0755 * Math.PI) / 180))
+  return km < 30 && c.height < 60_000
 }
 const turned = (ctx: TourCtx, s: TourSnap) => {
   const c = camNow(ctx), o = s.cam
@@ -115,9 +134,16 @@ export const CHAPTERS: TourChapter[] = [
       {
         id: 'zoom',
         target: '[data-tour="mapa"]',
-        title: 'Přiblížení',
-        body: <>Kolečkem myši přibližuješ a oddaluješ, a to k místu pod kurzorem. Jde to i tažením se zmáčknutým pravým tlačítkem.</>,
-        task: { label: 'Přibliž nebo oddal mapu', done: zoomed },
+        title: 'Přiblížení kolečkem',
+        body: <>Kolečkem myši přibližuješ a oddaluješ, a to k místu pod kurzorem.</>,
+        task: { label: 'Přibliž nebo oddal mapu kolečkem', done: zoomed },
+      },
+      {
+        id: 'prave-tlacitko',
+        target: '[data-tour="mapa"]',
+        title: 'Přiblížení pravým tlačítkem',
+        body: <>Drž pravé tlačítko myši a táhni nahoru nebo dolů — přiblížíš nebo oddálíš plynule, bez skoků po zářezech kolečka. Hodí se na jemné doladění pohledu.</>,
+        task: { label: 'Přibliž nebo oddal tažením s pravým tlačítkem', done: rightZoomed },
       },
       {
         id: 'naklon',
@@ -129,8 +155,10 @@ export const CHAPTERS: TourChapter[] = [
       {
         id: 'hledani',
         target: '[data-tour="hledani"]',
+        prefer: 'right', // pod hledáním se rozbalí výsledky
         title: 'Hledání místa',
-        body: <>Napiš obec, katastrální území, adresu nebo parcelu (třeba „95/1 Liberec") a mapa tam přeletí. Terčík vedle vybere celé správní území klikem do mapy.</>,
+        body: <>Sem napíšeš obec, katastrální území, adresu nebo parcelu (třeba „95/1 Liberec"). Potvrď Enterem a v nabídce vyber, kam chceš — mapa tam přeletí. Vybrané území se zvýrazní; zrušíš ho křížkem v hledání. Terčík vedle vybere správní území klikem do mapy.</>,
+        task: { label: 'Napiš „Praha", potvrď Enterem a vyber ji v nabídce', done: nearPrague },
       },
       {
         id: 'minimapa',

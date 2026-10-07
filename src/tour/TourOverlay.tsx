@@ -119,8 +119,9 @@ function Tour({ ctx }: { ctx: TourCtx }) {
   const [mapLeft, setMapLeft] = useState(0)
   /** co bublina nesmí zakrýt: otevřené nabídky a panely lišty, nápověda nad lištou */
   const [obstacles, setObstacles] = useState<Rect[]>([])
-  /** zvýrazněné místo je v liště dole — jeho nabídky se otvírají nahoru, bublina patří nahoru */
+  /** zvýrazněné místo je v liště dole — bublina vedle lišty, ne nad ní (nabídky se otvírají nahoru) */
   const [inBar, setInBar] = useState(false)
+  const [barRect, setBarRect] = useState<Rect | null>(null)
   // změřit hned před vykreslením nového kroku — jinak bublina na snímek skočí doprostřed
   // obrazovky (bez místa) a teprve pak odjede, kam patří
   useLayoutEffect(() => {
@@ -129,14 +130,28 @@ function Tour({ ctx }: { ctx: TourCtx }) {
       const panel = document.querySelector('[data-tour="panel"]')?.getBoundingClientRect()
       setMapLeft(l => { const v = panel && panel.right > 1 ? panel.right : 0; return Math.abs(v - l) > 1 ? v : l })
       const bar = document.querySelector('[data-tour="lista"]')
+      const el = target ? document.querySelector(target) : null
       const obs: Rect[] = []
       if (bar) {
         for (const m of bar.querySelectorAll('[role="menu"], [role="dialog"]')) obs.push(rectOf(m))
         for (const sib of bar.parentElement?.children ?? []) if (sib !== bar) obs.push(rectOf(sib))
       }
+      // panel a minimapu nezakrývat (kromě případu, kdy se ukazuje právě na ně)
+      for (const sel of ['[data-tour="panel"]', '[data-tour="roh"]', '[data-tour="lista"]']) {
+        const o = document.querySelector(sel)
+        if (o && (!el || (!o.contains(el) && !el.contains(o)))) obs.push(rectOf(o))
+      }
+      // co zvýrazněné místo rozbalí (výsledky hledání, nabídka) — malé podstromy, ať to nic nestojí
+      if (el && el.getElementsByTagName('*').length < 150) {
+        const base = el.getBoundingClientRect()
+        for (const d of el.querySelectorAll('*')) {
+          const dr = d.getBoundingClientRect()
+          if (dr.width > 0 && dr.height > 0 && (dr.bottom > base.bottom + 2 || dr.top < base.top - 2 || dr.left < base.left - 2 || dr.right > base.right + 2)) obs.push(rectOf(d))
+        }
+      }
       const seen = obs.filter(r => r.width > 0 && r.height > 0)
       setObstacles(o => (sameRects(o, seen) ? o : seen))
-      const el = target ? document.querySelector(target) : null
+      setBarRect(o => { const n = bar ? rectOf(bar) : null; return n && o && sameRects([o], [n]) ? o : n })
       const r = el?.getBoundingClientRect()
       if (!el || !r || r.width < 1 || r.height < 1) { setRect(null); return }
       setInBar(!!bar && bar.contains(el))
@@ -160,9 +175,10 @@ function Tour({ ctx }: { ctx: TourCtx }) {
   })
   const vw = window.innerWidth, vh = window.innerHeight
   const big = !!rect && rect.width * rect.height > 0.45 * vw * vh
+  const prefer = view === 'step' ? step?.prefer : undefined
   const place = useMemo(
-    () => bubblePlace({ rect, big, size, vw, vh, mapLeft, obstacles, inBar }),
-    [rect, big, size, vw, vh, mapLeft, obstacles, inBar],
+    () => bubblePlace({ rect, big, size, vw, vh, mapLeft, obstacles, inBar, bar: barRect, prefer }),
+    [rect, big, size, vw, vh, mapLeft, obstacles, inBar, barRect, prefer],
   )
 
   const stepNo = pos >= 0 ? steps.indexOf(pos) + 1 : 0
@@ -283,22 +299,28 @@ const overlap = (a: Rect, b: Rect) =>
  * nikdo, ten s nejmenším překryvem.
  *
  * - velké místo (mapa): nahoře uprostřed viditelné mapy, pod hledáním,
- * - místo v liště dole: nejdřív nahoru pod hledání — nabídky lišty se otvírají nahoru a bublina
- *   těsně nad lištou by je zakryla, sotva by je uživatel rozbalil,
- * - jinak vedle místa: pod, nad, vlevo, vpravo (u míst v panelu vlevo nejdřív vpravo).
+ * - místo v liště dole: vedle lišty (vlevo, vpravo), jinak nahoru pod hledání — nad lištou
+ *   ne, nabídky lišty se otvírají nahoru a bublina by je zakryla, sotva by je uživatel rozbalil,
+ * - jinak vedle místa: pod, nad, vlevo, vpravo (u míst v panelu vlevo nejdřív vpravo);
+ *   `prefer` kroku jde první.
  */
 function bubblePlace(o: {
   rect: Rect | null; big: boolean; size: { w: number; h: number }; vw: number; vh: number
-  mapLeft: number; obstacles: Rect[]; inBar: boolean
+  mapLeft: number; obstacles: Rect[]; inBar: boolean; bar: Rect | null; prefer?: 'below' | 'above' | 'left' | 'right'
 }): Pos {
-  const { rect, big, size, vw, vh, mapLeft, obstacles, inBar } = o
+  const { rect, big, size, vw, vh, mapLeft, obstacles, inBar, bar, prefer } = o
   const clampX = (x: number) => Math.max(EDGE, Math.min(vw - size.w - EDGE, x))
   const clampY = (y: number) => Math.max(EDGE, Math.min(vh - size.h - EDGE, y))
   const mapCenterX = clampX(mapLeft + (vw - mapLeft - size.w) / 2)
   if (!rect) return { top: clampY((vh - size.h) / 2), left: mapCenterX }
 
   const t: Rect = { top: rect.top - PAD, left: rect.left - PAD, width: rect.width + 2 * PAD, height: rect.height + 2 * PAD }
-  const blockers = big ? obstacles : [t, ...obstacles]
+  // místo, kam se nad skupinou lišty rozbalí její nabídka (i když ještě zavřená) — ať ji
+  // bublina nezakryje, až ji uživatel otevře
+  const menuZone: Rect | null = inBar && bar
+    ? { left: rect.left + rect.width / 2 - 175, width: 350, top: Math.max(0, bar.top - 360), height: Math.min(360, bar.top) }
+    : null
+  const blockers = big ? obstacles : inBar && bar ? [t, bar, menuZone!, ...obstacles] : [t, ...obstacles]
   const cx = clampX(rect.left + rect.width / 2 - size.w / 2), cy = clampY(rect.top + rect.height / 2 - size.h / 2)
   const top: Pos = { top: TOP_Y, left: big ? clampX(Math.max(rect.left, mapLeft) + (rect.left + rect.width - Math.max(rect.left, mapLeft) - size.w) / 2) : cx }
   const topMap: Pos = { top: TOP_Y, left: mapCenterX }
@@ -307,10 +329,20 @@ function bubblePlace(o: {
   const right: Pos = { top: cy, left: t.left + t.width + GAP }
   const left: Pos = { top: cy, left: t.left - GAP - size.w }
 
-  const order = big ? [top, topMap, below]
-    : inBar ? [top, topMap, left, right, above]
+  // vedle lišty: spodním okrajem u spodního okraje lišty
+  const barLeft: Pos | null = bar && { top: bar.top + bar.height - size.h, left: bar.left - GAP - size.w }
+  const barRight: Pos | null = bar && { top: bar.top + bar.height - size.h, left: bar.left + bar.width + GAP }
+  // nad lištou těsně vedle místa pro nabídku zvýrazněné skupiny, na straně ke středu lišty
+  const awayAbove: Pos | null = bar && menuZone && {
+    top: bar.top - GAP - size.h,
+    left: rect.left + rect.width / 2 > bar.left + bar.width / 2 ? menuZone.left - GAP - size.w : menuZone.left + menuZone.width + GAP,
+  }
+  const sides = { below, above, left, right }
+  const base = big ? [top, topMap, below]
+    : inBar ? [barLeft, barRight, awayAbove, top, topMap, left, right]
     : rect.left + rect.width < 420 ? [right, below, above, left, topMap]
     : [below, above, left, right, topMap]
+  const order = [...(prefer && !big ? [sides[prefer]] : []), ...base].filter((p): p is Pos => !!p)
   let best: Pos = order[0], bestCost = Infinity
   for (const p of order) {
     const at = { top: clampY(p.top), left: clampX(p.left) }
