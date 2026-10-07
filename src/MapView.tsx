@@ -146,6 +146,14 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     // Záchranná brzda: když vykreslování spadne, Cesium se zastaví a zbyde bílé okno. Ořez
     // modelu je nejpravděpodobnější příčina, tak ho shodíme a zkusíme kreslit dál.
     onRenderError: () => {
+      // Nejčastější viník je model, který se ještě ani jednou nevykreslil (materiál, na kterém
+      // spadne shader). Ten se odebere z mapy a kreslí se dál — jinak by pomohlo jen F5.
+      const dropped = models.dropUndrawn()
+      if (dropped.length) {
+        viewer.resumeRendering()
+        toast.error(`Model „${dropped.join('“, „')}“ se nepodařilo vykreslit — odebral jsem ho z mapy, soubor ve scéně zůstal.`, { duration: 12000 })
+        return
+      }
       let had = false
       for (const coll of sec.secClipRef.current.values()) if (coll.enabled) { coll.enabled = false; had = true }
       if (had) {

@@ -22,12 +22,22 @@ type Material = {
   name?: string
   [k: string]: unknown
 }
-type GltfJson = { materials?: Material[]; extensionsUsed?: string[]; extensionsRequired?: string[]; [k: string]: unknown }
+type Primitive = { attributes?: Record<string, number>; material?: number; [k: string]: unknown }
+type GltfJson = {
+  materials?: Material[]
+  meshes?: { primitives?: Primitive[] }[]
+  extensionsUsed?: string[]
+  extensionsRequired?: string[]
+  [k: string]: unknown
+}
 
 const GLB_MAGIC = 0x46546c67 // 'glTF'
 const CHUNK_JSON = 0x4e4f534a
 /** rozšíření materiálů, která se zahazují (vše KHR_materials_* kromě „bez stínování") */
 const isMaterialExt = (e: string) => e.startsWith('KHR_materials_') && e !== 'KHR_materials_unlit'
+
+/** černá (nebo žádná) barva = materiál, kterému exportér nerozuměl */
+const isDark = (c?: number[]) => !c || (c[0] < 0.02 && c[1] < 0.02 && c[2] < 0.02)
 
 /** Jeden materiál → jen barevná textura / barva + průhlednost. */
 function simplifyMaterial(m: Material): Material {
@@ -40,7 +50,7 @@ function simplifyMaterial(m: Material): Material {
     // S texturou platí jen textura: barva by ji násobila (exportér tam rád dá černou).
     // Alfa zůstává — nese průhlednost.
     factor = [1, 1, 1, factor?.[3] ?? 1]
-  } else if (factor && factor[0] < 0.02 && factor[1] < 0.02 && factor[2] < 0.02) {
+  } else if (factor && isDark(factor)) {
     // čistě černá bez textury = materiál, kterému exportér nerozuměl (V-Ray) → neutrální šedá
     factor = [0.8, 0.8, 0.8, factor[3] ?? 1]
   }
@@ -60,10 +70,50 @@ function simplifyMaterial(m: Material): Material {
   return out
 }
 
+/**
+ * Část modelu bez UV souřadnic, jejíž materiál má texturu: Cesium by na ní spadlo při stavbě
+ * shaderu („'v_texCoord_0' : undeclared identifier") a zastavilo vykreslování celé mapy.
+ * Stává se to po převodu V-Ray → Physical u objektů bez UVW mapování. Taková část dostane
+ * kopii materiálu bez textury — jen barvu (původní z materiálu, u černé šedou).
+ */
+function fixMissingUv(json: GltfJson, origColors: (number[] | undefined)[]) {
+  const mats = json.materials!
+  const noTex = new Map<number, number>() // materiál → jeho kopie bez textury
+  for (const mesh of json.meshes ?? []) {
+    for (const p of mesh.primitives ?? []) {
+      if (p.material === undefined) continue
+      const m = mats[p.material]
+      const tex = m?.pbrMetallicRoughness?.baseColorTexture
+      if (!tex) continue
+      const tt = tex.extensions?.KHR_texture_transform as { texCoord?: number } | undefined
+      const uv = tt?.texCoord ?? tex.texCoord ?? 0
+      if (p.attributes?.[`TEXCOORD_${uv}`] !== undefined) continue
+      let copy = noTex.get(p.material)
+      if (copy === undefined) {
+        const orig = origColors[p.material]
+        const alpha = m.pbrMetallicRoughness?.baseColorFactor?.[3] ?? 1
+        const rgb = isDark(orig) ? [0.8, 0.8, 0.8] : orig!.slice(0, 3)
+        copy = mats.length
+        mats.push({
+          ...m,
+          name: `${m.name ?? 'materiál'} (bez UV)`,
+          pbrMetallicRoughness: { baseColorFactor: [...rgb, alpha], metallicFactor: 0, roughnessFactor: 1 },
+        })
+        noTex.set(p.material, copy)
+      }
+      p.material = copy
+    }
+  }
+}
+
 /** Upraví JSON glTF na místě; vrátí, jestli se něco změnilo. */
 function simplifyJson(json: GltfJson): boolean {
   if (!json.materials?.length) return false
+  // původní barvy (před vybělením u textur) — pro části bez UV, které texturu mít nemůžou
+  const origColors = json.materials.map(m =>
+    m.pbrMetallicRoughness?.baseColorFactor ?? m.extensions?.KHR_materials_pbrSpecularGlossiness?.diffuseFactor)
   json.materials = json.materials.map(simplifyMaterial)
+  fixMissingUv(json, origColors)
   // zahozená rozšíření pryč i ze seznamů — „povinné" neznámé rozšíření by Cesium odmítlo
   const stillUnlit = json.materials.some(m => m.extensions?.KHR_materials_unlit)
   const keep = (e: string) => !isMaterialExt(e) && (e !== 'KHR_materials_unlit' || stillUnlit)

@@ -34,6 +34,8 @@ export function useModels(deps: {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [placement, setPlacement] = useState<Placement | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  /** modely, které se ještě ani jednou celé nevykreslily (viz `dropUndrawn`) */
+  const undrawnRef = useRef(new Set<string>())
 
   // Modely patřily vieweru, který zaniká spolu s komponentou: uvolnit jejich blob URL
   // a zapomenout odkazy, ať nový viewer (StrictMode, návrat do scény) nezačíná s mrtvými.
@@ -195,6 +197,15 @@ export function useModels(deps: {
       setObjects(list => [...list, { id, kind: 'model', name: entry.name, visible: entry.visible }])
       if (!restore) selectObject(id)
 
+      // Dokud se model jednou celý nevykreslí (dva snímky po načtení), je „neověřený" —
+      // kdyby na něm vykreslování spadlo, `dropUndrawn` ho odebere a mapa pojede dál.
+      undrawnRef.current.add(id)
+      let drawn = 0
+      const offDrawn = v.scene.postRender.addEventListener(() => {
+        if (!modelsRef.current.has(id) || !undrawnRef.current.has(id)) { offDrawn(); return }
+        if (model.ready && ++drawn >= 2) { undrawnRef.current.delete(id); offDrawn() }
+      })
+
       model.readyEvent.addEventListener(async () => {
         if (v.isDestroyed()) return
         if (!anchor) {
@@ -226,17 +237,41 @@ export function useModels(deps: {
     releaseMapClick('move')
   }
 
-  function deleteModel(id: string) {
+  /** Odebere model z mapy a ze seznamu (soubor ve scéně nechá). */
+  function unmountModel(id: string) {
     const v = viewerRef.current
     const e = modelsRef.current.get(id)
-    if (!e) return
+    if (!e) return null
     if (v && !v.isDestroyed()) v.scene.primitives.remove(e.model)
     onModelRemoved(id)
     URL.revokeObjectURL(e.url)
     modelsRef.current.delete(id)
+    undrawnRef.current.delete(id)
     if (e.excavate) updateExcavation() // uklidit masku po smazaném modelu
     setObjects(list => list.filter(o => o.id !== id))
     if (selectedIdRef.current === id) selectObject(null)
+    return e
+  }
+
+  /**
+   * Pojistka po pádu vykreslování: modely, které se ještě ani jednou celé nevykreslily
+   * (`undrawnRef`), jsou nejpravděpodobnější viník — třeba materiál, na kterém Cesium spadne
+   * při stavbě shaderu. Odeberou se z mapy (soubor ve scéně zůstane, příští verze appky si
+   * s ním může poradit) a vrátí se jejich jména; mapa pak může kreslit dál.
+   */
+  function dropUndrawn(): string[] {
+    const names: string[] = []
+    for (const id of [...undrawnRef.current]) {
+      const e = unmountModel(id)
+      if (e) names.push(e.name)
+    }
+    undrawnRef.current.clear()
+    return names
+  }
+
+  function deleteModel(id: string) {
+    const e = unmountModel(id)
+    if (!e) return
     if (e.assetId) void sceneRef.current.deleteAsset(e.assetId).catch(err => {
       console.error('Smazání modelu z úložiště selhalo:', err)
       toast.error('Model zmizel z mapy, ale v úložišti zůstal — zkus to znovu po refreshi')
@@ -306,6 +341,7 @@ export function useModels(deps: {
 
   return {
     deleteModel,
+    dropUndrawn,
     dropToGround,
     fileRef,
     focusModel,

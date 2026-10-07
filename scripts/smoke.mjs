@@ -143,7 +143,9 @@ function sjtskGlb(n, t) {
   const min = [0, 1, 2].map(a => Math.min(...pos.filter((_, i) => i % 3 === a))), max = [0, 1, 2].map(a => Math.max(...pos.filter((_, i) => i % 3 === a)))
   const json = Buffer.from(JSON.stringify({
     asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0, name: 'Teren' }],
-    meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, indices: 2, material: 0 }] }],
+    // druhá část stejné geometrie BEZ UV, se stejným texturovaným materiálem — Cesium na ní
+    // dřív spadlo při stavbě shaderu („'v_texCoord_0' : undeclared identifier")
+    meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, indices: 2, material: 0 }, { attributes: { POSITION: 0 }, indices: 2, material: 0 }] }],
     materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 }, baseColorFactor: [0, 0, 0, 1], metallicFactor: 1, roughnessFactor: 0 }, extensions: { KHR_materials_specular: { specularFactor: 1 } } }],
     extensionsUsed: ['KHR_materials_specular'],
     textures: [{ source: 0 }], images: [{ bufferView: 3, mimeType: 'image/png' }],
@@ -720,7 +722,34 @@ async function main() {
       const d = g.getImageData(0, 0, 40, 40).data; let sum = 0; for (let i = 0; i < d.length; i += 4) sum += (d[i] + d[i + 1] + d[i + 2]) / 3
       return sum / 1600 })()`)
     expect(lum > 45, `model je černý (jas středu ${lum.toFixed(0)}) — materiál z V-Ray se nezjednodušil`)
+    expect(!(await ev(`!!document.querySelector('.cesium-widget-errorPanel')`)), 'vykreslování spadlo (část modelu bez UV s texturou)')
     return `${at[0].toFixed(4)}°, ${at[1].toFixed(4)}°, jas modelu ${lum.toFixed(0)}`
+  })
+
+  // ── pojistka: model, na kterém vykreslování spadne, se odebere a mapa kreslí dál (bez F5) ──
+  await check('vadný model: odebere se z mapy, vykreslování se rozjede znovu', async () => {
+    const glbPath = join(work, 'model-sjtsk.glb')
+    // další přidaný model dostane update(), který hodí chybu — jako shader, který nejde přeložit
+    await ev(`(() => { const pc = window.__scene.primitives, add = pc.add
+      pc.add = function (prim, i) {
+        if (prim.constructor.name.includes('Model') && 'readyEvent' in prim) { prim.update = () => { throw new Error('kouřový test: vadný model') }; pc.add = add }
+        return add.call(this, prim, i)
+      } })()`)
+    const before = await ev(`window.__scene.primitives._primitives.filter(p => p.constructor.name.includes('Model') && 'readyEvent' in p).length`)
+    const { result } = await page.send('Runtime.evaluate', { expression: `document.querySelector('input[type=file][accept=".glb,.gltf,.obj"]')` })
+    await page.send('DOM.setFileInputFiles', { files: [glbPath], objectId: result.result.objectId })
+    await waitFor(`document.body.innerText.includes('se nepodařilo vykreslit')`, 30_000, 'hláška o odebraném modelu')
+    await sleep(500)
+    const after = await ev(`window.__scene.primitives._primitives.filter(p => p.constructor.name.includes('Model') && 'readyEvent' in p).length`)
+    expect(after === before, `vadný model zůstal v mapě (${before} → ${after})`)
+    expect(!(await ev(`!!document.querySelector('.cesium-widget-errorPanel')`)), 'zůstal chybový panel Cesia')
+    // mapa zase kreslí: po pohybu kamery přibývají snímky
+    const frames = await ev(`new Promise(res => { const s = window.__scene; let n = 0; const off = s.postRender.addEventListener(() => n++)
+      let k = 0; const t = setInterval(() => { s.camera.moveRight(5); s.requestRender(); if (++k > 10) { clearInterval(t); off(); res(n) } }, 50) })`)
+    expect(frames > 3, `vykreslování se nerozjelo (${frames} snímků)`)
+    const errs = await ev('window.__errors')
+    expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
+    return `${frames} snímků po obnově`
   })
 
   // ── Nastavení účtu s podvrženým uživatelem (bez Supabase — jen formuláře a jejich kontroly) ──

@@ -213,6 +213,16 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<PreparedModel |
 
   const meshes: THREE.Mesh[] = []
   scene.traverse(obj => { const m = obj as THREE.Mesh; if (m.isMesh && m.geometry) meshes.push(m) })
+  // Instance (stejný mesh na více místech) i části jednoho meshe sdílejí v three tytéž vrcholy.
+  // Převádí se na místě, takže sdílené by se přepočítaly podruhé, z už převedených souřadnic,
+  // a model by odletěl. Každá další část proto dostane vlastní kopii — PŘEDEM, dokud jsou
+  // vrcholy ještě původní.
+  const shared = new Set<THREE.BufferAttribute | THREE.InterleavedBufferAttribute>()
+  for (const m of meshes) {
+    const pos = m.geometry.attributes.position
+    if (shared.has(pos)) m.geometry = m.geometry.clone()
+    else shared.add(pos)
+  }
   for (const m of meshes) {
     const g = m.geometry as THREE.BufferGeometry
     const pos = g.attributes.position as THREE.BufferAttribute

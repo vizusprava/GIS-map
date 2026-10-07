@@ -349,7 +349,24 @@ export function useCesiumViewer(deps: {
     }
   }, [viewerReady])
 
+  /**
+   * Znovu rozjede vykreslování po pádu (renderError), když se viník odklidil. Cesium starou
+   * smyčku po chybě ukončí až v dalším snímku — nová se proto rozjíždí o dva snímky později,
+   * jinak by kreslily dvě naráz. Chybový panel Cesia zmizí.
+   */
+  function resumeRendering() {
+    const v = viewerRef.current
+    if (!v || v.isDestroyed()) return
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (v.isDestroyed()) return
+      v.container.querySelectorAll('.cesium-widget-errorPanel').forEach(el => el.remove())
+      v.useDefaultRenderLoop = true
+      v.scene.requestRender()
+    }))
+  }
+
   return {
+    resumeRendering,
     viewerRef,
     viewerReady,
     perfRef,

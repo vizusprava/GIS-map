@@ -83,6 +83,24 @@ ok(sg.pbrMetallicRoughness.baseColorTexture?.index === 5 && !sg.extensions, 'spe
 ok(JSON.stringify(out.json.extensionsUsed) === '["KHR_texture_transform"]', `seznam rozšíření: ${JSON.stringify(out.json.extensionsUsed)}`)
 ok(out.json.extensionsRequired === undefined, 'povinná rozšíření materiálů pryč (Cesium by je odmítlo)')
 
+// část modelu bez UV s texturovaným materiálem: Cesium by spadlo na shaderu („v_texCoord_0")
+const uvJson = {
+  asset: { version: '2.0' },
+  materials: [{ name: 'Asfalt', pbrMetallicRoughness: { baseColorTexture: { index: 0 }, baseColorFactor: [0.4, 0.4, 0.42, 1] } }],
+  meshes: [{ primitives: [
+    { attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 }, material: 0 },
+    { attributes: { POSITION: 3, NORMAL: 4 }, material: 0 },
+    { attributes: { POSITION: 5 }, material: 0 },
+  ] }],
+}
+const uv = read(simplifyGltfMaterials(glb(uvJson, bin))).json
+const [pa, pb, pc] = uv.meshes[0].primitives
+ok(pa.material === 0 && uv.materials[0].pbrMetallicRoughness.baseColorTexture?.index === 0, 'část s UV má dál texturu')
+ok(pb.material === 1 && pc.material === 1 && uv.materials.length === 2, `části bez UV dostaly jednu společnou kopii materiálu (${pb.material}, ${pc.material})`)
+ok(!uv.materials[1].pbrMetallicRoughness.baseColorTexture, 'kopie bez textury')
+ok(JSON.stringify(uv.materials[1].pbrMetallicRoughness.baseColorFactor) === '[0.4,0.4,0.42,1]', `kopie má původní barvu: ${JSON.stringify(uv.materials[1].pbrMetallicRoughness.baseColorFactor)}`)
+ok(uv.materials[1].name === 'Asfalt (bez UV)', 'kopie je poznat podle jména')
+
 // glTF jako text
 const text = new TextEncoder().encode(JSON.stringify(vray)).buffer
 const tj = JSON.parse(new TextDecoder().decode(simplifyGltfMaterials(text)))
