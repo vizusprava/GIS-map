@@ -724,6 +724,15 @@ async function main() {
     await waitFor(`!!document.querySelector('[data-sec="model"]')`, 5_000, 'sekce Vybraný model')
     expect(await accented('model') && await accented('rez'), 'sekce Vybraný model a Řez nejsou zvýrazněné')
     expect(!(await accented('scena')) && await ev(`!!document.querySelector('[data-sec="scena"] [data-selected]')`), 'Scéna: zvýrazněný řádek modelu, sekce sama ne')
+    // skrytí mapy pod modelem: půdorys z modelu (footprint.ts) → kusy ořezu glóbu, vypnout zase zruší
+    await clickText(`document.querySelector('[data-sec="model"]')`, 'Skrýt mapu pod modelem')
+    await waitFor(`window.__scene.globe.clippingPolygons?.length > 0`, 5_000, 'ořez mapy pod modelem')
+    const clip = await ev(`(() => { const cp = window.__scene.globe.clippingPolygons, n = []; for (let i = 0; i < cp.length; i++) n.push(cp.get(i).positions.length); return n })()`)
+    expect(clip.every(n => n >= 3 && n <= 120), `kusy ořezu: ${clip}`)
+    await sleep(500)
+    expect(!(await ev(`!!document.querySelector('.cesium-widget-errorPanel')`)) && !(await ev('window.__errors')).length, 'ořez mapy shodil vykreslování')
+    await clickText(`document.querySelector('[data-sec="model"]')`, 'Mapa pod modelem skrytá')
+    await waitFor(`!window.__scene.globe.clippingPolygons?.length`, 5_000, 'vypnutý ořez mapy')
     await press('Escape')
     await waitFor(`!document.querySelector('[data-sec="model"]') && !document.querySelector('[data-sec].border-sky-500\\\\/70')`, 3_000, 'po Esc bez zvýraznění')
     // model s materiálem jako z V-Ray nesmí být černý: kamera kolmo nad model (po importu
@@ -732,7 +741,7 @@ async function main() {
     await ev(`(() => { const s = ${model}.boundingSphere, c = s.center, l = Math.hypot(c.x, c.y, c.z), d = s.radius * 2.5
       window.__scene.camera.setView({ destination: { x: c.x + c.x / l * d, y: c.y + c.y / l * d, z: c.z + c.z / l * d }, orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 } }) })()`)
     await sleep(1800)
-    const lum = await ev(`(() => { const s = window.__scene, sc = s.canvas; s.render()
+    const lum = await ev(`(() => { const s = window.__scene, sc = s.canvas; s.requestRender(); s.render()
       const c = document.createElement('canvas'); c.width = 40; c.height = 40; const g = c.getContext('2d')
       g.drawImage(sc, sc.width / 2 - 20, sc.height / 2 - 20, 40, 40, 0, 0, 40, 40)
       const d = g.getImageData(0, 0, 40, 40).data; let sum = 0; for (let i = 0; i < d.length; i += 4) sum += (d[i] + d[i + 1] + d[i + 2]) / 3
@@ -741,7 +750,7 @@ async function main() {
     expect(!(await ev(`!!document.querySelector('.cesium-widget-errorPanel')`)), 'vykreslování spadlo (část modelu bez UV s texturou)')
 
     // objekty modelu a vzhled (panel Scéna → šipka u modelu)
-    const px = () => ev(`(() => { const s = window.__scene, sc = s.canvas; s.render()
+    const px = () => ev(`(() => { const s = window.__scene, sc = s.canvas; s.requestRender(); s.render()
       const c = document.createElement('canvas'); c.width = 20; c.height = 20; const g = c.getContext('2d')
       g.drawImage(sc, sc.width / 2 - 10, sc.height / 2 - 10, 20, 20, 0, 0, 20, 20)
       const d = g.getImageData(0, 0, 20, 20).data; const m = [0, 0, 0]; for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) m[k] += d[i + k] / 400

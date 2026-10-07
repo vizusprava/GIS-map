@@ -15,7 +15,8 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js'
 import { wgsOf } from './tiles'
 import { geoidN } from './geoid'
-import { FOOT_MAX_TRIS_UNION, MASK_NAME_RE, FootprintGrid, concaveFootprint, simplifyRingCapped, unionOutlines } from './rings'
+import { MASK_NAME_RE, FootprintGrid, concaveFootprint } from './rings'
+import { FootprintRaster } from './footprint'
 import { listModelObjects, simplifyGltfMaterials, type ModelObject } from './gltfMaterials'
 import type { Anchor } from './types'
 
@@ -130,6 +131,35 @@ const bottomOf = (obj: THREE.Object3D) => {
   const box = new THREE.Box3().setFromObject(obj)
   return Number.isFinite(box.min.y) ? box.min.y : null
 }
+/**
+ * Půdorys z převedených vrcholů (glTF E, U, −N) → kusy ořezu mapy (footprint.ts). Kdyby
+ * přesný půdorys selhal, nouzově konkávní obal (hrubší, ale mapa se pod modelem schová).
+ */
+function modelFootprint(geoms: THREE.BufferGeometry[]): [number, number][][] {
+  const each = (fn: (e: number, n: number) => void) => {
+    for (const g of geoms) { const p = g.attributes.position; for (let i = 0; i < p.count; i++) fn(p.getX(i), -p.getZ(i)) }
+  }
+  try {
+    let e0 = Infinity, n0 = Infinity, e1 = -Infinity, n1 = -Infinity
+    each((e, n) => { if (e < e0) e0 = e; if (e > e1) e1 = e; if (n < n0) n0 = n; if (n > n1) n1 = n })
+    if (!Number.isFinite(e0)) return []
+    const r = new FootprintRaster(e0, n0, e1, n1)
+    for (const g of geoms) {
+      const p = g.attributes.position, idx = g.index
+      const tri = (a: number, b: number, c: number) => r.addTriangle(p.getX(a), -p.getZ(a), p.getX(b), -p.getZ(b), p.getX(c), -p.getZ(c))
+      if (idx) for (let t = 0; t + 2 < idx.count; t += 3) tri(idx.getX(t), idx.getX(t + 1), idx.getX(t + 2))
+      else for (let t = 0; t + 2 < p.count; t += 3) tri(t, t + 1, t + 2)
+    }
+    return r.pieces()
+  } catch (err) {
+    console.error('Přesný půdorys modelu selhal — použit konkávní obal:', err)
+    const grid = new FootprintGrid()
+    each((e, n) => grid.add(e, n))
+    const ring = concaveFootprint(grid.points())
+    return ring ? [ring] : []
+  }
+}
+
 /** Obrátí pořadí vrcholů trojúhelníků (líc ↔ rub). Sdílený index (`done`) jen jednou. */
 function flipWinding(g: THREE.BufferGeometry, done: Set<THREE.BufferAttribute>) {
   const idx = g.index
@@ -253,10 +283,6 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<Omit<PreparedMo
   const nrmMat = new THREE.Matrix3(), vn = new THREE.Vector3()
   const vw = new THREE.Vector3()
   let minU = Infinity
-  // Obrys celého modelu: body jdou rovnou do mřížky obrysu. Dřív se sbíralo pole všech
-  // vrcholů — u modelu s miliony vrcholů stovky MB jen na tohle.
-  const grid = new FootprintGrid()
-  const maskTris = new Map<string, [number, number][][]>() // ENU trojúhelníky maskovacích objektů (podle názvu)
 
   const meshes: THREE.Mesh[] = []
   scene.traverse(obj => { const m = obj as THREE.Mesh; if (m.isMesh && m.geometry) meshes.push(m) })
@@ -275,21 +301,11 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<Omit<PreparedMo
     const g = m.geometry as THREE.BufferGeometry
     const pos = g.attributes.position as THREE.BufferAttribute
     const wm = m.matrixWorld
-    const isMask = MASK_NAME_RE.test(m.name)
-    const meshEN: [number, number][] = isMask ? new Array(pos.count) : [] // ENU vrcholy jen u masky (pro trojúhelníky)
     for (let i = 0; i < pos.count; i++) {
       vw.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(wm) // do světových souřadnic (respektuj hierarchii)
       const [oe, on, ou] = toEnu(vw)
       pos.setXYZ(i, oe, ou, -on)                // gltf (E, U, -N) — stejné jako buildExportScene
       if (ou < minU) minU = ou
-      grid.add(oe, on)
-      if (isMask) meshEN[i] = [oe, on]
-    }
-    if (isMask) {
-      let tris = maskTris.get(m.name); if (!tris) { tris = []; maskTris.set(m.name, tris) }
-      const idx = g.index
-      if (idx) { for (let t = 0; t + 2 < idx.count; t += 3) tris.push([meshEN[idx.getX(t)], meshEN[idx.getX(t + 1)], meshEN[idx.getX(t + 2)]]) }
-      else { for (let t = 0; t + 2 < meshEN.length; t += 3) tris.push([meshEN[t], meshEN[t + 1], meshEN[t + 2]]) }
     }
     pos.needsUpdate = true
     if (mirrored) flipWinding(g, flipped)
@@ -315,22 +331,12 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<Omit<PreparedMo
   // export z three umí materiály zase přikrášlit (barva, kovovost) — srovnat znovu
   const glb = simplifyGltfMaterials(await exportGlb(scene))
 
-  // obrys(y) půdorysu → svět přes kotvu (přesné, nezávislé na Cesium korekci os).
-  // Maskovací objekty: přesný obrys geometrie (union trojúhelníků) → vhloubení zůstanou nevyříznutá.
-  // Bez masek: konkávní obal celého modelu.
+  // Půdorys pro skrytí mapy (footprint.ts) → svět přes kotvu (přesné, nezávislé na Cesium
+  // korekci os). Z maskovacích objektů, když nějaké jsou, jinak z celého modelu.
   const enToWorld = (e: number, n: number): V3 => [O[0] + E[0] * e + N[0] * n, O[1] + E[1] * e + N[1] * n, O[2] + E[2] * e + N[2] * n]
-  const footprint: V3[][] = []
-  if (maskTris.size) {
-    for (const [name, tris] of maskTris) {
-      let rings: [number, number][][]
-      if (tris.length > FOOT_MAX_TRIS_UNION) { const cf = concaveFootprint(tris.flat()); rings = cf ? [cf] : []; console.warn(`Maska „${name}": ${tris.length} trojúhelníků je moc na přesný obrys → použit konkávní obal`) }
-      else rings = unionOutlines(tris)
-      for (const r of rings) { const simp = simplifyRingCapped(r); if (simp) footprint.push(simp.map(([e, n]) => enToWorld(e, n))) }
-    }
-  } else {
-    const ring = concaveFootprint(grid.points())
-    if (ring) footprint.push(ring.map(([e, n]) => enToWorld(e, n)))
-  }
+  const hasMask = meshes.some(m => MASK_NAME_RE.test(m.name))
+  const sources = meshes.filter(m => !hasMask || MASK_NAME_RE.test(m.name)).map(m => m.geometry as THREE.BufferGeometry)
+  const footprint = modelFootprint(sources).map(r => r.map(([e, n]) => enToWorld(e, n)))
   return {
     glb,
     bottomZ: Number.isFinite(minU) ? minU : 0,

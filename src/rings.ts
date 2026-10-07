@@ -6,17 +6,15 @@
  * matematika nad `[x, y]` páry — žádné Cesium, žádný DOM.
  */
 import concaveman from 'concaveman'
-import polygonClipping from 'polygon-clipping'
 
-// ── Půdorys modelu (konkávní obal) pro skrytí mapy pod/nad modelem ────────────────────
+// ── Půdorys modelu (konkávní obal) — jen nouzově, přesný půdorys počítá footprint.ts ──
 const FOOT_GRID_M = 0.15       // sjednocení bodů do mřížky (hustá síť má statisíce vrcholů → výkon)
 const FOOT_CONCAVITY = 2       // concaveman: menší = detailnější obrys
 const FOOT_MIN_INLET_M = 0.5   // zálivy kratší než tohle se vyhladí
 const FOOT_SIMPLIFY_M = 0.2    // tolerance zjednodušení obrysu (Douglas–Peucker), v metrech
-const FOOT_MAX_PTS = 250       // strop bodů obrysu — víc Cesium clip polygon spolehlivě neořízne
-export const FOOT_MAX_TRIS_UNION = 40000 // nad tolik trojúhelníků je 2D union pomalý → fallback na konkávní obal
+const FOOT_MAX_PTS = 250       // strop bodů jednoho polygonu ořezu (cena ořezu v Cesiu roste s body)
 // objekty v modelu, které slouží JEN jako maska ořezu (podle názvu). Když nějaké jsou, obrys se
-// počítá z nich (každý zvlášť); jinak z celého modelu.
+// počítá z nich; jinak z celého modelu.
 export const MASK_NAME_RE = /maska|mask|clip|ořez|orez|výřez|vyrez|object006|object007/i
 
 /** Douglas–Peucker (iterativně, bez rekurze) na otevřenou lomenou čáru; krajní body zachová. */
@@ -83,19 +81,6 @@ export function concaveFootprint(pts: [number, number][]): [number, number][] | 
   let raw: number[][]
   try { raw = concaveman(uniq, FOOT_CONCAVITY, FOOT_MIN_INLET_M) } catch (e) { console.error('Konkávní obal selhal:', e); return null }
   return simplifyRingCapped(raw.map(([x, y]) => [x, y] as [number, number]))
-}
-
-/** Přesný obrys plochy = 2D union trojúhelníků (polygon-clipping). Vrací vnější prstence (díry zahodí,
- * Cesium clip je neumí), takže vhloubení/mezery mezi rameny zůstanou nevyříznuté (žádné černé díry). */
-export function unionOutlines(tris: [number, number][][]): [number, number][][] {
-  if (!tris.length) return []
-  const polys = tris.map(t => [[t[0], t[1], t[2], t[0]]] as [number, number][][])
-  let merged: [number, number][][][]
-  try { merged = polygonClipping.union(polys[0], ...polys.slice(1)) as unknown as [number, number][][][] }
-  catch (e) { console.error('Union masky selhal:', e); return [] }
-  const rings: [number, number][][] = []
-  for (const poly of merged) { const outer = poly[0]; if (outer && outer.length >= 4) rings.push(outer.map(([x, y]) => [x, y] as [number, number])) }
-  return rings
 }
 
 /** Test bod-v-polygonu (ray casting); ring = [[lon,lat], …]. */
