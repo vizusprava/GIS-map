@@ -718,6 +718,14 @@ async function main() {
     expect((await ev(`document.body.innerText`)).includes('Model usazen podle S-JTSK'), 'chybí hláška o usazení podle S-JTSK')
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
+    // vybraný (právě importovaný) model drží panel jako nástroj: jeho sekce a řez v barvě
+    // modelu, Scéna zůstane otevřená; po zrušení výběru (Esc) zvýraznění zmizí
+    const accented = id => ev(`!!document.querySelector('[data-sec="${id}"]')?.className.includes('border-sky-500')`)
+    await waitFor(`!!document.querySelector('[data-sec="model"]')`, 5_000, 'sekce Vybraný model')
+    expect(await accented('model') && await accented('rez'), 'sekce Vybraný model a Řez nejsou zvýrazněné')
+    expect(!(await accented('scena')) && await ev(`!!document.querySelector('[data-sec="scena"] [data-selected]')`), 'Scéna: zvýrazněný řádek modelu, sekce sama ne')
+    await press('Escape')
+    await waitFor(`!document.querySelector('[data-sec="model"]') && !document.querySelector('[data-sec].border-sky-500\\\\/70')`, 3_000, 'po Esc bez zvýraznění')
     // model s materiálem jako z V-Ray nesmí být černý: kamera kolmo nad model (po importu
     // se dívá šikmo a střed obrazovky může padnout na terén), měří se střed obrazovky.
     // Shora je vidět jen líc: model ze zrcadlených souřadnic (x = +Y) musí mít trojúhelníky obrácené.

@@ -11,11 +11,14 @@ const OPEN_KEY = 'geo.opensec'
 /** kontextové sekce, které se po objevení rozbalí a panel k nim sjede (viz `revealSection`) */
 export type RevealFlags = { parcely: boolean; dlazdice: boolean; uzemi: boolean; model: boolean; mestcast: boolean; rastr: boolean }
 
+/** na co se panel soustředí — viz `SectionFocus` (ui.tsx) */
+export type FocusTarget = { id: string; tool: ToolId; also?: readonly string[]; keep?: readonly string[] }
+
 export function usePanelSections(deps: {
   /** které kontextové sekce právě existují */
   reveal: RevealFlags
-  /** sekce zapnutého nástroje (null = žádný nástroj, nebo jeho sekce ještě není) */
-  focusTarget: { id: string; tool: ToolId } | null
+  /** sekce zapnutého nástroje / vybraného modelu (null = nic, nebo jeho sekce ještě není) */
+  focusTarget: FocusTarget | null
   /** nástroj se dá zapnout i se zavřeným panelem — nastavení má být vidět */
   openPanel: () => void
 }) {
@@ -66,9 +69,13 @@ export function usePanelSections(deps: {
    * Soustředění panelu na zapnutý nástroj: jeho sekce se rozbalí a obarví barvou nástroje
    * (`toolColors.ts`), ostatní se sbalí, ať je hned po ruce, co k nástroji patří. Začne, až
    * sekce existuje, a skončí vypnutím nástroje — panel se pak vrátí, jak byl (viz `SectionFocus`).
+   * Stejně se chová vybraný model (klik na model v mapě): drží ho, dokud je vybraný.
    */
   const focusId = focusTarget?.id ?? null
   const focusTool = focusTarget?.tool ?? null
+  // pole přicházejí každým renderem nová — porovnává se obsah
+  const alsoKey = focusTarget?.also?.join('\n') ?? ''
+  const keepKey = focusTarget?.keep?.join('\n') ?? ''
   useEffect(() => {
     setSecTouched(new Set())
     if (!focusId) return
@@ -76,8 +83,10 @@ export function usePanelSections(deps: {
     scrollTo(focusId)
   }, [focusId]) // eslint-disable-line react-hooks/exhaustive-deps
   const sectionFocus = useMemo<SectionFocus>(
-    () => (focusId && focusTool ? { id: focusId, tool: focusTool, touched: secTouched } : null),
-    [focusId, focusTool, secTouched],
+    () => (focusId && focusTool
+      ? { id: focusId, tool: focusTool, touched: secTouched, also: alsoKey ? alsoKey.split('\n') : [], keep: keepKey ? keepKey.split('\n') : [] }
+      : null),
+    [focusId, focusTool, secTouched, alsoKey, keepKey],
   )
 
   return { openSec, toggleSec, panelScrollRef, sectionFocus }

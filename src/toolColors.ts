@@ -15,7 +15,7 @@
  * poskládané (`bg-${barva}-600`) by ve výsledném CSS chyběly.
  */
 
-export type ToolId = 'parcel' | 'area' | 'tiles' | 'region' | 'ruler' | 'coords' | 'move'
+export type ToolId = 'parcel' | 'area' | 'tiles' | 'region' | 'ruler' | 'coords' | 'move' | 'model'
 
 /** Nástroj → barva. Tady se barvy mění. */
 export const TOOL_COLOR = {
@@ -26,6 +26,7 @@ export const TOOL_COLOR = {
   ruler: 'amber', //    Měření vzdálenosti a plochy — čáry a kóty, sekce Měření
   coords: 'blue', //    Souřadnice bodu — odečtené body, sekce Souřadnice
   move: 'sky', //       Posun modelu — sekce Vybraný model
+  model: 'sky', //      Vybraný model (klik na model) — jeho řádek ve Scéně, sekce Vybraný model a Řez
 } satisfies Record<ToolId, ColorName>
 
 type Swatch = {

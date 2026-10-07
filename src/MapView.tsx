@@ -23,7 +23,6 @@ import { CoordsPanel } from './coords'
 import { MapTools } from './mapTools'
 import { MapSearch } from './mapSearch'
 import { Section, SectionFocusContext } from './ui'
-import type { ToolId } from './toolColors'
 // jen okno výkresu — geometrie řezu i jeho obsluha žijí v `useSectionTool`
 import { SectionDrawing } from './viewer-core/SectionDrawing'
 import { useCesiumViewer } from './useCesiumViewer'
@@ -48,7 +47,7 @@ import { useExportRunner } from './useExportRunner'
 import { useExports } from './useExports'
 import { useFileStorage } from './useFileStorage'
 import { useSceneRestore } from './useSceneRestore'
-import { usePanelSections } from './usePanelSections'
+import { usePanelSections, type FocusTarget } from './usePanelSections'
 import { BasePanel } from './panels/BasePanel'
 import { RasterPanel } from './panels/RasterPanel'
 import { SelectionPanel } from './panels/SelectionPanel'
@@ -519,14 +518,17 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const hasRasters = rasterList.length > 0
 
   // Soustředění panelu na zapnutý nástroj (barva nástroje, sbalení ostatních) — viz usePanelSections.
-  const focusTarget: { id: string; tool: ToolId } | null =
+  // Bez nástroje drží panel vybraný model: jeho sekce i řez, Scéna zůstane (kliká se v ní na model).
+  const modelSecs = { also: ['rez'], keep: ['scena'] }
+  const focusTarget: FocusTarget | null =
     parcelMode ? (parcelCount > 0 ? { id: 'parcely', tool: 'parcel' } : null)
     : areaMode ? { id: 'vyber', tool: 'area' }
     : tileMode ? { id: tileCount > 0 ? 'dlazdice' : 'vyber', tool: 'tiles' }
     : region.regionMode ? (region.regionName ? { id: 'uzemi', tool: 'region' } : null)
     : rulerMode ? { id: 'mereni', tool: 'ruler' }
     : coordsMode ? { id: 'souradnice', tool: 'coords' }
-    : moveMode && placement ? { id: 'model', tool: 'move' }
+    : moveMode && placement ? { id: 'model', tool: 'move', ...modelSecs }
+    : placement && !guest ? { id: 'model', tool: 'model', ...modelSecs }
     : null
   const { openSec, toggleSec, panelScrollRef, sectionFocus } = usePanelSections({
     reveal: { parcely: hasParcels, dlazdice: hasTiles, uzemi: hasRegion, model: hasModelSel, mestcast: hasDistrict, rastr: hasRasters },

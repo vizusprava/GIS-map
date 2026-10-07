@@ -12,9 +12,14 @@ import { toolTheme, type ToolId } from './toolColors'
  * Sekce, kterou si bere právě zapnutý nástroj: je rozbalená a v barvě nástroje (`toolColors.ts`),
  * ostatní jsou sbalené. Je to jen pohled navrch — uložené rozbalení sekcí se tím nemění, takže po
  * vypnutí nástroje je panel přesně takový, jaký byl. Sekce, na kterou uživatel mezitím sám klikl
- * (`touched`), se řídí jeho volbou, ne nástrojem.
+ * (`touched`), se řídí jeho volbou, ne nástrojem. Stejně se panel soustředí na vybraný model.
+ * `also` = další sekce, které k tomu patří (rozbalené a obarvené jako hlavní), `keep` = sekce,
+ * které zůstanou, jak je má uživatel (Scéna — v ní se na model často kliká).
  */
-export type SectionFocus = { id: string; tool: ToolId; touched: ReadonlySet<string> } | null
+export type SectionFocus = {
+  id: string; tool: ToolId; touched: ReadonlySet<string>
+  also?: readonly string[]; keep?: readonly string[]
+} | null
 export const SectionFocusContext = createContext<SectionFocus>(null)
 
 export function NumRow({ label, value, min, max, step, unit, onChange }: {
@@ -56,8 +61,9 @@ export function Section({ id, title, dflt, badge, open, onToggle, children }: {
 }) {
   const focus = useContext(SectionFocusContext)
   const own = open[id] ?? dflt
-  const isOpen = !focus || focus.touched.has(id) ? own : id === focus.id
-  const accent = focus?.id === id ? toolTheme(focus.tool) : null
+  const inFocus = !!focus && (focus.id === id || !!focus.also?.includes(id))
+  const isOpen = !focus || focus.touched.has(id) || focus.keep?.includes(id) ? own : inFocus
+  const accent = inFocus ? toolTheme(focus.tool) : null
   return (
     <div data-sec={id} className={`rounded-xl border transition-colors ${accent ? accent.section : 'border-gray-700/70 bg-gray-800/30'}`}>
       <button

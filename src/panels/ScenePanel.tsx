@@ -11,6 +11,7 @@ import type { DrawingsTool } from '../useDrawings'
 import type { ModelsTool } from '../useModels'
 import { MODEL_LOOKS, objectColor } from '../modelLook'
 import { LayerList, type LayerWords } from './LayerList'
+import { toolTheme } from '../toolColors'
 
 export type ScenePanelUi = ReturnType<typeof useScenePanelUi>
 
@@ -139,8 +140,10 @@ export function ScenePanel({ ui, objects, selectedId, drawings, models, selectOb
         <div key={o.id} className="flex flex-col">
         <div
           onClick={() => o.kind === 'model' ? selectObject(o.id) : o.kind === 'drawing' ? locateObject(o) : selectObject(null)}
+          data-selected={selectedId === o.id || undefined}
           className={`group flex items-center gap-1.5 px-2 py-1 rounded-lg text-sm cursor-pointer ${
-            selectedId === o.id ? 'bg-emerald-600/25 text-emerald-100' : 'text-gray-300 hover:bg-gray-800'
+            // vybraný model v barvě modelu — stejné jako sekce Vybraný model (toolColors.ts)
+            selectedId === o.id ? toolTheme('model').soft : 'border border-transparent text-gray-300 hover:bg-gray-800'
           }`}
         >
           {subCount > 0 ? (
