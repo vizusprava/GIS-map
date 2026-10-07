@@ -326,18 +326,32 @@ async function main() {
     await sleep(300)
     const c1 = await ev(cam)
     await shot('pruvodce-posun')
-    await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'zaklady/zoom'`, 5_000, 'po posunu mapy samo na další krok')
+    // splněný úkol zůstane s odpočtem (samo dál až za 10 s), Další jde kliknout hned
+    await waitFor(`document.querySelector('[data-tour-task]')?.dataset.tourTask === 'hotovo'`, 3_000, 'splněný úkol posunu mapy')
       .catch(async e => { throw new Error(`${e.message}; kamera se posunula o ${Math.hypot(c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]).toFixed(0)} m, před tahem ${pre}, krok ${await bubble()}, úkol ${await task()}`) })
+    await sleep(1200)
+    expect(await bubble() === 'zaklady/posun' && /pokračuju za \d+ s/.test(await ev(`document.querySelector('[data-tour-task]').innerText`)), `po splnění hned dál, nebo bez odpočtu: ${await bubble()}`)
+    // nic neztmavuje obrazovku: v překryvu je jen bublina (a případně rámeček)
+    expect(!(await ev(`!!document.querySelector('[data-tour-overlay] > :not([data-tour-bubble]):not([data-tour-ring])')`)), 'průvodce ztmavuje obrazovku')
+    await ev(`document.querySelector('[data-tour-next]').click()`)
+    await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'zaklady/zoom'`, 2_000, 'Další po splněném úkolu')
     // přehled kapitol → poslední kapitola → zvýraznění sedí na skupině lišty
     await ev(`[...document.querySelectorAll('[data-tour-bubble] button')].find(b => b.innerText.includes('Kapitoly')).click()`)
     await waitFor(`!!document.querySelector('[data-tour-chapter="pohledy"]')`, 2_000, 'přehled kapitol')
     await ev(`document.querySelector('[data-tour-chapter="pohledy"]').click()`)
     await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'pohledy/kamera'`, 3_000, 'kapitola Pohledy')
-    // bublina nesmí zakrýt zvýrazněnou skupinu lišty
-    const overlap = await ev(`(() => { const a = document.querySelector('[data-tour-bubble]').getBoundingClientRect(), b = document.querySelector('[data-tour="lista-kamera"]').getBoundingClientRect()
+    await sleep(500)
+    // bublina u lišty patří nahoru (nabídky lišty se otvírají nahoru) a nesmí zakrýt skupinu ani otevřený panel
+    const hits = sel => ev(`(() => { const a = document.querySelector('[data-tour-bubble]').getBoundingClientRect(), e = document.querySelector('${sel}'); if (!e) return null; const b = e.getBoundingClientRect()
       return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom })()`)
-    expect(!overlap, 'bublina průvodce zakrývá zvýrazněné místo')
+    expect(await hits('[data-tour="lista-kamera"]') === false, 'bublina průvodce zakrývá zvýrazněné místo')
+    expect(await ev(`document.querySelector('[data-tour-bubble]').getBoundingClientRect().top < 140`), 'bublina u lišty není nahoře')
+    await ev(`document.querySelector('[data-tour="lista-kamera"] button').click()`)
+    await waitFor(`!!document.querySelector('[data-panel="kamera"]')`, 2_000, 'otevřený panel Kamera')
+    await sleep(400)
+    expect(await hits('[data-panel="kamera"]') === false, 'bublina zakrývá otevřený panel Kamera')
     await shot('pruvodce')
+    await press('Escape') // zavřít panel Kamera
     // ukončit křížkem → zmizí a pamatuje si to
     await ev(`document.querySelector('[data-tour-quit]').click()`)
     await waitFor(`!document.querySelector('[data-tour-bubble]')`, 2_000, 'zavřený průvodce')

@@ -1,14 +1,15 @@
 /**
- * Průvodce v mapě: ztmaví obrazovku kromě místa, o kterém je řeč, a vedle něj ukáže bublinu
- * s vysvětlením. Obsah je v `steps.tsx`, stav (zapnuto, kde uživatel skončil) v `tourStore`.
+ * Průvodce v mapě: orámuje místo, o kterém je řeč, a vedle něj ukáže bublinu s vysvětlením.
+ * Obsah je v `steps.tsx`, stav (zapnuto, kde uživatel skončil) v `tourStore`.
  *
- * Ztmavení nechytá myš — mapou jde hýbat a nástroje zkoušet, i když se zrovna na něco ukazuje
- * (úkoly „zkus to" bez toho ani nejdou). Klikatelná je jen bublina.
+ * Obrazovka se neztmavuje a nic kromě bubliny nechytá myš — mapou jde hýbat a nástroje
+ * zkoušet, i když se zrovna na něco ukazuje (úkoly „zkus to" bez toho ani nejdou). Bublina
+ * se vyhýbá otevřeným nabídkám lišty, ať nezakryje, co si uživatel právě rozbalil.
  *
  * Úkol kroku se hlídá dotazem každou čtvrtvteřinu (`task.done`), ne událostmi — ty by musely
- * protéct z půlky appky, a čtvrt vteřiny zpoždění u „Výborně!" nikomu nevadí. Poloha
- * zvýrazněného místa se měří desetkrát za vteřinu (panel se rozbalí, lišta se přeskládá…),
- * jen dokud je průvodce zapnutý.
+ * protéct z půlky appky. Splněný úkol zůstane `DONE_WAIT_S` vteřin (Další jde hned), pak
+ * průvodce pokračuje sám. Poloha zvýrazněného místa a překážek se měří desetkrát za vteřinu
+ * (panel se rozbalí, nabídka otevře…), jen dokud je průvodce zapnutý.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, Compass, ListChecks, X } from 'lucide-react'
@@ -20,6 +21,10 @@ type Rect = { top: number; left: number; width: number; height: number }
 type View = 'step' | 'done' | 'menu' | 'finale'
 
 const GAP = 12, EDGE = 12, PAD = 6
+/** jak dlouho zůstane splněný úkol, než průvodce sám pokračuje */
+const DONE_WAIT_S = 10
+/** horní okraj bubliny „nahoře" — pod lištou hledání */
+const TOP_Y = 72
 
 export function TourOverlay({ ctx }: { ctx: TourCtx }) {
   const on = useTourStore(s => s.prefs.on)
@@ -82,14 +87,14 @@ function Tour({ ctx }: { ctx: TourCtx }) {
   const [task, setTask] = useState(false)
   const [success, setSuccess] = useState(false)
   useEffect(() => {
-    if (view !== 'step' || !step) return
+    setSuccess(false)
+    if (view !== 'step' || !step) { setTask(false); return }
     const c = ctxRef.current
     step.before?.(c)
     const s = snapOf(c)
     if (!chapterStart.current.has(chapter.id)) chapterStart.current.set(chapter.id, s)
     setSnap(s)
     setTask(!!step.task && !step.task.done(c, s))
-    setSuccess(false)
   }, [stepKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── úkol: hlídá se, dokud ho uživatel nesplní; pak „Výborně!" a samo dál ──
@@ -98,31 +103,46 @@ function Tour({ ctx }: { ctx: TourCtx }) {
     const t = setInterval(() => { if (step.task!.done(ctxRef.current, snap)) setSuccess(true) }, 250)
     return () => clearInterval(t)
   }, [task, success, snap, stepKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  // splněný úkol chvíli zůstane (ať si uživatel přečte, co udělal), Další jde kliknout hned
+  const [left, setLeft] = useState(0)
   useEffect(() => {
     if (!success) return
-    const t = setTimeout(next, 1100)
-    return () => clearTimeout(t)
-  }, [success]) // eslint-disable-line react-hooks/exhaustive-deps
+    setLeft(DONE_WAIT_S)
+    const t = setInterval(() => setLeft(l => l - 1), 1000)
+    return () => clearInterval(t)
+  }, [success])
+  useEffect(() => { if (success && left === 0) next() }, [left]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── poloha zvýrazněného místa ──
   const target = view === 'step' ? step?.target : undefined
   const [rect, setRect] = useState<Rect | null>(null)
   const [mapLeft, setMapLeft] = useState(0)
+  /** co bublina nesmí zakrýt: otevřené nabídky a panely lišty, nápověda nad lištou */
+  const [obstacles, setObstacles] = useState<Rect[]>([])
+  /** zvýrazněné místo je v liště dole — jeho nabídky se otvírají nahoru, bublina patří nahoru */
+  const [inBar, setInBar] = useState(false)
   // změřit hned před vykreslením nového kroku — jinak bublina na snímek skočí doprostřed
   // obrazovky (bez místa) a teprve pak odjede, kam patří
   useLayoutEffect(() => {
-    if (!target) { setRect(null); return }
     let scrolled = false
     const measure = () => {
       const panel = document.querySelector('[data-tour="panel"]')?.getBoundingClientRect()
       setMapLeft(l => { const v = panel && panel.right > 1 ? panel.right : 0; return Math.abs(v - l) > 1 ? v : l })
-      const el = document.querySelector(target)
+      const bar = document.querySelector('[data-tour="lista"]')
+      const obs: Rect[] = []
+      if (bar) {
+        for (const m of bar.querySelectorAll('[role="menu"], [role="dialog"]')) obs.push(rectOf(m))
+        for (const sib of bar.parentElement?.children ?? []) if (sib !== bar) obs.push(rectOf(sib))
+      }
+      const seen = obs.filter(r => r.width > 0 && r.height > 0)
+      setObstacles(o => (sameRects(o, seen) ? o : seen))
+      const el = target ? document.querySelector(target) : null
       const r = el?.getBoundingClientRect()
       if (!el || !r || r.width < 1 || r.height < 1) { setRect(null); return }
+      setInBar(!!bar && bar.contains(el))
       // místo v panelu může být odscrollované — jednou ho přisunout do pohledu
       if (!scrolled) { scrolled = true; el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }) }
-      setRect(o => (o && Math.abs(o.top - r.top) < 0.5 && Math.abs(o.left - r.left) < 0.5 && Math.abs(o.width - r.width) < 0.5 && Math.abs(o.height - r.height) < 0.5
-        ? o : { top: r.top, left: r.left, width: r.width, height: r.height }))
+      setRect(o => (o && sameRects([o], [r]) ? o : { top: r.top, left: r.left, width: r.width, height: r.height }))
     }
     measure()
     const t = setInterval(measure, 100)
@@ -140,23 +160,27 @@ function Tour({ ctx }: { ctx: TourCtx }) {
   })
   const vw = window.innerWidth, vh = window.innerHeight
   const big = !!rect && rect.width * rect.height > 0.45 * vw * vh
-  const place = useMemo(() => bubblePlace(rect, big, size, vw, vh, mapLeft), [rect, big, size, vw, vh, mapLeft])
+  const place = useMemo(
+    () => bubblePlace({ rect, big, size, vw, vh, mapLeft, obstacles, inBar }),
+    [rect, big, size, vw, vh, mapLeft, obstacles, inBar],
+  )
 
   const stepNo = pos >= 0 ? steps.indexOf(pos) + 1 : 0
   const actions = step?.actions?.(ctx, chapterStart.current.get(chapter.id) ?? null)
 
   return (
     <div className="pointer-events-none fixed inset-0 z-[60]" data-tour-overlay>
-      {/* ztmavení: díra kolem zvýrazněného místa, jinak celé (bublina uprostřed); velké místo
-          (mapa) se neztmavuje — ztmavit by nebylo co */}
-      {rect && !big ? (
+      {/* zvýraznění: jen rámeček kolem místa, obrazovka se neztmavuje (mapa i nabídky musí
+          být vidět, uživatel v nich zrovna něco zkouší); velké místo (mapa) bez rámečku */}
+      {rect && !big && (
         <div
-          className="absolute rounded-xl ring-2 ring-sky-400/90 transition-all duration-300"
-          style={{ top: rect.top - PAD, left: rect.left - PAD, width: rect.width + 2 * PAD, height: rect.height + 2 * PAD, boxShadow: '0 0 0 9999px rgba(3, 7, 18, 0.55)' }}
-        />
-      ) : !rect && (view !== 'step' || !target) ? (
-        <div className="absolute inset-0 bg-gray-950/45" />
-      ) : null}
+          data-tour-ring
+          className="absolute rounded-xl ring-2 ring-sky-400 transition-all duration-300"
+          style={{ top: rect.top - PAD, left: rect.left - PAD, width: rect.width + 2 * PAD, height: rect.height + 2 * PAD, boxShadow: '0 0 0 4px rgba(56, 189, 248, 0.25), 0 0 18px rgba(56, 189, 248, 0.45)' }}
+        >
+          <div className="absolute inset-0 animate-pulse rounded-xl ring-2 ring-sky-300/60" />
+        </div>
+      )}
 
       <div
         ref={bubbleRef}
@@ -183,7 +207,7 @@ function Tour({ ctx }: { ctx: TourCtx }) {
           {task && step.task && (
             <div className={`mt-2 flex items-center gap-2 rounded-lg border px-2 py-1.5 text-xs transition-colors ${success ? 'border-emerald-500/60 bg-emerald-900/30 text-emerald-200' : 'border-sky-500/40 bg-sky-950/40 text-sky-100'}`} data-tour-task={success ? 'hotovo' : 'ceka'}>
               {success
-                ? <><Check size={14} className="shrink-0" /> Výborně!</>
+                ? <><Check size={14} className="shrink-0" /> <span>Výborně! Dál pokračuju za {Math.max(0, left)} s — nebo klikni na Další.</span></>
                 : <><span className="relative flex size-2 shrink-0"><span className="absolute inline-flex size-full animate-ping rounded-full bg-sky-400 opacity-75" /><span className="relative inline-flex size-2 rounded-full bg-sky-400" /></span> Zkus to: {step.task.label}</>}
             </div>
           )}
@@ -244,29 +268,56 @@ function Tour({ ctx }: { ctx: TourCtx }) {
   )
 }
 
+type Pos = { top: number; left: number }
+
+const rectOf = (el: Element): Rect => { const r = el.getBoundingClientRect(); return { top: r.top, left: r.left, width: r.width, height: r.height } }
+const sameRects = (a: Rect[], b: Rect[]) => a.length === b.length && a.every((r, i) =>
+  Math.abs(r.top - b[i].top) < 0.5 && Math.abs(r.left - b[i].left) < 0.5 && Math.abs(r.width - b[i].width) < 0.5 && Math.abs(r.height - b[i].height) < 0.5)
+const overlap = (a: Rect, b: Rect) =>
+  Math.max(0, Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)) *
+  Math.max(0, Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top))
+
 /**
- * Kam s bublinou: u velkého místa (mapa) nahoru doprostřed viditelné mapy, jinak na stranu,
- * kde se vejde — pod, nad, vpravo, vlevo (u míst při levém okraji, tedy v panelu, nejdřív
- * vpravo). Nevejde-li se nikam, na stranu s nejvíc místem a přitlačit k okraji okna.
+ * Kam s bublinou. Kandidáti se zkoušejí popořadě a vyhraje první, který nezakryje zvýrazněné
+ * místo ani překážky (otevřené nabídky a panely lišty, nápověda nad lištou); když se nevejde
+ * nikdo, ten s nejmenším překryvem.
+ *
+ * - velké místo (mapa): nahoře uprostřed viditelné mapy, pod hledáním,
+ * - místo v liště dole: nejdřív nahoru pod hledání — nabídky lišty se otvírají nahoru a bublina
+ *   těsně nad lištou by je zakryla, sotva by je uživatel rozbalil,
+ * - jinak vedle místa: pod, nad, vlevo, vpravo (u míst v panelu vlevo nejdřív vpravo).
  */
-function bubblePlace(rect: Rect | null, big: boolean, size: { w: number; h: number }, vw: number, vh: number, mapLeft: number): React.CSSProperties {
+function bubblePlace(o: {
+  rect: Rect | null; big: boolean; size: { w: number; h: number }; vw: number; vh: number
+  mapLeft: number; obstacles: Rect[]; inBar: boolean
+}): Pos {
+  const { rect, big, size, vw, vh, mapLeft, obstacles, inBar } = o
   const clampX = (x: number) => Math.max(EDGE, Math.min(vw - size.w - EDGE, x))
   const clampY = (y: number) => Math.max(EDGE, Math.min(vh - size.h - EDGE, y))
-  if (!rect) return { top: clampY((vh - size.h) / 2), left: clampX(mapLeft + (vw - mapLeft - size.w) / 2) }
-  if (big) {
-    const l = Math.max(rect.left, mapLeft), r = rect.left + rect.width
-    return { top: clampY(rect.top + 72), left: clampX(l + (r - l - size.w) / 2) }
+  const mapCenterX = clampX(mapLeft + (vw - mapLeft - size.w) / 2)
+  if (!rect) return { top: clampY((vh - size.h) / 2), left: mapCenterX }
+
+  const t: Rect = { top: rect.top - PAD, left: rect.left - PAD, width: rect.width + 2 * PAD, height: rect.height + 2 * PAD }
+  const blockers = big ? obstacles : [t, ...obstacles]
+  const cx = clampX(rect.left + rect.width / 2 - size.w / 2), cy = clampY(rect.top + rect.height / 2 - size.h / 2)
+  const top: Pos = { top: TOP_Y, left: big ? clampX(Math.max(rect.left, mapLeft) + (rect.left + rect.width - Math.max(rect.left, mapLeft) - size.w) / 2) : cx }
+  const topMap: Pos = { top: TOP_Y, left: mapCenterX }
+  const below: Pos = { top: t.top + t.height + GAP, left: cx }
+  const above: Pos = { top: t.top - GAP - size.h, left: cx }
+  const right: Pos = { top: cy, left: t.left + t.width + GAP }
+  const left: Pos = { top: cy, left: t.left - GAP - size.w }
+
+  const order = big ? [top, topMap, below]
+    : inBar ? [top, topMap, left, right, above]
+    : rect.left + rect.width < 420 ? [right, below, above, left, topMap]
+    : [below, above, left, right, topMap]
+  let best: Pos = order[0], bestCost = Infinity
+  for (const p of order) {
+    const at = { top: clampY(p.top), left: clampX(p.left) }
+    const b = { ...at, width: size.w, height: size.h }
+    const cost = blockers.reduce((s, x) => s + overlap(b, x), 0)
+    if (cost === 0) return at
+    if (cost < bestCost) { bestCost = cost; best = at }
   }
-  const r = { top: rect.top - PAD, left: rect.left - PAD, bottom: rect.top + rect.height + PAD, right: rect.left + rect.width + PAD }
-  const cx = rect.left + rect.width / 2 - size.w / 2, cy = rect.top + rect.height / 2 - size.h / 2
-  const sides = {
-    below: { fits: vh - r.bottom >= size.h + GAP + EDGE, room: vh - r.bottom, at: { top: r.bottom + GAP, left: clampX(cx) } },
-    above: { fits: r.top >= size.h + GAP + EDGE, room: r.top, at: { top: r.top - GAP - size.h, left: clampX(cx) } },
-    right: { fits: vw - r.right >= size.w + GAP + EDGE, room: vw - r.right, at: { top: clampY(cy), left: r.right + GAP } },
-    left: { fits: r.left >= size.w + GAP + EDGE, room: r.left, at: { top: clampY(cy), left: r.left - GAP - size.w } },
-  }
-  const order: (keyof typeof sides)[] = rect.left + rect.width < 420 ? ['right', 'below', 'above', 'left'] : ['below', 'above', 'left', 'right']
-  const pick = order.find(k => sides[k].fits) ?? order.reduce((a, b) => (sides[b].room > sides[a].room ? b : a))
-  const at = sides[pick].at
-  return { top: clampY(at.top), left: clampX(at.left) }
+  return best
 }
