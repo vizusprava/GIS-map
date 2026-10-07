@@ -16,7 +16,7 @@ import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.j
 import { wgsOf } from './tiles'
 import { geoidN } from './geoid'
 import { FOOT_MAX_TRIS_UNION, MASK_NAME_RE, FootprintGrid, concaveFootprint, simplifyRingCapped, unionOutlines } from './rings'
-import { simplifyGltfMaterials } from './gltfMaterials'
+import { listModelObjects, simplifyGltfMaterials, type ModelObject } from './gltfMaterials'
 import type { Anchor } from './types'
 
 // three loader jen pro změření modelu (nejnižší bod) — Cesium si model vykresluje sám
@@ -117,6 +117,8 @@ export type PreparedModel = {
   bottomZ: number | null
   /** model usazený podle S-JTSK z geometrie: kotva a obrys(y) půdorysu ve světě (ECEF) */
   geo: { anchor: Anchor; footprint: V3[][] | null } | null
+  /** objekty modelu (uzly s meshem) pro seznam v panelu — z hotového GLB */
+  objects: ModelObject[]
 }
 
 const parseGltf = (buf: ArrayBuffer) => new Promise<THREE.Object3D>((res, rej) => {
@@ -127,6 +129,22 @@ const exportGlb = (obj: THREE.Object3D) =>
 const bottomOf = (obj: THREE.Object3D) => {
   const box = new THREE.Box3().setFromObject(obj)
   return Number.isFinite(box.min.y) ? box.min.y : null
+}
+/** Obrátí pořadí vrcholů trojúhelníků (líc ↔ rub). Sdílený index (`done`) jen jednou. */
+function flipWinding(g: THREE.BufferGeometry, done: Set<THREE.BufferAttribute>) {
+  const idx = g.index
+  if (!idx) {
+    // bez indexu: nový index v obráceném pořadí — sdílené atributy (UV, barvy) zůstanou nedotčené
+    const n = g.attributes.position.count - (g.attributes.position.count % 3)
+    const a = n > 65535 ? new Uint32Array(n) : new Uint16Array(n)
+    for (let t = 0; t < n; t += 3) { a[t] = t; a[t + 1] = t + 2; a[t + 2] = t + 1 }
+    g.setIndex(new THREE.BufferAttribute(a, 1))
+    return
+  }
+  if (done.has(idx)) return
+  done.add(idx)
+  for (let t = 0; t + 2 < idx.count; t += 3) { const b = idx.getX(t + 1); idx.setX(t + 1, idx.getX(t + 2)); idx.setX(t + 2, b) }
+  idx.needsUpdate = true
 }
 
 /** Co s modelem udělat: zkusit georeferenci z S-JTSK, změřit nejnižší bod (obojí potřebuje three). */
@@ -146,6 +164,11 @@ export type PrepareOpts = { georef: boolean; measure: boolean; strict?: boolean 
  * Se `strict` (ve workeru) je to chyba: klient to pak zkusí ještě na hlavním vlákně, kde three umí víc.
  */
 export async function prepareModel(name: string, buf: ArrayBuffer, opts: PrepareOpts): Promise<PreparedModel> {
+  const r = await prepareGlb(name, buf, opts)
+  return { ...r, objects: r.glb ? listModelObjects(r.glb) : [] }
+}
+
+async function prepareGlb(name: string, buf: ArrayBuffer, opts: PrepareOpts): Promise<Omit<PreparedModel, 'objects'>> {
   if (/\.obj$/i.test(name)) {
     const group = new OBJLoader().parse(new TextDecoder().decode(buf))
     group.traverse(o => {
@@ -181,7 +204,7 @@ export async function prepareModel(name: string, buf: ArrayBuffer, opts: Prepare
  * Osy/znaménko se detekují z dat: výška = osa s nejmenší velikostí, horizontály dle velikosti (v ČR |Y|>|X|),
  * proj4 chce záporné hodnoty.
  */
-async function georeferenceScene(scene: THREE.Object3D): Promise<PreparedModel | null> {
+async function georeferenceScene(scene: THREE.Object3D): Promise<Omit<PreparedModel, 'objects'> | null> {
   const box = new THREE.Box3().setFromObject(scene)
   if (box.isEmpty()) return null
   const c = box.getCenter(new THREE.Vector3())
@@ -204,6 +227,27 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<PreparedModel |
   const geoid = geoidN(aLon, aLat)
   const anchor: Anchor = { lon: aLon, lat: aLat, h: comp(c, upAxis) + geoid }
   const { o: O, east: E, north: N, up: U } = enuFrame(ecefOf(anchor.lon, anchor.lat, anchor.h))
+  /** Bod ve světových souřadnicích modelu → (east, north, up) v ENU kolem kotvy. */
+  const toEnu = (v: THREE.Vector3): V3 => {
+    const [sx, sy, up] = toSjtsk(v)
+    const [lon, lat] = wgsOf(sx, sy)
+    const p = ecefOf(lon, lat, up + geoid)
+    const dx = p[0] - O[0], dy = p[1] - O[1], dz = p[2] - O[2]
+    return [E[0] * dx + E[1] * dy + E[2] * dz, N[0] * dx + N[1] * dy + N[2] * dz, U[0] * dx + U[1] * dy + U[2] * dz]
+  }
+  // Osy a znaménka jsou z dat, takže převod může model zrcadlit (např. x = +Y místo −Y).
+  // Vrcholy pak sednou správně, ale trojúhelníky se otočí rubem nahoru: Cesium je zezadu
+  // nekreslí (shora model zmizí) a normály míří dovnitř. Zrcadlení = záporný determinant
+  // převodu do glTF (E, U, −N) → u takového modelu se obrátí pořadí vrcholů trojúhelníků.
+  const mirrored = (() => {
+    const o = toEnu(c)
+    const [a, b, d] = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)].map(e => {
+      const [oe, on, ou] = toEnu(e.add(c))
+      return [oe - o[0], ou - o[2], o[1] - on]
+    })
+    return a[0] * (b[1] * d[2] - b[2] * d[1]) - a[1] * (b[0] * d[2] - b[2] * d[0]) + a[2] * (b[0] * d[1] - b[1] * d[0]) < 0
+  })()
+  const flipped = new Set<THREE.BufferAttribute>()
   const vw = new THREE.Vector3()
   let minU = Infinity
   // Obrys celého modelu: body jdou rovnou do mřížky obrysu. Dřív se sbíralo pole všech
@@ -231,14 +275,7 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<PreparedModel |
     const meshEN: [number, number][] = isMask ? new Array(pos.count) : [] // ENU vrcholy jen u masky (pro trojúhelníky)
     for (let i = 0; i < pos.count; i++) {
       vw.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(wm) // do světových souřadnic (respektuj hierarchii)
-      const [sx, sy, up] = toSjtsk(vw)
-      const [lon, lat] = wgsOf(sx, sy)
-      const p = ecefOf(lon, lat, up + geoid)
-      const dx = p[0] - O[0], dy = p[1] - O[1], dz = p[2] - O[2]
-      // (east, north, up) v ENU kolem kotvy
-      const oe = E[0] * dx + E[1] * dy + E[2] * dz
-      const on = N[0] * dx + N[1] * dy + N[2] * dz
-      const ou = U[0] * dx + U[1] * dy + U[2] * dz
+      const [oe, on, ou] = toEnu(vw)
       pos.setXYZ(i, oe, ou, -on)                // gltf (E, U, -N) — stejné jako buildExportScene
       if (ou < minU) minU = ou
       grid.add(oe, on)
@@ -251,6 +288,7 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<PreparedModel |
       else { for (let t = 0; t + 2 < meshEN.length; t += 3) tris.push([meshEN[t], meshEN[t + 1], meshEN[t + 2]]) }
     }
     pos.needsUpdate = true
+    if (mirrored) flipWinding(g, flipped)
     g.computeVertexNormals()
     g.computeBoundingSphere()
   }

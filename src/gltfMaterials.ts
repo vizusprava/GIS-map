@@ -26,10 +26,21 @@ type Primitive = { attributes?: Record<string, number>; material?: number; [k: s
 type GltfJson = {
   materials?: Material[]
   meshes?: { primitives?: Primitive[] }[]
+  nodes?: { name?: string; mesh?: number; children?: number[]; extras?: unknown; [k: string]: unknown }[]
   extensionsUsed?: string[]
   extensionsRequired?: string[]
   [k: string]: unknown
 }
+
+/**
+ * Značka objektu v materiálu: id objektu (od 1) zakódované do červené složky emisní barvy
+ * (`id / 2^24` — tak malé, že bez shaderu nic nesvítí, a ve float32 přesné). Shader vzhledu
+ * „Barvy objektů" (modelLook.ts) z ní pozná, ke kterému objektu pixel patří.
+ */
+export const OBJECT_TAG_SCALE = 16777216
+
+/** Objekt modelu pro seznam v panelu: jméno uzlu (jedinečné) a id objektu (značka a barva). */
+export type ModelObject = { name: string; id: number }
 
 const GLB_MAGIC = 0x46546c67 // 'glTF'
 const CHUNK_JSON = 0x4e4f534a
@@ -130,17 +141,110 @@ function fixMaxTextureOrigin(json: GltfJson) {
   }
 }
 
+/** jméno, které nedal člověk: prázdné, nebo části meshe, kterou three.js pojmenoval sám (mesh_3, mesh_3_1) */
+const isAutoName = (name?: string) => !name?.trim() || /^mesh_\d+(_\d+)*$/.test(name)
+
+/**
+ * Objekty modelu = objekty z Maxu. Každý uzel s meshem patří k nejbližšímu pojmenovanému
+ * předkovi (nebo sobě): three.js při georeferenci rozloží objekt s víc materiály na skupinu
+ * s částmi „mesh_0", „mesh_0_1" — objektem je pak ta skupina (skrytím uzlu se skryjí i jeho
+ * potomci). Jména se vrátí z `extras.name` (three v názvu uzlu mění mezery na podtržítka)
+ * a u všech uzlů se udělají jedinečná — Cesium hledá uzly podle jména.
+ * Vrací objekty (pořadí podle prvního výskytu) a ke každému meshi id jeho objektu.
+ */
+function resolveObjects(json: GltfJson) {
+  const nodes = json.nodes ?? []
+  for (const n of nodes) {
+    const orig = (n.extras as { name?: unknown } | undefined)?.name
+    if (typeof orig === 'string' && orig.trim()) n.name = orig
+  }
+  const parent = new Map<number, number>()
+  nodes.forEach((n, i) => { for (const c of (n.children as number[] | undefined) ?? []) parent.set(c, i) })
+  // jedinečná jména u všech pojmenovaných uzlů (první si jméno nechá)
+  const seen = new Map<string, number>()
+  nodes.forEach(n => {
+    if (isAutoName(n.name)) return
+    const base = n.name!.trim()
+    const k = seen.get(base) ?? 0
+    seen.set(base, k + 1)
+    n.name = k ? `${base} (${k + 1})` : base
+  })
+  const objects: { node: number; name: string; id: number }[] = []
+  const byNode = new Map<number, number>() // uzel objektu → id
+  const meshObject = new Map<number, number>() // mesh → id objektu (instance: první)
+  nodes.forEach((n, i) => {
+    if (n.mesh === undefined) return
+    let o = i
+    while (isAutoName(nodes[o].name) && parent.has(o)) o = parent.get(o)!
+    if (isAutoName(nodes[o].name)) { o = i; nodes[i].name = `objekt ${i + 1}` }
+    let id = byNode.get(o)
+    if (id === undefined) { id = objects.length + 1; byNode.set(o, id); objects.push({ node: o, name: nodes[o].name!, id }) }
+    if (!meshObject.has(n.mesh)) meshObject.set(n.mesh, id)
+  })
+  return { objects, meshObject }
+}
+
+/**
+ * Značky objektů v materiálech (barvy objektů, viz `OBJECT_TAG_SCALE`): materiály se rozdělí
+ * po objektech — sdílený víc objekty se zkopíruje, část bez materiálu dostane výchozí.
+ */
+function tagObjects(json: GltfJson) {
+  const { meshObject } = resolveObjects(json)
+  const mats = (json.materials ??= [])
+  const owner = new Map<number, number>() // materiál → objekt, který ho dostal jako první
+  const copies = new Map<string, number>() // „materiál:objekt" → kopie pro další objekt
+  const plain = new Map<number, number>() // objekt → výchozí materiál pro části bez materiálu
+  const tag = (id: number) => [id / OBJECT_TAG_SCALE, 0, 0]
+  ;(json.meshes ?? []).forEach((mesh, mi) => {
+    const id = meshObject.get(mi) ?? 0
+    for (const p of mesh.primitives ?? []) {
+      if (p.material === undefined) {
+        let d = plain.get(id)
+        if (d === undefined) {
+          d = mats.length
+          mats.push({ name: 'výchozí', pbrMetallicRoughness: { baseColorFactor: [0.8, 0.8, 0.8, 1], metallicFactor: 0, roughnessFactor: 1 }, emissiveFactor: tag(id) })
+          plain.set(id, d)
+        }
+        p.material = d
+        continue
+      }
+      const m = p.material
+      const first = owner.get(m)
+      if (first === undefined) { owner.set(m, id); mats[m].emissiveFactor = tag(id); continue }
+      if (first === id) continue
+      let c = copies.get(`${m}:${id}`)
+      if (c === undefined) {
+        c = mats.length
+        mats.push({ ...mats[m], emissiveFactor: tag(id) })
+        copies.set(`${m}:${id}`, c)
+      }
+      p.material = c
+    }
+  })
+}
+
+/** Objekty modelu z GLB/glTF po `simplifyGltfMaterials`: jméno uzlu (jedinečné) a id (barva). */
+export function listModelObjects(buf: ArrayBuffer): ModelObject[] {
+  const json = readJson(buf)
+  if (!json) return []
+  return resolveObjects(json).objects.map(({ name, id }) => ({ name, id }))
+}
+
 /** Upraví JSON glTF na místě; vrátí, jestli se něco změnilo. */
 function simplifyJson(json: GltfJson): boolean {
-  if (!json.materials?.length) return false
-  fixMaxTextureOrigin(json)
-  // původní barvy (před vybělením u textur) — pro části bez UV, které texturu mít nemůžou
-  const origColors = json.materials.map(m =>
-    m.pbrMetallicRoughness?.baseColorFactor ?? m.extensions?.KHR_materials_pbrSpecularGlossiness?.diffuseFactor)
-  json.materials = json.materials.map(simplifyMaterial)
-  fixMissingUv(json, origColors)
+  const hasMats = !!json.materials?.length
+  if (!hasMats && !json.meshes?.length) return false
+  if (hasMats) {
+    fixMaxTextureOrigin(json)
+    // původní barvy (před vybělením u textur) — pro části bez UV, které texturu mít nemůžou
+    const origColors = json.materials!.map(m =>
+      m.pbrMetallicRoughness?.baseColorFactor ?? m.extensions?.KHR_materials_pbrSpecularGlossiness?.diffuseFactor)
+    json.materials = json.materials!.map(simplifyMaterial)
+    fixMissingUv(json, origColors)
+  }
+  tagObjects(json)
   // zahozená rozšíření pryč i ze seznamů — „povinné" neznámé rozšíření by Cesium odmítlo
-  const stillUnlit = json.materials.some(m => m.extensions?.KHR_materials_unlit)
+  const stillUnlit = json.materials!.some(m => m.extensions?.KHR_materials_unlit)
   const keep = (e: string) => !isMaterialExt(e) && (e !== 'KHR_materials_unlit' || stillUnlit)
   if (json.extensionsUsed) json.extensionsUsed = json.extensionsUsed.filter(keep)
   if (json.extensionsRequired) json.extensionsRequired = json.extensionsRequired.filter(keep)
@@ -153,6 +257,20 @@ function simplifyJson(json: GltfJson): boolean {
  * GLB nebo glTF (JSON) → totéž se zjednodušenými materiály. Co není glTF, nebo nemá materiály,
  * vrátí beze změny (stejný buffer).
  */
+/** JSON část GLB nebo glTF jako textu; null = není to glTF. */
+function readJson(buf: ArrayBuffer): GltfJson | null {
+  try {
+    const dv = new DataView(buf)
+    if (dv.byteLength >= 20 && dv.getUint32(0, true) === GLB_MAGIC) {
+      const jsonLen = dv.getUint32(12, true)
+      if (dv.getUint32(16, true) !== CHUNK_JSON || 20 + jsonLen > dv.byteLength) return null
+      return JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 20, jsonLen)))
+    }
+    const text = new TextDecoder().decode(buf).trimStart().replace(/^﻿/, '')
+    return text.startsWith('{') ? JSON.parse(text) : null
+  } catch { return null }
+}
+
 export function simplifyGltfMaterials(buf: ArrayBuffer): ArrayBuffer {
   const dv = new DataView(buf)
   if (dv.byteLength >= 20 && dv.getUint32(0, true) === GLB_MAGIC) {

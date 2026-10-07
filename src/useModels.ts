@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { MAX_GLB_YAW_DEG, MODEL_GLOW } from './config'
 import { pickTerrain, viewCenterGround, buildMatrix } from './sceneUtils'
 import { prepareModelFile } from './modelClient'
+import { MODEL_LOOKS, applyModelLook, type ModelLook } from './modelLook'
 import type { PreparedModel } from './model3d'
 import { parseAnchor } from './exportUtils'
 import type { Anchor, MapClickOwner, ModelEntry, Placement, SceneObj } from './types'
@@ -92,6 +93,8 @@ export function useModels(deps: {
       visible: e.visible,
       excavate: !!e.excavate,
       outline: !!e.outline,
+      look: e.look,
+      hiddenObjects: e.objects.filter(o => !o.visible).map(o => o.name),
     }
   }
 
@@ -139,7 +142,7 @@ export function useModels(deps: {
     try { prep = await prepareModelFile(file, { georef: !known, measure: !known }) } catch (e) {
       console.error(`Příprava modelu „${file.name}" selhala:`, e)
       if (/\.obj$/i.test(file.name)) { toast.error(restore ? `Model „${file.name}" se nepodařilo obnovit` : 'Import OBJ selhal'); return }
-      prep = { glb: null, bottomZ: null, geo: null } // GLB zkusí načíst rovnou Cesium
+      prep = { glb: null, bottomZ: null, geo: null, objects: [] } // GLB zkusí načíst rovnou Cesium
     }
     if (v.isDestroyed()) return
     url = prep.glb ? URL.createObjectURL(new Blob([prep.glb], { type: 'model/gltf-binary' })) : URL.createObjectURL(file)
@@ -184,6 +187,7 @@ export function useModels(deps: {
       model.show = restore?.config.visible ?? true
 
       const id = crypto.randomUUID()
+      const hidden0 = new Set(restore?.config.hiddenObjects ?? [])
       const entry: ModelEntry = {
         id, name: restore?.name ?? file.name.replace(/\.(glb|gltf|obj)$/i, ''),
         model, url, center: Cesium.Cartesian3.clone(Cesium.Cartesian3.ZERO), yawDeg, placement: p,
@@ -192,7 +196,10 @@ export function useModels(deps: {
         excavate: restore?.config.excavate ?? false,
         outline: restore?.config.outline ?? false,
         assetId: restore?.assetId,
+        objects: prep.objects.map(o => ({ ...o, visible: !hidden0.has(o.name) })),
+        look: MODEL_LOOKS.some(l => l.id === restore?.config.look) ? restore!.config.look as ModelLook : 'textury',
       }
+      applyModelLook(model, entry.look)
       modelsRef.current.set(id, entry)
       setObjects(list => [...list, { id, kind: 'model', name: entry.name, visible: entry.visible }])
       if (!restore) selectObject(id)
@@ -208,6 +215,8 @@ export function useModels(deps: {
 
       model.readyEvent.addEventListener(async () => {
         if (v.isDestroyed()) return
+        // skryté objekty (uzly jdou hledat až u hotového modelu)
+        for (const o of entry.objects) if (!o.visible) { const n = model.getNode(o.name); if (n) n.show = false }
         if (!anchor) {
           const inv = Cesium.Matrix4.inverse(model.modelMatrix, new Cesium.Matrix4())
           const localCenter = Cesium.Matrix4.multiplyByPoint(inv, model.boundingSphere.center, new Cesium.Cartesian3())
@@ -288,6 +297,35 @@ export function useModels(deps: {
     setObjects(list => [...list]) // překreslit panel (stav se čte z ref)
   }
 
+  /** Vzhled modelu: s texturami, šedý, nebo barvy objektů (modelLook.ts) — hned, bez načítání. */
+  function setModelLook(id: string, look: ModelLook) {
+    const e = modelsRef.current.get(id)
+    if (!e || e.look === look) return
+    e.look = look
+    applyModelLook(e.model, look)
+    saveModel(e)
+    setObjects(list => [...list]) // překreslit panel (stav se čte z ref)
+  }
+
+  /** Zobrazí / skryje objekty modelu (uzly podle jména) — jednotlivě i hromadně z panelu Scéna. */
+  function setModelObjectsVisible(id: string, names: string[], visible: boolean) {
+    const e = modelsRef.current.get(id)
+    if (!e) return
+    const set = new Set(names)
+    for (const o of e.objects) {
+      if (!set.has(o.name)) continue
+      o.visible = visible
+      const n = e.model.ready ? e.model.getNode(o.name) : undefined
+      if (n) n.show = visible
+    }
+    saveModel(e)
+    setObjects(list => [...list])
+  }
+  function toggleModelObject(id: string, name: string) {
+    const o = modelsRef.current.get(id)?.objects.find(x => x.name === name)
+    if (o) setModelObjectsVisible(id, [name], !o.visible)
+  }
+
   // zapnout/vypnout svítící obrys (silhouette) kolem vybraného modelu
   function toggleOutline(id: string) {
     const e = modelsRef.current.get(id)
@@ -357,5 +395,8 @@ export function useModels(deps: {
     setSelectedId,
     toggleExcavation,
     toggleOutline,
+    setModelLook,
+    setModelObjectsVisible,
+    toggleModelObject,
   }
 }

@@ -1,12 +1,19 @@
 /**
- * Sekce „Vybraný model": usazení (výška, natočení, měřítko), posazení na terén, maska a obrys.
+ * Sekce „Vybraný model": posazení na terén, maska, obrys a sbalitelné usazení (výška, natočení,
+ * měřítko). Objekty modelu a vzhled jsou v panelu Scéna u modelu (rozbalovací šipka).
  */
-import { ArrowDownToLine, Crosshair, Mountain, RotateCcw, Sparkles, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowDownToLine, ChevronDown, ChevronRight, Crosshair, Mountain, RotateCcw, Sparkles, Trash2 } from 'lucide-react'
 import { NumRow } from '../ui'
 import type { Placement, SceneObj } from '../types'
 import type { ModelsTool } from '../useModels'
 
+const PLACE_KEY = 'geo.modelPlacementOpen'
+
 export function ModelPanel({ models, objects, placement }: { models: ModelsTool; objects: SceneObj[]; placement: Placement }) {
+  // rozbalení posuvníků usazení si pamatuje prohlížeč (výchozí sbalené)
+  const [placeOpen, setPlaceOpenState] = useState(() => { try { return localStorage.getItem(PLACE_KEY) === '1' } catch { return false } })
+  const setPlaceOpen = (v: boolean) => { setPlaceOpenState(v); try { localStorage.setItem(PLACE_KEY, v ? '1' : '0') } catch { /* jen pohodlí */ } }
   const { selectedId, modelsRef, deleteModel, focusModel, dropToGround, toggleExcavation, toggleOutline, patch } = models
   return (
     <>
@@ -55,6 +62,22 @@ export function ModelPanel({ models, objects, placement }: { models: ModelsTool;
         </button>
       )}
 
+      {/* Usazení je sbalené: na model se většinou jen kouká a posuvníky zabíraly půl panelu */}
+      <button
+        onClick={() => setPlaceOpen(!placeOpen)}
+        aria-expanded={placeOpen}
+        data-placement-toggle
+        className="flex items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-gray-300 hover:bg-gray-800"
+      >
+        {placeOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        <span className="font-medium">Usazení</span>
+        {!placeOpen && (
+          <span className="min-w-0 flex-1 truncate text-[10px] text-gray-500">
+            výška {placement.heightOffset} m · otočení {placement.heading}° · měřítko {placement.scale}×
+          </span>
+        )}
+      </button>
+      {placeOpen && <>
       <NumRow label="Výška nad terénem" value={placement.heightOffset} min={-20} max={200} step={0.1} unit="m" onChange={v => patch({ heightOffset: v })} />
       <NumRow label="Otočení" value={placement.heading} min={0} max={359} step={1} unit="°" onChange={v => patch({ heading: v })} />
       <NumRow label="Náklon (pitch)" value={placement.pitch} min={-45} max={45} step={0.5} unit="°" onChange={v => patch({ pitch: v })} />
@@ -68,6 +91,7 @@ export function ModelPanel({ models, objects, placement }: { models: ModelsTool;
       <div className="text-[10px] text-gray-500 leading-snug">
         {placement.lat.toFixed(5)}, {placement.lon.toFixed(5)}
       </div>
+      </>}
     </>
   )
 }

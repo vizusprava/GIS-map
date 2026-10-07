@@ -1,18 +1,25 @@
 /**
- * Sekce „Scéna": seznam modelů, parcel a výkresů — viditelnost, zaměření, přejmenování
- * a u výkresů jejich hladiny (výška, průhlednost, hledání a hromadné přepínání).
+ * Sekce „Scéna": seznam modelů, parcel a výkresů — viditelnost, zaměření, přejmenování;
+ * u výkresů jejich hladiny (výška, průhlednost, přilepení na terén), u modelů jejich objekty
+ * a vzhled. Hladiny i objekty mají stejný seznam s hledáním a hromadným přepínáním (LayerList).
  */
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Cloud, Crosshair, Eye, EyeOff, HardDrive, Pencil, Search, Trash2 } from 'lucide-react'
-import { EMPTY_NAMESET } from '../config'
+import { ChevronDown, ChevronRight, Cloud, Crosshair, Eye, EyeOff, HardDrive, Pencil, Trash2 } from 'lucide-react'
 import type { SceneObj } from '../types'
 import type { FileStorage } from '../lib/types'
 import type { DrawingsTool } from '../useDrawings'
+import type { ModelsTool } from '../useModels'
+import { MODEL_LOOKS, objectColor } from '../modelLook'
+import { LayerList, type LayerWords } from './LayerList'
 
 export type ScenePanelUi = ReturnType<typeof useScenePanelUi>
 
 /** ikonové tlačítko v řádku — na dotyku větší, ať se trefí prstem */
 const rowBtn = 'shrink-0 rounded p-0.5 text-gray-400 pointer-coarse:p-1.5'
+
+const plural = (n: number, one: string, few: string, many: string) => (n === 1 ? one : n >= 2 && n <= 4 ? few : many)
+const LAYER_WORDS: LayerWords = { search: 'hledat hladinu…', count: n => `${n} ${plural(n, 'hladina', 'hladiny', 'hladin')}`, empty: 'žádná hladina', one: 'tuto hladinu' }
+const OBJECT_WORDS: LayerWords = { search: 'hledat objekt…', count: n => `${n} ${plural(n, 'objekt', 'objekty', 'objektů')}`, empty: 'žádný objekt', one: 'tento objekt' }
 
 /**
  * Kde leží soubor (sdílí to i panel Vlastní ortofoto). „Jen v tomto počítači" je vidět vždycky
@@ -36,25 +43,25 @@ export function FileAt({ at, onMove }: { at: FileStorage | null; onMove?: (to: F
 }
 
 /**
- * Stav seznamu — co je rozbalené, výběr hladin, rozepsané jméno. Žije o patro výš než panel:
- * sbalená sekce svůj obsah odmontuje a rozbalené výkresy ani vybrané hladiny se tím ztratit nemají.
+ * Stav seznamu — co je rozbalené, výběr hladin a objektů, rozepsané jméno. Žije o patro výš
+ * než panel: sbalená sekce svůj obsah odmontuje a rozbalené položky ani výběr se tím ztratit nemají.
  */
 export function useScenePanelUi() {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
-  // rozbalené výkresy v panelu Scéna (ukazují seznam hladin)
+  // rozbalené výkresy a modely v panelu Scéna (ukazují seznam hladin / objektů)
   const [expandedDrawings, setExpandedDrawings] = useState<Set<string>>(new Set())
-  // text pro filtrování hladin, klíč = id objektu výkresu
+  // text pro filtrování hladin / objektů, klíč = id objektu ve scéně
   const [layerFilter, setLayerFilter] = useState<Record<string, string>>({})
-  // výběr hladin (multi-select klikáním i tažením), klíč = id objektu výkresu → množina názvů hladin
+  // výběr (multi-select klikáním i tažením), klíč = id objektu ve scéně → množina názvů
   const [layerSel, setLayerSel] = useState<Record<string, Set<string>>>({})
   const lastLayerClick = useRef<Record<string, string>>({}) // poslední klik pro Shift-rozsah
-  // aktivní tažení výběru: přes které hladiny přejedeš se stejným režimem přidají/odeberou
+  // aktivní tažení výběru: přes které položky přejedeš se stejným režimem přidají/odeberou
   const dragRef = useRef<{ oid: string; mode: 'add' | 'remove' } | null>(null)
   useEffect(() => { const up = () => { dragRef.current = null }; window.addEventListener('mouseup', up); return () => window.removeEventListener('mouseup', up) }, [])
 
-  // stisk na hladině: Shift = rozsah od posledního kliku; jinak zahájí tažení (přidávání/odebírání
-  // podle toho, jestli hladina ve výběru už je) a rovnou přepne tu první
+  // stisk na položce: Shift = rozsah od posledního kliku; jinak zahájí tažení (přidávání/odebírání
+  // podle toho, jestli položka ve výběru už je) a rovnou přepne tu první
   function startLayerDrag(oid: string, name: string, shownNames: string[], shift: boolean) {
     const cur = new Set(layerSel[oid] ?? [])
     const last = lastLayerClick.current[oid]
@@ -71,7 +78,7 @@ export function useScenePanelUi() {
     setLayerSel(prev => ({ ...prev, [oid]: cur }))
     lastLayerClick.current[oid] = name
   }
-  // přejezd přes hladinu během tažení = přidá/odebere ji stejným režimem jako začátek tažení
+  // přejezd přes položku během tažení = přidá/odebere ji stejným režimem jako začátek tažení
   function dragOverLayer(oid: string, name: string) {
     const d = dragRef.current
     if (!d || d.oid !== oid) return
@@ -92,11 +99,12 @@ export function useScenePanelUi() {
   }
 }
 
-export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, locateObject, toggleVisible, deleteObject, onRename, readOnly, fileAt, onMoveFile }: {
+export function ScenePanel({ ui, objects, selectedId, drawings, models, selectObject, locateObject, toggleVisible, deleteObject, onRename, readOnly, fileAt, onMoveFile }: {
   ui: ScenePanelUi
   objects: SceneObj[]
   selectedId: string | null
   drawings: DrawingsTool
+  models: ModelsTool
   selectObject: (id: string | null) => void
   locateObject: (o: SceneObj) => void
   toggleVisible: (o: SceneObj) => void
@@ -110,11 +118,9 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
   /** přesun souboru jinam; chybí = přesouvat nejde (jen prohlížení) */
   onMoveFile?: (o: SceneObj, to: FileStorage) => void
 }) {
-  const {
-    clearLayerSel, dragOverLayer, expandedDrawings, layerFilter, layerSel, renameDraft, renamingId,
-    selectAllLayers, setLayerFilter, setRenameDraft, setRenamingId, startLayerDrag, toggleExpand,
-  } = ui
+  const { expandedDrawings, renameDraft, renamingId, setRenameDraft, setRenamingId, toggleExpand } = ui
   const { drawingsRef, drawH, drawA, drawDrape, setDrawingHeight, setDrawingAlpha, setDrawingDrape, setLayersVisibility, toggleLayer } = drawings
+  const { modelsRef, setModelLook, setModelObjectsVisible, toggleModelObject } = models
 
   function commitRename() {
     const id = renamingId
@@ -126,8 +132,9 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
     <>
       {objects.map(o => {
         const draw = o.kind === 'drawing' ? drawingsRef.current.get(o.id.replace('drawing-', '')) : null
-        const hasLayers = !!draw && draw.layers.length > 0
-        const isExpanded = hasLayers && expandedDrawings.has(o.id)
+        const mdl = o.kind === 'model' ? modelsRef.current.get(o.id) : null
+        const subCount = draw ? draw.layers.length : mdl ? mdl.objects.length : 0
+        const isExpanded = subCount > 0 && expandedDrawings.has(o.id)
         return (
         <div key={o.id} className="flex flex-col">
         <div
@@ -136,8 +143,13 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
             selectedId === o.id ? 'bg-emerald-600/25 text-emerald-100' : 'text-gray-300 hover:bg-gray-800'
           }`}
         >
-          {hasLayers ? (
-            <button onClick={e => { e.stopPropagation(); toggleExpand(o.id) }} title={`Hladiny (${draw!.layers.length})`} className="shrink-0 -ml-1 p-0.5 rounded text-gray-400 hover:text-gray-100">
+          {subCount > 0 ? (
+            <button
+              onClick={e => { e.stopPropagation(); toggleExpand(o.id) }}
+              title={draw ? `Hladiny (${subCount})` : `Objekty a vzhled (${subCount})`}
+              data-expand={o.kind}
+              className="shrink-0 -ml-1 p-0.5 rounded text-gray-400 hover:text-gray-100"
+            >
               {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
             </button>
           ) : null}
@@ -179,12 +191,6 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
         </div>
         {isExpanded && draw && (() => {
           const did = o.id.replace('drawing-', '')
-          const q = (layerFilter[o.id] || '').toLowerCase().trim()
-          const shown = q ? draw.layers.filter(l => l.name.toLowerCase().includes(q)) : draw.layers
-          const shownNames = shown.map(l => l.name)
-          const sel = layerSel[o.id] ?? EMPTY_NAMESET
-          const selCount = sel.size
-          const bulk = selCount > 0 ? [...sel] : shownNames // očka pracují nad výběrem, jinak nad zobrazenými
           return (
           <div className="ml-5 mb-1 mt-0.5 flex flex-col gap-0.5 border-l border-gray-700 pl-2">
             {/* přilepit na terén: čáry po terénu, texty a body na jeho výšce — výškový posun pak nemá smysl */}
@@ -202,51 +208,43 @@ export function ScenePanel({ ui, objects, selectedId, drawings, selectObject, lo
               <input type="range" min={0.05} max={1} step={0.05} value={drawA[did] ?? 1} onChange={e => setDrawingAlpha(did, Number(e.target.value))} className="flex-1 min-w-0" />
               <span className="w-10 text-right tabular-nums shrink-0">{Math.round((drawA[did] ?? 1) * 100)} %</span>
             </div>
-            <div className="flex items-center gap-1 px-1 pb-0.5">
-              <Search size={11} className="shrink-0 text-gray-500" />
-              <input
-                value={layerFilter[o.id] || ''}
-                onChange={e => setLayerFilter(f => ({ ...f, [o.id]: e.target.value }))}
-                onClick={e => e.stopPropagation()}
-                placeholder="hledat hladinu…"
-                className="flex-1 min-w-0 bg-gray-800 rounded px-1 py-0.5 text-xs text-gray-100 outline-none placeholder:text-gray-600"
-              />
-              <button onClick={e => { e.stopPropagation(); setLayersVisibility(did, bulk, true) }} title={selCount > 0 ? `Zobrazit vybrané (${selCount})` : q ? 'Zobrazit nalezené' : 'Zobrazit vše'} className="shrink-0 p-0.5 rounded text-gray-400 hover:text-emerald-300"><Eye size={12} /></button>
-              <button onClick={e => { e.stopPropagation(); setLayersVisibility(did, bulk, false) }} title={selCount > 0 ? `Skrýt vybrané (${selCount})` : q ? 'Skrýt nalezené' : 'Skrýt vše'} className="shrink-0 p-0.5 rounded text-gray-400 hover:text-red-300"><EyeOff size={12} /></button>
-            </div>
-            <div className="flex items-center gap-2 px-1 pb-0.5 text-[10px] text-gray-500">
-              <span className={selCount > 0 ? 'text-emerald-300' : ''}>{selCount > 0 ? `${selCount} vybráno` : `${shown.length} hladin`}</span>
-              <button onClick={e => { e.stopPropagation(); selectAllLayers(o.id, shownNames) }} className="hover:text-gray-200">vybrat vše</button>
-              {selCount > 0 && <button onClick={e => { e.stopPropagation(); clearLayerSel(o.id) }} className="hover:text-gray-200">zrušit výběr</button>}
-            </div>
-            {shown.length === 0 ? (
-              <div className="px-1 py-0.5 text-xs text-gray-600">žádná hladina</div>
-            ) : shown.map(ly => {
-              const isSel = sel.has(ly.name)
-              return (
-              <div
-                key={ly.name}
-                onMouseDown={e => { e.stopPropagation(); e.preventDefault(); startLayerDrag(o.id, ly.name, shownNames, e.shiftKey) }}
-                onMouseEnter={() => dragOverLayer(o.id, ly.name)}
-                title={`${ly.name} — klik označí, tažením označíš víc, Shift+klik rozsah`}
-                className={`flex items-center gap-1.5 px-1 py-0.5 rounded text-xs cursor-pointer select-none ${isSel ? 'bg-emerald-600/25 text-emerald-100' : `hover:bg-gray-800 ${ly.visible ? 'text-gray-300' : 'text-gray-500'}`}`}
-              >
-                <span className="shrink-0 w-2.5 h-2.5 rounded-sm border border-gray-600" style={{ background: '#' + (ly.color & 0xffffff).toString(16).padStart(6, '0') }} />
-                <span className="flex-1 min-w-0 truncate">{ly.name}</span>
-                <button
-                  onMouseDown={e => e.stopPropagation()}
-                  onClick={e => { e.stopPropagation(); if (sel.has(ly.name)) setLayersVisibility(did, [...sel], !ly.visible); else toggleLayer(did, ly.name) }}
-                  title={sel.has(ly.name) ? `Zobrazit/skrýt všechny vybrané (${selCount})` : 'Zobrazit/skrýt tuto hladinu'}
-                  className="shrink-0 p-0.5 rounded text-gray-400 hover:text-gray-100"
-                >
-                  {ly.visible ? <Eye size={12} /> : <EyeOff size={12} />}
-                </button>
-              </div>
-              )
-            })}
+            <LayerList
+              oid={o.id}
+              items={draw.layers.map(ly => ({ name: ly.name, visible: ly.visible, color: '#' + (ly.color & 0xffffff).toString(16).padStart(6, '0') }))}
+              words={LAYER_WORDS}
+              ui={ui}
+              onSetVisible={(names, vis) => setLayersVisibility(did, names, vis)}
+              onToggle={name => toggleLayer(did, name)}
+            />
           </div>
           )
         })()}
+        {isExpanded && mdl && (
+          <div className="ml-5 mb-1 mt-0.5 flex flex-col gap-0.5 border-l border-gray-700 pl-2">
+            {/* vzhled: s texturami, šedý, nebo každý objekt vlastní barvou (modelLook.ts) */}
+            <div data-model-look={mdl.look} className="flex items-center gap-1.5 px-1 pb-1 text-[10px] text-gray-400" onClick={e => e.stopPropagation()}>
+              <span className="w-10 shrink-0">Vzhled</span>
+              <div className="flex flex-1 overflow-hidden rounded-md border border-gray-700">
+                {MODEL_LOOKS.map(l => (
+                  <button
+                    key={l.id}
+                    title={l.title}
+                    onClick={() => setModelLook(o.id, l.id)}
+                    className={`flex-1 px-1 py-0.5 pointer-coarse:py-1.5 ${mdl.look === l.id ? 'bg-emerald-600 text-white' : 'text-gray-300 hover:bg-gray-800'}`}
+                  >{l.label}</button>
+                ))}
+              </div>
+            </div>
+            <LayerList
+              oid={o.id}
+              items={mdl.objects.map(x => ({ name: x.name, visible: x.visible, color: mdl.look === 'barvy' ? objectColor(x.id) : undefined }))}
+              words={OBJECT_WORDS}
+              ui={ui}
+              onSetVisible={(names, vis) => setModelObjectsVisible(o.id, names, vis)}
+              onToggle={name => toggleModelObject(o.id, name)}
+            />
+          </div>
+        )}
         </div>
         )
       })}

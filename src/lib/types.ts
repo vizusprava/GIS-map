@@ -68,6 +68,10 @@ export type AssetConfig = {
   outline?: boolean
   /** obrys půdorysu (lon/lat prstence) — georeference z S-JTSK se nepočítá znovu při každém otevření */
   footprint?: [number, number][][]
+  /** vzhled modelu: 'textury' | 'seda' | 'barvy' (modelLook.ts) */
+  look?: string
+  /** skryté objekty modelu (jména uzlů) — zobrazené je výchozí stav */
+  hiddenObjects?: string[]
   /** lokální souřadnice středu modelu (x, y, z) dopočítané po načtení — usazení pak sedí i po reloadu */
   center?: [number, number, number]
 

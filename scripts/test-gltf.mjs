@@ -7,7 +7,7 @@
  *
  * Spustit: `npm run test:gltf`
  */
-import { simplifyGltfMaterials } from '../src/gltfMaterials.ts'
+import { listModelObjects, simplifyGltfMaterials } from '../src/gltfMaterials.ts'
 
 let fails = 0
 const ok = (cond, what) => {
@@ -113,6 +113,52 @@ ok(tt('Autodesk 3ds Max glTF', { scale: [0.5, 0.25] }).offset?.[1] === 0.75, 'z 
 ok(tt('Khronos glTF Blender I/O', { scale: [0.333, 0.517] }).offset === undefined, 'z Blenderu beze změny')
 ok(tt('THREE.GLTFExporter r184', { scale: [0.333, 0.517] }).offset === undefined, 'z three.js (po georeferenci) beze změny — nedopočítá se dvakrát')
 ok(JSON.stringify(tt(undefined, { scale: [0.5, 0.5], offset: [0.1, 0.2] }).offset) === '[0.1,0.2]', 'zapsaný posun se nemění')
+
+// objekty: značka v materiálu (barvy objektů) a jedinečná jména uzlů (skrývání po objektech)
+const objJson = {
+  asset: { version: '2.0', generator: 'test' },
+  materials: [{ name: 'Beton', pbrMetallicRoughness: { baseColorFactor: [0.6, 0.6, 0.6, 1] } }],
+  meshes: [
+    { primitives: [{ attributes: { POSITION: 0 }, material: 0 }] },
+    { primitives: [{ attributes: { POSITION: 1 }, material: 0 }, { attributes: { POSITION: 2 } }] },
+  ],
+  nodes: [{ name: 'Lampa', mesh: 0 }, { name: 'Lampa', mesh: 1 }, { name: 'Skupina' }, { mesh: 0 }],
+}
+const objOut = simplifyGltfMaterials(glb(objJson, bin))
+const oj = read(objOut).json
+const tagOf = mi => oj.materials[mi].emissiveFactor?.[0] * 16777216
+ok(oj.meshes[0].primitives[0].material === 0 && Math.round(tagOf(0)) === 1, 'první mesh si nechá materiál a dostane značku 1')
+const m1 = oj.meshes[1].primitives
+ok(m1[0].material !== 0 && Math.round(tagOf(m1[0].material)) === 2, `sdílený materiál se pro druhý mesh zkopíroval se značkou 2 (${m1[0].material})`)
+ok(m1[1].material !== undefined && Math.round(tagOf(m1[1].material)) === 2, 'část bez materiálu dostala výchozí se značkou svého meshe')
+ok(oj.materials[m1[0].material].pbrMetallicRoughness.baseColorFactor[0] === 0.6, 'kopie má stejnou barvu')
+ok(tagOf(0) < 1e-5 * 16777216 && oj.materials[0].emissiveFactor[0] < 1e-5, 'značka nesvítí (emisní barva < 0,00001)')
+const objs = listModelObjects(objOut)
+ok(JSON.stringify(objs.map(o => o.name)) === '["Lampa","Lampa (2)","objekt 4"]', `jména objektů: ${JSON.stringify(objs.map(o => o.name))}`)
+ok(JSON.stringify(objs.map(o => o.id)) === '[1,2,3]', 'objekty mají id (barvu)')
+ok(oj.nodes[2].name === 'Skupina', 'uzel bez meshe (skupina) beze změny')
+
+// po převodu přes three.js: objekt s víc materiály = skupina s částmi „mesh_0", „mesh_0_1";
+// mezery ve jménu uzlu jsou podtržítka, původní jméno je v extras.name
+const threeJson = {
+  asset: { version: '2.0', generator: 'THREE.GLTFExporter r184' },
+  materials: [{ name: 'A' }, { name: 'B' }],
+  meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }, { primitives: [{ attributes: { POSITION: 1 }, material: 1 }] }, { primitives: [{ attributes: { POSITION: 2 }, material: 0 }] }],
+  nodes: [
+    { name: 'Most_SO_201', extras: { name: 'Most SO 201' }, children: [1, 2] },
+    { name: 'mesh_0', mesh: 0 },
+    { name: 'mesh_0_1', mesh: 1 },
+    { name: 'Lampa_01', extras: { name: 'Lampa 01' }, mesh: 2 },
+  ],
+}
+const threeOut = simplifyGltfMaterials(glb(threeJson, bin))
+const tj3 = read(threeOut).json
+const objs3 = listModelObjects(threeOut)
+ok(JSON.stringify(objs3.map(o => o.name)) === '["Most SO 201","Lampa 01"]', `objekty z Maxu po three.js: ${JSON.stringify(objs3.map(o => o.name))}`)
+const t3 = mi => Math.round(tj3.materials[tj3.meshes[mi].primitives[0].material].emissiveFactor[0] * 16777216)
+ok(t3(0) === 1 && t3(1) === 1, `obě části mostu mají barvu mostu (${t3(0)}, ${t3(1)})`)
+ok(t3(2) === 2 && tj3.meshes[2].primitives[0].material !== tj3.meshes[0].primitives[0].material, 'lampa se sdíleným materiálem má vlastní kopii a vlastní barvu')
+ok(tj3.nodes[0].name === 'Most SO 201' && tj3.nodes[3].name === 'Lampa 01', 'uzly mají zpátky původní jména (s mezerami) — Cesium je podle nich najde')
 
 // glTF jako text
 const text = new TextEncoder().encode(JSON.stringify(vray)).buffer

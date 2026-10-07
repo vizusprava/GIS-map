@@ -792,7 +792,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           {objects.length > 0 && (
           <Section id="scena" title="Scéna" dflt={true} badge={objects.length} open={openSec} onToggle={toggleSec}>
             <ScenePanel
-              ui={sceneUi} objects={objects} selectedId={selectedId} drawings={drawings} selectObject={selectObject}
+              ui={sceneUi} objects={objects} selectedId={selectedId} drawings={drawings} models={models} selectObject={selectObject}
               locateObject={locateObject} toggleVisible={toggleVisible} deleteObject={deleteObject} onRename={renameObject}
               readOnly={guest}
               fileAt={o => { const id = assetOf(o); return id ? files[id]?.at ?? null : null }}

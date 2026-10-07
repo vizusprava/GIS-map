@@ -6,6 +6,7 @@
  */
 import * as Cesium from 'cesium'
 import type { DrawPrim } from './dxf'
+import type { ModelLook } from './modelLook'
 
 export type Base = 'ortofoto' | 'zm' | 'google'
 
@@ -65,6 +66,10 @@ export type ModelEntry = {
   footprint?: Cesium.Cartesian3[][] // obrys(y) půdorysu ve světě (S-JTSK přes kotvu) pro skrytí mapy
   excavate?: boolean                // skrýt mapu (ortofoto/topo + terén + Google) pod/nad modelem
   outline?: boolean                 // svítící obrys (silhouette) kolem modelu; výchozí vypnuto
+  /** objekty modelu (objekty z Maxu) pro seznam v panelu: jméno uzlu, id (barva) a viditelnost */
+  objects: { name: string; id: number; visible: boolean }[]
+  /** vzhled: s texturami, šedý, nebo barvy objektů (modelLook.ts) */
+  look: ModelLook
   /**
    * Id řádku v `geo_assets` — přes něj se na backend hlásí změny usazení. Chybí, dokud se
    * soubor nahrává (model je ve 3D dřív, než dojede upload) a u modelů, které se nahrát

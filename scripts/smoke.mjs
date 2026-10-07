@@ -142,10 +142,14 @@ function sjtskGlb(n, t) {
   const bin = Buffer.concat(parts)
   const min = [0, 1, 2].map(a => Math.min(...pos.filter((_, i) => i % 3 === a))), max = [0, 1, 2].map(a => Math.max(...pos.filter((_, i) => i % 3 === a)))
   const json = Buffer.from(JSON.stringify({
-    asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0, name: 'Teren' }],
+    // dva objekty se stejným jménem (appka je rozliší); druhý o 3 m výš a se sdílenými vrcholy
+    asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0, 1] }], nodes: [{ mesh: 0, name: 'Teren' }, { mesh: 1, name: 'Teren', translation: [0, 3, 0] }],
     // druhá část stejné geometrie BEZ UV, se stejným texturovaným materiálem — Cesium na ní
     // dřív spadlo při stavbě shaderu („'v_texCoord_0' : undeclared identifier")
-    meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, indices: 2, material: 0 }, { attributes: { POSITION: 0 }, indices: 2, material: 0 }] }],
+    meshes: [
+      { primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, indices: 2, material: 0 }, { attributes: { POSITION: 0 }, indices: 2, material: 0 }] },
+      { primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, indices: 2, material: 0 }] },
+    ],
     materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 }, baseColorFactor: [0, 0, 0, 1], metallicFactor: 1, roughnessFactor: 0 }, extensions: { KHR_materials_specular: { specularFactor: 1 } } }],
     extensionsUsed: ['KHR_materials_specular'],
     textures: [{ source: 0 }], images: [{ bufferView: 3, mimeType: 'image/png' }],
@@ -714,7 +718,11 @@ async function main() {
     expect((await ev(`document.body.innerText`)).includes('Model usazen podle S-JTSK'), 'chybí hláška o usazení podle S-JTSK')
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
-    // model s materiálem jako z V-Ray nesmí být černý: střed obrazovky (kamera po importu míří na model)
+    // model s materiálem jako z V-Ray nesmí být černý: kamera kolmo nad model (po importu
+    // se dívá šikmo a střed obrazovky může padnout na terén), měří se střed obrazovky.
+    // Shora je vidět jen líc: model ze zrcadlených souřadnic (x = +Y) musí mít trojúhelníky obrácené.
+    await ev(`(() => { const s = ${model}.boundingSphere, c = s.center, l = Math.hypot(c.x, c.y, c.z), d = s.radius * 2.5
+      window.__scene.camera.setView({ destination: { x: c.x + c.x / l * d, y: c.y + c.y / l * d, z: c.z + c.z / l * d }, orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 } }) })()`)
     await sleep(1800)
     const lum = await ev(`(() => { const s = window.__scene, sc = s.canvas; s.render()
       const c = document.createElement('canvas'); c.width = 40; c.height = 40; const g = c.getContext('2d')
@@ -723,6 +731,39 @@ async function main() {
       return sum / 1600 })()`)
     expect(lum > 45, `model je černý (jas středu ${lum.toFixed(0)}) — materiál z V-Ray se nezjednodušil`)
     expect(!(await ev(`!!document.querySelector('.cesium-widget-errorPanel')`)), 'vykreslování spadlo (část modelu bez UV s texturou)')
+
+    // objekty modelu a vzhled (panel Scéna → šipka u modelu)
+    const px = () => ev(`(() => { const s = window.__scene, sc = s.canvas; s.render()
+      const c = document.createElement('canvas'); c.width = 20; c.height = 20; const g = c.getContext('2d')
+      g.drawImage(sc, sc.width / 2 - 10, sc.height / 2 - 10, 20, 20, 0, 0, 20, 20)
+      const d = g.getImageData(0, 0, 20, 20).data; const m = [0, 0, 0]; for (let i = 0; i < d.length; i += 4) for (let k = 0; k < 3; k++) m[k] += d[i + k] / 400
+      return m.map(Math.round) })()`)
+    // relativní sytost (rozdíl složek / nejjasnější) — nezávisí na tom, jak je model osvětlený
+    const sat = c => (Math.max(...c) - Math.min(...c)) / Math.max(1, ...c)
+    await ev(`document.querySelector('[data-sec="scena"] [data-expand="model"]').click()`)
+    await waitFor(`document.querySelectorAll('[data-sec="scena"] [data-layer-item]').length === 2`, 5_000, 'dva objekty v seznamu modelu')
+    const names = await ev(`[...document.querySelectorAll('[data-sec="scena"] [data-layer-item]')].map(e => e.dataset.layerItem).join(' | ')`)
+    expect(names === 'Teren | Teren (2)', `objekty modelu: ${names}`)
+    const look = l => clickText(`document.querySelector('[data-model-look]')`, l)
+    await look('Šedý')
+    await waitFor(`document.querySelector('[data-model-look]')?.dataset.modelLook === 'seda'`, 3_000, 'vzhled šedý')
+    await sleep(300)
+    const grey = await px()
+    expect(sat(grey) < 0.25, `šedý model není šedý: ${grey}`)
+    await look('Barvy objektů')
+    await waitFor(`document.querySelector('[data-model-look]')?.dataset.modelLook === 'barvy'`, 3_000, 'vzhled barvy objektů')
+    await sleep(300)
+    const top = await px()
+    expect(sat(top) > 0.3, `barva objektu není barevná: ${top}`)
+    // skrýt horní objekt → uprostřed je vidět spodní, jinou barvou
+    await ev(`document.querySelector('[data-sec="scena"] [data-layer-item="Teren (2)"] button').click()`)
+    await sleep(300)
+    const lower = await px()
+    expect(sat(lower) > 0.3 && Math.abs(lower[0] - top[0]) + Math.abs(lower[1] - top[1]) + Math.abs(lower[2] - top[2]) > 40, `po skrytí horního objektu se barva nezměnila: ${top} → ${lower}`)
+    expect(await ev(`window.__scene.primitives._primitives.find(p => p.constructor.name.includes('Model') && 'readyEvent' in p).getNode('Teren (2)')?.show === false`), 'objekt Teren (2) se neskryl')
+    await look('Textury')
+    await ev(`document.querySelector('[data-sec="scena"] [data-layer-item="Teren (2)"] button').click()`)
+    await sleep(300)
     return `${at[0].toFixed(4)}°, ${at[1].toFixed(4)}°, jas modelu ${lum.toFixed(0)}`
   })
 
