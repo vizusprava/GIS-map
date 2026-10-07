@@ -71,6 +71,36 @@ function model(x0, z0) {
   }, bin)
 }
 
+/**
+ * Sedlová střecha (sklon 31°) s vyhlazeným hřebenem jako z Maxu: na hřebeni jsou vrcholy
+ * rozdělené (šev UV), ale normála je u obou stran svislá. Přepočet normál by z hřebene
+ * udělal ostrou hranu — normály z Maxu se musí zachovat.
+ */
+function roof(x0, z0) {
+  const pos = new Float32Array([
+    x0, 460, z0, x0, 460, z0 + 10, x0 + 5, 463, z0, x0 + 5, 463, z0 + 10, // levá strana
+    x0 + 5, 463, z0, x0 + 5, 463, z0 + 10, x0 + 10, 460, z0, x0 + 10, 460, z0 + 10, // pravá
+  ])
+  const l = Math.hypot(3, 5), nrm = new Float32Array([
+    -3 / l, 5 / l, 0, -3 / l, 5 / l, 0, 0, 1, 0, 0, 1, 0,
+    0, 1, 0, 0, 1, 0, 3 / l, 5 / l, 0, 3 / l, 5 / l, 0,
+  ])
+  const idx = new Uint16Array([0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7])
+  const bin = new Uint8Array(96 + 96 + 24)
+  bin.set(new Uint8Array(pos.buffer), 0); bin.set(new Uint8Array(nrm.buffer), 96); bin.set(new Uint8Array(idx.buffer), 192)
+  return glb({
+    asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0, name: 'Strecha' }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, indices: 2 }] }],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 8, type: 'VEC3', min: [x0, 460, z0], max: [x0 + 10, 463, z0 + 10] },
+      { bufferView: 1, componentType: 5126, count: 8, type: 'VEC3' },
+      { bufferView: 2, componentType: 5123, count: 12, type: 'SCALAR' },
+    ],
+    bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 96 }, { buffer: 0, byteOffset: 96, byteLength: 96 }, { buffer: 0, byteOffset: 192, byteLength: 24 }],
+    buffers: [{ byteLength: bin.length }],
+  }, bin)
+}
+
 /** Kolik trojúhelníků v GLB míří lícem nahoru (glTF +Y) a kolik normál vrcholů míří nahoru. */
 function facesUp(buf) {
   const { json, bin } = read(buf)
@@ -106,6 +136,25 @@ for (const [what, x, z] of cases) {
   const f = facesUp(r.glb)
   ok(f.tris === 4 && f.up === 4, `${what}: líc nahoru ${f.up}/${f.tris} trojúhelníků (sdílený index obrácený jednou)`)
   ok(f.normals > 0 && f.normalsUp === f.normals, `${what}: normály nahoru ${f.normalsUp}/${f.normals}`)
+
+  const roofGlb = (await prepareModel('strecha.glb', roof(x, z), { georef: true, measure: true })).glb
+  const rf = read(roofGlb)
+  const p = rf.json.meshes[0].primitives[0], N = accessor(rf.json, rf.bin, p.attributes.NORMAL)
+  const ny = i => N[i * 3 + 1]
+  const ridge = [2, 3, 4, 5].map(ny), eaves = [0, 1, 6, 7].map(ny)
+  ok(ridge.every(v => v > 0.999) && eaves.every(v => Math.abs(v - 5 / Math.hypot(3, 5)) < 0.01),
+    `${what}: vyhlazení z Maxu zachované — hřeben ${ridge.map(v => v.toFixed(3)).join(' ')}, okap ${eaves.map(v => v.toFixed(3)).join(' ')}`)
+  const ff = facesUp(roofGlb)
+  // normály míří na stranu líce (ne dovnitř) — i u zrcadleného převodu
+  const P = accessor(rf.json, rf.bin, p.attributes.POSITION), I = accessor(rf.json, rf.bin, p.indices)
+  let agree = 0
+  for (let t = 0; t < I.length; t += 3) {
+    const v = k => [P[I[t + k] * 3], P[I[t + k] * 3 + 1], P[I[t + k] * 3 + 2]]
+    const [a, b, c] = [v(0), v(1), v(2)], e1 = b.map((q, k) => q - a[k]), e2 = c.map((q, k) => q - a[k])
+    const fn = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]], fl = Math.hypot(...fn)
+    if ([0, 1, 2].every(k => (fn[0] * N[I[t + k] * 3] + fn[1] * N[I[t + k] * 3 + 1] + fn[2] * N[I[t + k] * 3 + 2]) / fl > 0.8)) agree++
+  }
+  ok(ff.up === ff.tris && agree === I.length / 3, `${what}: střecha lícem ven ${ff.up}/${ff.tris}, normály na straně líce ${agree}/${I.length / 3}`)
 }
 
 console.log(fails ? `\n${fails} kontrol selhalo` : '\nvše v pořádku')

@@ -235,19 +235,22 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<Omit<PreparedMo
     const dx = p[0] - O[0], dy = p[1] - O[1], dz = p[2] - O[2]
     return [E[0] * dx + E[1] * dy + E[2] * dz, N[0] * dx + N[1] * dy + N[2] * dz, U[0] * dx + U[1] * dy + U[2] * dz]
   }
-  // Osy a znaménka jsou z dat, takže převod může model zrcadlit (např. x = +Y místo −Y).
-  // Vrcholy pak sednou správně, ale trojúhelníky se otočí rubem nahoru: Cesium je zezadu
-  // nekreslí (shora model zmizí) a normály míří dovnitř. Zrcadlení = záporný determinant
-  // převodu do glTF (E, U, −N) → u takového modelu se obrátí pořadí vrcholů trojúhelníků.
-  const mirrored = (() => {
+  // Převod v okolí modelu jako matice (sloupce = kam se posunou osy x, y, z o 1 m v glTF
+  // (E, U, −N)). Na pár set metrech je projekce prakticky lineární, takže jedna matice stačí.
+  const jac = (() => {
     const o = toEnu(c)
     const [a, b, d] = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)].map(e => {
       const [oe, on, ou] = toEnu(e.add(c))
       return [oe - o[0], ou - o[2], o[1] - on]
     })
-    return a[0] * (b[1] * d[2] - b[2] * d[1]) - a[1] * (b[0] * d[2] - b[2] * d[0]) + a[2] * (b[0] * d[1] - b[1] * d[0]) < 0
+    return new THREE.Matrix3().set(a[0], b[0], d[0], a[1], b[1], d[1], a[2], b[2], d[2])
   })()
+  // Osy a znaménka jsou z dat, takže převod může model zrcadlit (např. x = +Y místo −Y).
+  // Vrcholy pak sednou správně, ale trojúhelníky se otočí rubem nahoru: Cesium je zezadu
+  // nekreslí (shora model zmizí). Zrcadlení = záporný determinant → obrátí se pořadí vrcholů.
+  const mirrored = jac.determinant() < 0
   const flipped = new Set<THREE.BufferAttribute>()
+  const nrmMat = new THREE.Matrix3(), vn = new THREE.Vector3()
   const vw = new THREE.Vector3()
   let minU = Infinity
   // Obrys celého modelu: body jdou rovnou do mřížky obrysu. Dřív se sbíralo pole všech
@@ -261,11 +264,12 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<Omit<PreparedMo
   // Převádí se na místě, takže sdílené by se přepočítaly podruhé, z už převedených souřadnic,
   // a model by odletěl. Každá další část proto dostane vlastní kopii — PŘEDEM, dokud jsou
   // vrcholy ještě původní.
+  // Totéž normály (otáčejí se na místě s modelem).
   const shared = new Set<THREE.BufferAttribute | THREE.InterleavedBufferAttribute>()
   for (const m of meshes) {
-    const pos = m.geometry.attributes.position
-    if (shared.has(pos)) m.geometry = m.geometry.clone()
-    else shared.add(pos)
+    const { position: pos, normal: nrm } = m.geometry.attributes
+    if (shared.has(pos) || (nrm && shared.has(nrm))) m.geometry = m.geometry.clone()
+    else { shared.add(pos); if (nrm) shared.add(nrm) }
   }
   for (const m of meshes) {
     const g = m.geometry as THREE.BufferGeometry
@@ -289,7 +293,19 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<Omit<PreparedMo
     }
     pos.needsUpdate = true
     if (mirrored) flipWinding(g, flipped)
-    g.computeVertexNormals()
+    // Normály z Maxu nesou jeho vyhlazení (Smooth, vyhlazovací skupiny) — jen se otočí s modelem.
+    // Dopočítat je znovu by vyhlazení rozbilo: vrcholy rozdělené kvůli švům UV nesdílí plochy,
+    // takže by na každém švu vznikla ostrá hrana. Dopočítávají se jen u modelu bez normál.
+    const nrm = g.attributes.normal as THREE.BufferAttribute | undefined
+    if (nrm) {
+      // normála se převádí inverzní transpozicí (jako v shaderu) — správně i se zrcadlením
+      nrmMat.copy(jac).multiply(new THREE.Matrix3().setFromMatrix4(wm)).invert().transpose()
+      for (let i = 0; i < nrm.count; i++) {
+        vn.fromBufferAttribute(nrm, i).applyMatrix3(nrmMat).normalize()
+        nrm.setXYZ(i, vn.x, vn.y, vn.z)
+      }
+      nrm.needsUpdate = true
+    } else g.computeVertexNormals()
     g.computeBoundingSphere()
   }
   // world transformy jsou zapečené do vrcholů → vynuluj všechny node transformy
