@@ -4,7 +4,7 @@
  *
  * Krok:
  * - `target` — CSS selektor zvýrazněného místa (značky `data-tour`, `data-sec`, `data-minimap`);
- *   bez něj bublina uprostřed obrazovky; `prefer` — kam s bublinou nejdřív,
+ *   dostane modrý rámeček a vede k němu paprsek z bubliny (bublina je vždy uprostřed),
  * - `task` — „zkus to": krok pokračuje sám, až úkol platí (Další se změní na Přeskočit).
  *   Úkol, který platí už na začátku kroku, se nezadává — krok je pak jen ukázka,
  * - `before` — příprava (rozbalit panel nebo sekci, ať je na co ukázat),
@@ -49,8 +49,6 @@ export type TourAction = { label: string; primary?: boolean; run: () => void }
 export type TourStep = {
   id: string
   target?: string
-  /** kam s bublinou nejdřív (třeba vedle hledání — pod ním se rozbalí výsledky) */
-  prefer?: 'below' | 'above' | 'left' | 'right'
   title: string
   body: ReactNode
   task?: { label: string; done: (ctx: TourCtx, start: TourSnap) => boolean }
@@ -155,7 +153,6 @@ export const CHAPTERS: TourChapter[] = [
       {
         id: 'hledani',
         target: '[data-tour="hledani"]',
-        prefer: 'right', // pod hledáním se rozbalí výsledky
         title: 'Hledání místa',
         body: <>Sem napíšeš obec, katastrální území, adresu nebo parcelu (třeba „95/1 Liberec"). Potvrď Enterem a v nabídce vyber, kam chceš — mapa tam přeletí. Vybrané území se zvýrazní; zrušíš ho křížkem v hledání. Terčík vedle vybere správní území klikem do mapy.</>,
         task: { label: 'Napiš „Praha", potvrď Enterem a vyber ji v nabídce', done: nearPrague },

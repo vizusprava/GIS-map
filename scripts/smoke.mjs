@@ -310,7 +310,10 @@ async function main() {
   })
 
   // ── průvodce aplikací (src/tour): spuštění z přehledu zkratek, úkol „zkus to", kapitoly ──
-  await check('průvodce aplikací: spuštění z přehledu zkratek, úkol posunu mapy, kapitoly, ukončení', async () => {
+  await check('průvodce aplikací: spuštění z přehledu zkratek, úkol posunu mapy, kapitoly, ukončení', () => tourCheck()
+    // ať průvodce nezůstane zapnutý (bublina uprostřed mapy by shodila další kontroly)
+    .finally(() => ev(`document.querySelector('[data-tour-quit]')?.click()`)))
+  async function tourCheck() {
     const bubble = () => ev(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble ?? null`)
     const task = () => ev(`document.querySelector('[data-tour-task]')?.dataset.tourTask ?? null`)
     await press('?')
@@ -320,15 +323,14 @@ async function main() {
     await ev(`document.querySelector('[data-tour-next]').click()`)
     await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'zaklady/posun'`, 3_000, 'krok Posun mapy')
     expect(await task() === 'ceka', `úkol posunu mapy: ${await task()}`)
-    await sleep(500) // bublina dojede z prostředka (úvod) nahoru — jinak by tah začal na ní
-    // tah mapou → úkol splněný → průvodce sám pokračuje
+    // tah mapou (vlevo od bubliny — ta je uprostřed) → úkol splněný
     const cam = `(() => { const p = window.__scene.camera.positionWC; return [p.x, p.y, p.z] })()`
     const c0 = await ev(cam)
-    const pre = await ev(`JSON.stringify({ inputs: window.__scene.screenSpaceCameraController.enableInputs, el: (e => e && e.tagName + '.' + String(e.className?.baseVal ?? e.className).slice(0, 60))(document.elementFromPoint(820, 480)), active: document.activeElement?.tagName })`)
-    await mouse('mouseMoved', 820, 480)
-    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 820, y: 480, button: 'left', buttons: 1, clickCount: 1 })
-    for (let i = 1; i <= 12; i++) { await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 820 + 15 * i, y: 480 - 6 * i, button: 'left', buttons: 1 }); await sleep(30) }
-    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1000, y: 408, button: 'left', buttons: 0, clickCount: 1 })
+    const pre = await ev(`JSON.stringify({ inputs: window.__scene.screenSpaceCameraController.enableInputs, el: (e => e && e.tagName + '.' + String(e.className?.baseVal ?? e.className).slice(0, 60))(document.elementFromPoint(600, 620)), active: document.activeElement?.tagName })`)
+    await mouse('mouseMoved', 600, 620)
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 600, y: 620, button: 'left', buttons: 1, clickCount: 1 })
+    for (let i = 1; i <= 12; i++) { await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 600 - 15 * i, y: 620 - 6 * i, button: 'left', buttons: 1 }); await sleep(30) }
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 420, y: 548, button: 'left', buttons: 0, clickCount: 1 })
     await sleep(300)
     const c1 = await ev(cam)
     await shot('pruvodce-posun')
@@ -345,13 +347,13 @@ async function main() {
     await ev(`document.querySelector('[data-tour-next]').click()`)
     await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'zaklady/prave-tlacitko'`, 2_000, 'krok Pravé tlačítko')
     await sleep(400)
-    await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 820, y: 480, deltaX: 0, deltaY: -400 })
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 600, y: 420, deltaX: 0, deltaY: -400 })
     await sleep(1200)
     expect(await task() === 'ceka', `úkol pravého tlačítka splnilo kolečko: ${await task()}`)
-    await mouse('mouseMoved', 820, 480)
-    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 820, y: 480, button: 'right', buttons: 2, clickCount: 1 })
-    for (let i = 1; i <= 12; i++) { await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 820, y: 480 + 12 * i, button: 'right', buttons: 2 }); await sleep(30) }
-    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 820, y: 624, button: 'right', buttons: 0, clickCount: 1 })
+    await mouse('mouseMoved', 600, 420)
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 600, y: 420, button: 'right', buttons: 2, clickCount: 1 })
+    for (let i = 1; i <= 12; i++) { await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 600, y: 420 + 12 * i, button: 'right', buttons: 2 }); await sleep(30) }
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 600, y: 564, button: 'right', buttons: 0, clickCount: 1 })
     await waitFor(`document.querySelector('[data-tour-task]')?.dataset.tourTask === 'hotovo'`, 4_000, 'splněný úkol pravého tlačítka')
     // přehled kapitol → poslední kapitola → zvýraznění sedí na skupině lišty
     await ev(`[...document.querySelectorAll('[data-tour-bubble] button')].find(b => b.innerText.includes('Kapitoly')).click()`)
@@ -359,35 +361,48 @@ async function main() {
     await ev(`document.querySelector('[data-tour-chapter="pohledy"]').click()`)
     await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'pohledy/kamera'`, 3_000, 'kapitola Pohledy')
     await sleep(500)
-    // bublina u lišty nesmí zakrýt lištu, zvýrazněnou skupinu ani panel, který se nad ní rozbalí
-    const hits = sel => ev(`(() => { const a = document.querySelector('[data-tour-bubble]').getBoundingClientRect(), e = document.querySelector('${sel}'); if (!e) return null; const b = e.getBoundingClientRect()
-      return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom })()`)
-    expect(await hits('[data-tour="lista-kamera"]') === false, 'bublina průvodce zakrývá zvýrazněné místo')
-    expect(await hits('[data-tour="lista"]') === false, 'bublina zakrývá lištu nástrojů')
-    expect(await hits('[data-tour="hledani"]') === false, 'bublina zakrývá hledání')
-    // otevřené nabídky lištu bublinou nehnou a bublina je nezakryje (místo pro ně je nechané)
-    const at = () => ev(`(() => { const r = document.querySelector('[data-tour-bubble]').getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top)] })()`)
+    // bublina stojí uprostřed viditelné mapy a k zvýrazněné skupině lišty vede paprsek
+    const at = () => ev(`(() => { const r = document.querySelector('[data-tour-bubble]').getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] })()`)
     const at0 = await at()
+    const mapMid = await ev(`(() => { const p = document.querySelector('[data-tour="panel"]').getBoundingClientRect(); const l = p.right > 1 ? p.right : 0; return [(l + innerWidth) / 2, innerHeight / 2] })()`)
+    // vodorovně uprostřed mapy, spodní okraj kousek pod středem (tlačítko Další stojí na místě)
+    expect(Math.abs(at0[0] + at0[2] / 2 - mapMid[0]) < 3 && Math.abs(at0[1] + at0[3] - (mapMid[1] + 120)) < 3, `bublina není uprostřed mapy: ${at0} vs ${mapMid}`)
+    const tip = await ev(`(() => { const l = document.querySelector('[data-tour-beam] line:last-of-type'), r = document.querySelector('[data-tour="lista-kamera"]').getBoundingClientRect()
+      if (!l) return null; const x = +l.getAttribute('x2'), y = +l.getAttribute('y2'); return x >= r.left - 10 && x <= r.right + 10 && y >= r.top - 10 && y <= r.bottom + 10 })()`)
+    expect(tip === true, `paprsek nemíří na zvýrazněnou skupinu (${tip})`)
+    // otevřené nabídky bublinou nehnou
     await ev(`document.querySelector('[data-tour="lista-kamera"] button').click()`)
     await waitFor(`!!document.querySelector('[data-panel="kamera"]')`, 2_000, 'otevřený panel Kamera')
     await sleep(400)
-    expect(await hits('[data-panel="kamera"]') === false, 'bublina zakrývá otevřený panel Kamera')
     await shot('pruvodce')
     await press('Escape') // zavřít panel Kamera
     await ev(`document.querySelector('[data-tour="lista-podklad"] button').click()`)
-    await waitFor(`!!document.querySelector('[data-tour="lista-podklad"] [role="menu"]')`, 2_000, 'otevřená nabídka podkladu')
     await sleep(400)
-    expect(await hits('[data-tour="lista-podklad"] [role="menu"]') === false, 'bublina zakrývá nabídku podkladu')
     const at1 = await at()
     expect(at1[0] === at0[0] && at1[1] === at0[1], `bublina se po otevření nabídek posunula: ${at0} → ${at1}`)
     await press('Escape')
+    // za hlavičku jde odtáhnout a posun platí i pro další krok
+    const g = await ev(`(() => { const r = document.querySelector('[data-tour-grip]').getBoundingClientRect(); return [r.left + 40, r.top + r.height / 2] })()`)
+    await mouse('mouseMoved', g[0], g[1])
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: g[0], y: g[1], button: 'left', buttons: 1, clickCount: 1 })
+    for (let i = 1; i <= 8; i++) { await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: g[0] - 25 * i, y: g[1] - 10 * i, button: 'left', buttons: 1 }); await sleep(20) }
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: g[0] - 200, y: g[1] - 80, button: 'left', buttons: 0, clickCount: 1 })
+    await sleep(200)
+    const at2 = await at()
+    expect(Math.abs(at2[0] - (at0[0] - 200)) < 3 && Math.abs(at2[1] - (at0[1] - 80)) < 3, `bublina se nedá odtáhnout: ${at0} → ${at2}`)
+    await ev(`document.querySelector('[data-tour-next]').click()`)
+    await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'pohledy/perspektiva'`, 2_000, 'další krok')
+    await sleep(200)
+    const at3 = await at()
+    // stejné místo i pro další krok: levý a spodní okraj (výška se mění s textem)
+    expect(Math.abs(at3[0] - at2[0]) < 3 && Math.abs(at3[1] + at3[3] - (at2[1] + at2[3])) < 3, `odtažení neplatí pro další krok: ${at2} → ${at3}`)
     // ukončit křížkem → zmizí a pamatuje si to
     await ev(`document.querySelector('[data-tour-quit]').click()`)
     await waitFor(`!document.querySelector('[data-tour-bubble]')`, 2_000, 'zavřený průvodce')
     const saved = JSON.parse(await ev(`localStorage.getItem('geo.tour.host')`) ?? '{}')
     expect(saved.on === false && saved.chapter === 3, `uložený stav průvodce: ${JSON.stringify(saved)}`)
     expect(!(await ev('window.__errors')).length, `chyby: ${(await ev('window.__errors')).join(' | ')}`)
-  })
+  }
 
   const openGroup = i => ev(`document.querySelectorAll('button[aria-haspopup="menu"]')[${i}].click()`)
   const panelText = id => ev(`document.querySelector('[data-panel="${id}"]')?.innerText ?? null`)
