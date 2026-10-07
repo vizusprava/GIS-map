@@ -16,6 +16,7 @@ import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.j
 import { wgsOf } from './tiles'
 import { geoidN } from './geoid'
 import { FOOT_MAX_TRIS_UNION, MASK_NAME_RE, FootprintGrid, concaveFootprint, simplifyRingCapped, unionOutlines } from './rings'
+import { simplifyGltfMaterials } from './gltfMaterials'
 import type { Anchor } from './types'
 
 // three loader jen pro změření modelu (nejnižší bod) — Cesium si model vykresluje sám
@@ -110,7 +111,7 @@ function enuFrame(o: V3) {
 
 /** Co z přípravy modelu dostane mapa (stejné z workeru i ze záložního běhu na hlavním vlákně). */
 export type PreparedModel = {
-  /** GLB pro Cesium: převedený OBJ nebo georeferencovaný model; null = vykreslit původní soubor */
+  /** GLB pro Cesium (zjednodušené materiály, převedený OBJ, georeferencovaný model); null = vykreslit původní soubor */
   glb: ArrayBuffer | null
   /** nejnižší bod modelu (gltf Y-up = cesium Z-up); null = nezměřeno */
   bottomZ: number | null
@@ -128,17 +129,23 @@ const bottomOf = (obj: THREE.Object3D) => {
   return Number.isFinite(box.min.y) ? box.min.y : null
 }
 
+/** Co s modelem udělat: zkusit georeferenci z S-JTSK, změřit nejnižší bod (obojí potřebuje three). */
+export type PrepareOpts = { georef: boolean; measure: boolean; strict?: boolean }
+
 /**
  * Model ze souboru → to, co se předá Cesiu. Soubor se parsuje JEDNOU (dřív zvlášť kvůli
- * georeferenci a zvlášť kvůli nejnižšímu bodu).
+ * georeferenci a zvlášť kvůli nejnižšímu bodu), a jen když je to potřeba.
  *
+ * Vždycky se zjednoduší materiály na „jen barevná textura" (gltfMaterials.ts) — materiály
+ * V-Ray z Maxu by jinak byly černé. Uložený soubor scény zůstává původní, tohle je jen kopie
+ * pro zobrazení.
  * - OBJ se převede na GLB (otočení os jako náš export) a změří.
  * - GLB/glTF s `georef` zkusí rozpoznat reálné S-JTSK souřadnice v geometrii a zapéct je;
- *   jinak se jen změří a vykreslí se původní soubor.
- * Soubor, který three nepřečte, vrátí prázdný výsledek — o chybě pak rozhodne Cesium. Se `strict`
- * (ve workeru) je to chyba: klient to pak zkusí ještě na hlavním vlákně, kde three umí víc.
+ *   s `measure` se změří; bez obojího (náš export s kotvou v názvu) se nic neparsuje.
+ * Soubor, který three nepřečte, vrátí jen zjednodušené materiály — o chybě pak rozhodne Cesium.
+ * Se `strict` (ve workeru) je to chyba: klient to pak zkusí ještě na hlavním vlákně, kde three umí víc.
  */
-export async function prepareModel(name: string, buf: ArrayBuffer, georef: boolean, opts?: { strict?: boolean }): Promise<PreparedModel> {
+export async function prepareModel(name: string, buf: ArrayBuffer, opts: PrepareOpts): Promise<PreparedModel> {
   if (/\.obj$/i.test(name)) {
     const group = new OBJLoader().parse(new TextDecoder().decode(buf))
     group.traverse(o => {
@@ -146,23 +153,25 @@ export async function prepareModel(name: string, buf: ArrayBuffer, georef: boole
       if (m.isMesh && m.geometry) { m.geometry.rotateX(-Math.PI / 2); m.geometry.rotateY(-Math.PI / 2) }
     })
     const bottomZ = bottomOf(group)
-    return { glb: await exportGlb(group), bottomZ, geo: null }
+    return { glb: simplifyGltfMaterials(await exportGlb(group)), bottomZ, geo: null }
   }
+  const simple = simplifyGltfMaterials(buf)
+  if (!opts.georef && !opts.measure) return { glb: simple, bottomZ: null, geo: null }
   let scene: THREE.Object3D
-  try { scene = await parseGltf(buf) } catch (e) {
-    if (opts?.strict) throw e
-    return { glb: null, bottomZ: null, geo: null }
+  try { scene = await parseGltf(simple) } catch (e) {
+    if (opts.strict) throw e
+    return { glb: simple, bottomZ: null, geo: null }
   }
   scene.updateMatrixWorld(true)
   // změřit předem: nepovedená georeference mohla scénu napůl přepsat
   const bottomZ = bottomOf(scene)
-  if (georef) {
+  if (opts.georef) {
     try {
       const g = await georeferenceScene(scene)
       if (g) return g
     } catch (e) { console.error('Georeference selhala:', e) }
   }
-  return { glb: null, bottomZ, geo: null }
+  return { glb: simple, bottomZ, geo: null }
 }
 
 /**
@@ -239,7 +248,8 @@ async function georeferenceScene(scene: THREE.Object3D): Promise<PreparedModel |
   scene.traverse(obj => { obj.position.set(0, 0, 0); obj.quaternion.identity(); obj.scale.set(1, 1, 1); obj.updateMatrix() })
   scene.updateMatrixWorld(true)
 
-  const glb = await exportGlb(scene)
+  // export z three umí materiály zase přikrášlit (barva, kovovost) — srovnat znovu
+  const glb = simplifyGltfMaterials(await exportGlb(scene))
 
   // obrys(y) půdorysu → svět přes kotvu (přesné, nezávislé na Cesium korekci os).
   // Maskovací objekty: přesný obrys geometrie (union trojúhelníků) → vhloubení zůstanou nevyříznutá.

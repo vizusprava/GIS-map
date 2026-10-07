@@ -15,8 +15,9 @@
     "test:export": "node --import ./scripts/ts-resolve.mjs scripts/test-export.mjs",
     "test:perf": "node --import ./scripts/ts-resolve.mjs scripts/test-perf.mjs",
     "test:geoid": "node --import ./scripts/ts-resolve.mjs scripts/test-geoid.mjs",
+    "test:gltf": "node --import ./scripts/ts-resolve.mjs scripts/test-gltf.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "npm run test:section && npm run test:terrain && npm run test:dxf && npm run test:savequeue && npm run test:export && npm run test:perf && npm run test:geoid"
+    "test": "npm run test:section && npm run test:terrain && npm run test:dxf && npm run test:savequeue && npm run test:export && npm run test:perf && npm run test:geoid && npm run test:gltf"
   },
   "dependencies": {
     "@mlightcad/libredwg-web": "^0.7.9",

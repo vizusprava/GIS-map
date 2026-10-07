@@ -117,7 +117,9 @@ const clickText = (scope, text) => ev(`(() => { const bs = [...(${scope}).queryS
 
 /**
  * GLB jako z 3ds Maxu: mřížka n×n vrcholů po 0,4 m v S-JTSK u Kladna (kladné souřadnice, výška
- * = osa Y) a textura t×t px — ať příprava ve workeru projde i dekódováním a exportem obrázku.
+ * = osa Y, kousek nad terénem) a textura t×t px — ať příprava ve workeru projde i dekódováním a exportem
+ * obrázku. Materiál jako z V-Ray: kov s černou barvou a rozšířením lesku — bez zjednodušení
+ * materiálů (gltfMaterials.ts) by byl model v mapě černý.
  */
 function sjtskGlb(n, t) {
   const crcT = new Uint32Array(256).map((_, k) => { let c = k; for (let i = 0; i < 8; i++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0 })
@@ -130,7 +132,7 @@ function sjtskGlb(n, t) {
   const pos = new Float32Array(n * n * 3), uv = new Float32Array(n * n * 2), idx = new Uint32Array((n - 1) * (n - 1) * 6)
   for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
     const k = j * n + i
-    pos.set([768000 + i * 0.4, 280 + Math.sin(i / 5), 1033000 + j * 0.4], k * 3); uv.set([i / (n - 1), j / (n - 1)], k * 2)
+    pos.set([768000 + i * 0.4, 460 + Math.sin(i / 5), 1033000 + j * 0.4], k * 3); uv.set([i / (n - 1), j / (n - 1)], k * 2)
   }
   let q = 0
   for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) { const a = j * n + i; idx.set([a, a + n, a + 1, a + 1, a + n, a + n + 1], q); q += 6 }
@@ -142,7 +144,8 @@ function sjtskGlb(n, t) {
   const json = Buffer.from(JSON.stringify({
     asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0, name: 'Teren' }],
     meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, indices: 2, material: 0 }] }],
-    materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 }, metallicFactor: 0 } }],
+    materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 }, baseColorFactor: [0, 0, 0, 1], metallicFactor: 1, roughnessFactor: 0 }, extensions: { KHR_materials_specular: { specularFactor: 1 } } }],
+    extensionsUsed: ['KHR_materials_specular'],
     textures: [{ source: 0 }], images: [{ bufferView: 3, mimeType: 'image/png' }],
     accessors: [
       { bufferView: 0, componentType: 5126, count: n * n, type: 'VEC3', min, max },
@@ -692,7 +695,7 @@ async function main() {
   })
 
   // ── model z Maxu s S-JTSK v geometrii: georeference ve workeru (modelWorker.ts) ──
-  await check('model s S-JTSK souřadnicemi: příprava ve workeru, usazení u Kladna', async () => {
+  await check('model s S-JTSK souřadnicemi a materiálem z V-Ray: příprava ve workeru, usazení u Kladna, není černý', async () => {
     const glbPath = join(work, 'model-sjtsk.glb')
     writeFileSync(glbPath, sjtskGlb(40, 64))
     await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html` })
@@ -709,7 +712,15 @@ async function main() {
     expect((await ev(`document.body.innerText`)).includes('Model usazen podle S-JTSK'), 'chybí hláška o usazení podle S-JTSK')
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
-    return `${at[0].toFixed(4)}°, ${at[1].toFixed(4)}°`
+    // model s materiálem jako z V-Ray nesmí být černý: střed obrazovky (kamera po importu míří na model)
+    await sleep(1800)
+    const lum = await ev(`(() => { const s = window.__scene, sc = s.canvas; s.render()
+      const c = document.createElement('canvas'); c.width = 40; c.height = 40; const g = c.getContext('2d')
+      g.drawImage(sc, sc.width / 2 - 20, sc.height / 2 - 20, 40, 40, 0, 0, 40, 40)
+      const d = g.getImageData(0, 0, 40, 40).data; let sum = 0; for (let i = 0; i < d.length; i += 4) sum += (d[i] + d[i + 1] + d[i + 2]) / 3
+      return sum / 1600 })()`)
+    expect(lum > 45, `model je černý (jas středu ${lum.toFixed(0)}) — materiál z V-Ray se nezjednodušil`)
+    return `${at[0].toFixed(4)}°, ${at[1].toFixed(4)}°, jas modelu ${lum.toFixed(0)}`
   })
 
   // ── Nastavení účtu s podvrženým uživatelem (bez Supabase — jen formuláře a jejich kontroly) ──

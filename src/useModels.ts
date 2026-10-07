@@ -128,26 +128,24 @@ export function useModels(deps: {
     let bottomZ: number | null = null
     let anchor = parseAnchor(file.name) // kotva z názvu (geo_lon_lat_h.*) → reimport našeho exportu
     let footprint: Cesium.Cartesian3[][] | null = null // obrys(y) půdorysu ve světě pro skrytí mapy (jen S-JTSK)
-    if (anchor && isGlb) {
-      // náš export s kotvou v názvu: nic se nepočítá, nejnižší bod se u kotvy nepoužívá
-      url = URL.createObjectURL(file)
-    } else {
-      // OBJ → GLB, u GLB bez kotvy pokus o S-JTSK souřadnice v geometrii. Ve workeru: u modelu
-      // s miliony vrcholů je to práce na desítky vteřin a mapa se mezitím musí hýbat.
-      let prep: PreparedModel
-      try { prep = await prepareModelFile(file, !anchor) } catch (e) {
-        console.error(`Příprava modelu „${file.name}" selhala:`, e)
-        if (/\.obj$/i.test(file.name)) { toast.error(restore ? `Model „${file.name}" se nepodařilo obnovit` : 'Import OBJ selhal'); return }
-        prep = { glb: null, bottomZ: null, geo: null } // GLB zkusí načíst rovnou Cesium
-      }
-      if (v.isDestroyed()) return
-      url = prep.glb ? URL.createObjectURL(new Blob([prep.glb], { type: 'model/gltf-binary' })) : URL.createObjectURL(file)
-      bottomZ = prep.bottomZ
-      if (prep.geo) {
-        anchor = prep.geo.anchor
-        footprint = prep.geo.footprint?.map(r => r.map(([x, y, z]) => new Cesium.Cartesian3(x, y, z))) ?? null
-        if (!restore) toast.success('Model usazen podle S-JTSK souřadnic z geometrie')
-      }
+    // Ve workeru: materiály se zjednoduší na barevnou texturu (V-Ray z Maxu by byl černý),
+    // OBJ se převede na GLB a u GLB bez kotvy se zkusí S-JTSK souřadnice v geometrii — u modelu
+    // s miliony vrcholů práce na desítky vteřin, mapa se mezitím musí hýbat. Náš export
+    // s kotvou v názvu se jen zjednoduší (nic se neparsuje, nejnižší bod se u kotvy nepoužívá).
+    const known = !!anchor && isGlb
+    let prep: PreparedModel
+    try { prep = await prepareModelFile(file, { georef: !known, measure: !known }) } catch (e) {
+      console.error(`Příprava modelu „${file.name}" selhala:`, e)
+      if (/\.obj$/i.test(file.name)) { toast.error(restore ? `Model „${file.name}" se nepodařilo obnovit` : 'Import OBJ selhal'); return }
+      prep = { glb: null, bottomZ: null, geo: null } // GLB zkusí načíst rovnou Cesium
+    }
+    if (v.isDestroyed()) return
+    url = prep.glb ? URL.createObjectURL(new Blob([prep.glb], { type: 'model/gltf-binary' })) : URL.createObjectURL(file)
+    bottomZ = prep.bottomZ
+    if (prep.geo) {
+      anchor = prep.geo.anchor
+      footprint = prep.geo.footprint?.map(r => r.map(([x, y, z]) => new Cesium.Cartesian3(x, y, z))) ?? null
+      if (!restore) toast.success('Model usazen podle S-JTSK souřadnic z geometrie')
     }
 
     let base: Anchor

@@ -12,6 +12,6 @@ import { serveWorker } from './workerClient'
 import type { ModelRequest } from './modelClient'
 
 serveWorker<ModelRequest, PreparedModel>(
-  async ({ file, georef }) => prepareModel(file.name, await file.arrayBuffer(), georef, { strict: true }),
+  async ({ file, opts }) => prepareModel(file.name, await file.arrayBuffer(), { ...opts, strict: true }),
   res => (res.glb ? [res.glb] : []),
 )
