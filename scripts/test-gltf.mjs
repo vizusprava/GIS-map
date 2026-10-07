@@ -101,6 +101,19 @@ ok(!uv.materials[1].pbrMetallicRoughness.baseColorTexture, 'kopie bez textury')
 ok(JSON.stringify(uv.materials[1].pbrMetallicRoughness.baseColorFactor) === '[0.4,0.4,0.42,1]', `kopie má původní barvu: ${JSON.stringify(uv.materials[1].pbrMetallicRoughness.baseColorFactor)}`)
 ok(uv.materials[1].name === 'Asfalt (bez UV)', 'kopie je poznat podle jména')
 
+// posun textury z Maxu: dlaždicování od levého dolního rohu → glTF od horního (cedule)
+const maxJson = (generator, transform) => ({
+  asset: generator ? { version: '2.0', generator } : { version: '2.0' },
+  materials: [{ name: 'Cedule', pbrMetallicRoughness: { baseColorTexture: { index: 0, extensions: { KHR_texture_transform: transform } } } }],
+})
+const tt = (generator, transform) => read(simplifyGltfMaterials(glb(maxJson(generator, transform), bin))).json.materials[0].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform
+const cedule = tt(undefined, { scale: [0.333, 0.517] })
+ok(cedule.offset?.[0] === 0 && Math.abs(cedule.offset[1] - 0.483) < 1e-9, `z Maxu (bez generátoru): posun ${JSON.stringify(cedule.offset)}`)
+ok(tt('Autodesk 3ds Max glTF', { scale: [0.5, 0.25] }).offset?.[1] === 0.75, 'z Maxu (generátor Autodesk): posun dopočítaný')
+ok(tt('Khronos glTF Blender I/O', { scale: [0.333, 0.517] }).offset === undefined, 'z Blenderu beze změny')
+ok(tt('THREE.GLTFExporter r184', { scale: [0.333, 0.517] }).offset === undefined, 'z three.js (po georeferenci) beze změny — nedopočítá se dvakrát')
+ok(JSON.stringify(tt(undefined, { scale: [0.5, 0.5], offset: [0.1, 0.2] }).offset) === '[0.1,0.2]', 'zapsaný posun se nemění')
+
 // glTF jako text
 const text = new TextEncoder().encode(JSON.stringify(vray)).buffer
 const tj = JSON.parse(new TextDecoder().decode(simplifyGltfMaterials(text)))

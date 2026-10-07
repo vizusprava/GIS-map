@@ -106,9 +106,34 @@ function fixMissingUv(json: GltfJson, origColors: (number[] | undefined)[]) {
   }
 }
 
+/**
+ * Posun textury z Maxu: dlaždicování (Tiling) se v Maxu měří od LEVÉHO DOLNÍHO rohu textury,
+ * v glTF od levého horního. Real-Time Exporter zapíše do KHR_texture_transform jen `scale`
+ * a svislý posun nedopočítá — textura pak v appce sjede svisle a „přetočí se dokola"
+ * (cedule: horní řádek dole). Správný posun je `1 − scale_v` (ověřeno na cedulích
+ * z I_20_CB_Okruzni_ulice_MASTER.glb: s ním 15 z 15 ploch přesně v textuře, bez něj 0).
+ *
+ * Jen u souborů z Maxu (exportér nevyplňuje `asset.generator`, nebo se jmenuje po Maxu/Autodesku)
+ * a jen tam, kde posun ani otočení zapsané nejsou — správně zapsané soubory z jiných programů
+ * (Blender, three.js…) zůstanou, jak jsou.
+ */
+function fixMaxTextureOrigin(json: GltfJson) {
+  const gen = (json.asset as { generator?: string } | undefined)?.generator
+  if (gen && !/3ds ?max|autodesk/i.test(gen)) return
+  for (const m of json.materials ?? []) {
+    const infos = [m.pbrMetallicRoughness?.baseColorTexture, m.extensions?.KHR_materials_pbrSpecularGlossiness?.diffuseTexture]
+    for (const tex of infos) {
+      const tt = tex?.extensions?.KHR_texture_transform as { scale?: number[]; offset?: number[]; rotation?: number } | undefined
+      if (!tt?.scale || tt.offset || tt.rotation) continue
+      tt.offset = [0, 1 - tt.scale[1]]
+    }
+  }
+}
+
 /** Upraví JSON glTF na místě; vrátí, jestli se něco změnilo. */
 function simplifyJson(json: GltfJson): boolean {
   if (!json.materials?.length) return false
+  fixMaxTextureOrigin(json)
   // původní barvy (před vybělením u textur) — pro části bez UV, které texturu mít nemůžou
   const origColors = json.materials.map(m =>
     m.pbrMetallicRoughness?.baseColorFactor ?? m.extensions?.KHR_materials_pbrSpecularGlossiness?.diffuseFactor)
