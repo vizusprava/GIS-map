@@ -19,7 +19,7 @@ export function PanelHeader({ scene, guest, restoring, onLeave, onHide }: {
         {guest ? (
           <span className="flex items-center gap-1.5 px-1 text-xs font-medium text-gray-300"><Eye size={14} className="text-sky-400" /> Prohlížeč scény</span>
         ) : (
-          <button onClick={onLeave} title="Zpět na přehled scén" className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-2 py-1 text-xs text-gray-200 transition-colors hover:bg-gray-700">
+          <button onClick={onLeave} title="Zpět na přehled scén" data-tour="sceny" className="flex items-center gap-1.5 rounded-lg bg-gray-800 px-2 py-1 text-xs text-gray-200 transition-colors hover:bg-gray-700">
             <ChevronLeft size={14} /> Scény
           </button>
         )}

@@ -242,6 +242,14 @@ export function useRulers(deps: {
     if (rulerSel === id) setRulerSel(null)
   }
 
+  /** Smaže víc měření naráz (průvodce po sobě uklízí ukázková měření). */
+  function delRulers(ids: string[]) {
+    const gone = new Set(ids)
+    persistRulers(rulersRef.current.filter(r => !gone.has(r.id)))
+    if (rulerDraftRef.current && gone.has(rulerDraftRef.current)) setRulerDraftId(null)
+    if (rulerSel && gone.has(rulerSel)) setRulerSel(null)
+  }
+
   function clearRulers() {
     persistRulers([])
     setRulerDraftId(null)
@@ -251,6 +259,7 @@ export function useRulers(deps: {
   return {
     clearRulers,
     delRuler,
+    delRulers,
     finishRuler,
     rulerDraftId,
     rulerKind,

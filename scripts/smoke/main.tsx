@@ -114,9 +114,10 @@ const viewPage = () => {
   return <HashRouter><Routes><Route path="/view/:token" element={<ViewPage />} /></Routes></HashRouter>
 }
 
-// podvržený přihlášený uživatel pro stránky mimo mapu (účet, přehled scén)
+// podvržený přihlášený uživatel pro stránky mimo mapu (účet, přehled scén);
+// `?newuser=1` = účet založený právě teď → přehled scén mu nabídne průvodce aplikací
 const fakeUser = () => useAuthStore.setState({
-  user: { id: 'u-smoke', email: 'test@example.cz', user_metadata: {}, app_metadata: {}, aud: 'authenticated', created_at: '' } as unknown as User,
+  user: { id: 'u-smoke', email: 'test@example.cz', user_metadata: {}, app_metadata: {}, aud: 'authenticated', created_at: q.get('newuser') ? new Date().toISOString() : '' } as unknown as User,
   profile: { id: 'u-smoke', email: 'test@example.cz', display_name: 'Test', created_at: '' },
   loading: false,
 })

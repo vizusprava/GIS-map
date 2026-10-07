@@ -303,6 +303,49 @@ async function main() {
     await press('Escape')
   })
 
+  // ── průvodce aplikací (src/tour): spuštění z přehledu zkratek, úkol „zkus to", kapitoly ──
+  await check('průvodce aplikací: spuštění z přehledu zkratek, úkol posunu mapy, kapitoly, ukončení', async () => {
+    const bubble = () => ev(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble ?? null`)
+    const task = () => ev(`document.querySelector('[data-tour-task]')?.dataset.tourTask ?? null`)
+    await press('?')
+    await ev(`document.querySelector('[data-tour-start]').click()`)
+    await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'zaklady/vitej'`, 3_000, 'první krok průvodce')
+    expect(!(await ev(`document.body.innerText.includes('Klávesové zkratky')`)), 'přehled zkratek zůstal otevřený pod průvodcem')
+    await ev(`document.querySelector('[data-tour-next]').click()`)
+    await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'zaklady/posun'`, 3_000, 'krok Posun mapy')
+    expect(await task() === 'ceka', `úkol posunu mapy: ${await task()}`)
+    await sleep(500) // bublina dojede z prostředka (úvod) nahoru — jinak by tah začal na ní
+    // tah mapou → úkol splněný → průvodce sám pokračuje
+    const cam = `(() => { const p = window.__scene.camera.positionWC; return [p.x, p.y, p.z] })()`
+    const c0 = await ev(cam)
+    const pre = await ev(`JSON.stringify({ inputs: window.__scene.screenSpaceCameraController.enableInputs, el: (e => e && e.tagName + '.' + String(e.className?.baseVal ?? e.className).slice(0, 60))(document.elementFromPoint(820, 480)), active: document.activeElement?.tagName })`)
+    await mouse('mouseMoved', 820, 480)
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 820, y: 480, button: 'left', buttons: 1, clickCount: 1 })
+    for (let i = 1; i <= 12; i++) { await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 820 + 15 * i, y: 480 - 6 * i, button: 'left', buttons: 1 }); await sleep(30) }
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1000, y: 408, button: 'left', buttons: 0, clickCount: 1 })
+    await sleep(300)
+    const c1 = await ev(cam)
+    await shot('pruvodce-posun')
+    await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'zaklady/zoom'`, 5_000, 'po posunu mapy samo na další krok')
+      .catch(async e => { throw new Error(`${e.message}; kamera se posunula o ${Math.hypot(c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]).toFixed(0)} m, před tahem ${pre}, krok ${await bubble()}, úkol ${await task()}`) })
+    // přehled kapitol → poslední kapitola → zvýraznění sedí na skupině lišty
+    await ev(`[...document.querySelectorAll('[data-tour-bubble] button')].find(b => b.innerText.includes('Kapitoly')).click()`)
+    await waitFor(`!!document.querySelector('[data-tour-chapter="pohledy"]')`, 2_000, 'přehled kapitol')
+    await ev(`document.querySelector('[data-tour-chapter="pohledy"]').click()`)
+    await waitFor(`document.querySelector('[data-tour-bubble]')?.dataset.tourBubble === 'pohledy/kamera'`, 3_000, 'kapitola Pohledy')
+    // bublina nesmí zakrýt zvýrazněnou skupinu lišty
+    const overlap = await ev(`(() => { const a = document.querySelector('[data-tour-bubble]').getBoundingClientRect(), b = document.querySelector('[data-tour="lista-kamera"]').getBoundingClientRect()
+      return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom })()`)
+    expect(!overlap, 'bublina průvodce zakrývá zvýrazněné místo')
+    await shot('pruvodce')
+    // ukončit křížkem → zmizí a pamatuje si to
+    await ev(`document.querySelector('[data-tour-quit]').click()`)
+    await waitFor(`!document.querySelector('[data-tour-bubble]')`, 2_000, 'zavřený průvodce')
+    const saved = JSON.parse(await ev(`localStorage.getItem('geo.tour.host')`) ?? '{}')
+    expect(saved.on === false && saved.chapter === 3, `uložený stav průvodce: ${JSON.stringify(saved)}`)
+    expect(!(await ev('window.__errors')).length, `chyby: ${(await ev('window.__errors')).join(' | ')}`)
+  })
+
   const openGroup = i => ev(`document.querySelectorAll('button[aria-haspopup="menu"]')[${i}].click()`)
   const panelText = id => ev(`document.querySelector('[data-panel="${id}"]')?.innerText ?? null`)
 
@@ -852,7 +895,7 @@ async function main() {
   await check('nastavení účtu: bloky, kontrola hesel, pojistka mazání', async () => {
     await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?page=account` })
     await waitFor(`!!document.querySelector('[data-account-card="Smazat účet"]')`, 30_000, 'stránka Nastavení účtu')
-    for (const t of ['Jméno', 'E-mail', 'Heslo', 'Klíč Cesium ion', 'Smazat účet']) {
+    for (const t of ['Jméno', 'E-mail', 'Heslo', 'Klíč Cesium ion', 'Průvodce aplikací', 'Smazat účet']) {
       expect(await ev(`!!document.querySelector('[data-account-card="${t}"]')`), `chybí blok ${t}`)
     }
     // React si hodnotu pole bere z události input — nastavit přes nativní setter
@@ -872,6 +915,31 @@ async function main() {
     await fill('Smazat účet', 1, 'smazat'); await sleep(100)
     expect(!(await ev(`${delBtn}.disabled`)), 'po hesle a SMAZAT se tlačítko neodemklo')
     await shot('nastaveni-uctu')
+    // průvodce aplikací: přepínač zapne a zase vypne (stav k účtu, v testu jen lokálně)
+    const sw = `document.querySelector('[data-tour-switch]')`
+    const was = await ev(`${sw}.getAttribute('aria-checked')`)
+    await ev(`${sw}.click()`); await sleep(150)
+    expect(await ev(`${sw}.getAttribute('aria-checked')`) !== was, 'přepínač průvodce nereaguje')
+    await ev(`${sw}.click()`); await sleep(150)
+    expect(await ev(`${sw}.getAttribute('aria-checked')`) === was, 'přepínač průvodce se nevrátil')
+  })
+
+  // ── průvodce: nový uživatel ho dostane jednou nabídnutý na přehledu scén ──
+  await check('průvodce aplikací: nabídka novému uživateli jen jednou', async () => {
+    await ev(`localStorage.removeItem('geo.tour.u-smoke')`)
+    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?page=scenes&newuser=1` })
+    await waitFor(`!!document.querySelector('[data-tour-welcome]')`, 30_000, 'nabídka průvodce')
+    await shot('pruvodce-nabidka')
+    await ev(`[...document.querySelectorAll('[data-tour-welcome] button')].find(b => b.innerText.trim() === 'Ano, provést').click()`)
+    await waitFor(`!document.querySelector('[data-tour-welcome]')`, 2_000, 'nabídka po potvrzení zmizí')
+    const saved = JSON.parse(await ev(`localStorage.getItem('geo.tour.u-smoke')`) ?? '{}')
+    expect(saved.on === true && saved.asked === true && saved.chapter === 0, `uložený stav: ${JSON.stringify(saved)}`)
+    // podruhé už se neptá
+    await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html?page=scenes&newuser=1` })
+    await waitFor(`document.querySelectorAll('[data-scene-card]').length > 0`, 30_000, 'přehled scén')
+    await sleep(500)
+    expect(!(await ev(`!!document.querySelector('[data-tour-welcome]')`)), 'nabídka průvodce se ukázala podruhé')
+    await ev(`localStorage.removeItem('geo.tour.u-smoke')`)
   })
 
   // React si hodnotu pole bere z události input — nastavit přes nativní setter

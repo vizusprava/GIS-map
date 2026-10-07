@@ -1,18 +1,19 @@
 /**
- * Nastavení účtu — jméno, e-mail, heslo, klíč Cesium ion a smazání účtu i se všemi daty.
+ * Nastavení účtu — jméno, e-mail, heslo, klíč Cesium ion, průvodce aplikací a smazání účtu i se všemi daty.
  *
  * Každý blok je samostatný formulář se svým stavem a hláškou, ať chyba v jednom nemaže
  * rozepsané v jiném. Práce se Supabase je v lib/account.ts.
  */
 import { useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Check, KeyRound, Loader2, Lock, Mail, Trash2, UserRound } from 'lucide-react'
+import { ArrowLeft, Check, Compass, KeyRound, Loader2, Lock, Mail, Trash2, UserRound } from 'lucide-react'
 import { toast } from 'sonner'
 import { changeEmail, changePassword, deleteMyAccount, updateDisplayName } from '../lib/account'
 import { useUserIonToken } from '../lib/ionKey'
 import { openIonKeyDialog } from '../ionKeyDialog'
 import { useAuthStore } from '../stores/authStore'
 import { ION_TOKEN } from '../config'
+import { TourSettings } from '../tour/TourSettings'
 
 const input = 'w-full rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-100 outline-none ring-1 ring-gray-700 placeholder:text-gray-500 focus:ring-emerald-600'
 const primary = 'inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-sm text-white hover:bg-emerald-500 disabled:opacity-50'
@@ -32,6 +33,7 @@ export function AccountPage() {
         <EmailCard />
         <PasswordCard />
         <IonCard />
+        <Card icon={<Compass size={15} />} title="Průvodce aplikací"><TourSettings /></Card>
         <DeleteCard onDeleted={() => navigate('/')} />
       </div>
     </div>

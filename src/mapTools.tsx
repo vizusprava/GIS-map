@@ -31,7 +31,7 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type * as Cesium from 'cesium'
-import { Building2, Check, ChevronUp, Crosshair, Eye, EyeOff, Grid3x3, Hexagon, Image, Keyboard, Landmark, Layers, Loader2, LocateFixed, Map as MapIcon, MapPin, Mountain, MousePointerClick, Move, PencilRuler, Ruler, Video, X } from 'lucide-react'
+import { Building2, Check, ChevronUp, Compass, Crosshair, Eye, EyeOff, Grid3x3, Hexagon, Image, Keyboard, Landmark, Layers, Loader2, LocateFixed, Map as MapIcon, MapPin, Mountain, MousePointerClick, Move, PencilRuler, Ruler, Video, X } from 'lucide-react'
 import { ENABLE_GOOGLE_3D } from './config'
 import { TILE_SIZES, type TileSize } from './tiles'
 import type { CamProj } from './ui'
@@ -85,6 +85,8 @@ type Props = {
   onMinimap: () => void
   /** otočit kameru na místě o tolik stupňů (kladné doprava) */
   onTurn: (deg: number) => void
+  /** spustit průvodce aplikací (tlačítko v přehledu zkratek) */
+  onTour?: () => void
   /** obsah panelu Kamera (CameraMenu) a kolik je uložených pohledů */
   cameraMenu: ReactNode
   viewCount: number
@@ -204,9 +206,9 @@ export function MapTools(p: Props) {
 
   return (
     <div className="pointer-events-auto flex flex-col items-center gap-1.5">
-      {help ? <KeyHelp keys={keys} onClose={() => setHelp(false)} /> : <Hint {...p} />}
+      {help ? <KeyHelp keys={keys} onClose={() => setHelp(false)} onTour={p.onTour && (() => { setHelp(false); p.onTour!() })} /> : <Hint {...p} />}
 
-      <div onPointerDown={e => e.stopPropagation()} className="relative flex items-center gap-1 rounded-xl border border-gray-700 bg-gray-900/90 p-1 shadow-lg">
+      <div onPointerDown={e => e.stopPropagation()} data-tour="lista" className="relative flex items-center gap-1 rounded-xl border border-gray-700 bg-gray-900/90 p-1 shadow-lg">
         <Group
           {...group} id="podklad" title="Podklad mapy a katastr"
           icon={googleLoading ? <Loader2 size={15} className="animate-spin" /> : <Layers size={15} />}
@@ -280,6 +282,7 @@ export function MapTools(p: Props) {
         <button
           onClick={() => setHelp(h => !h)}
           title="Klávesové zkratky (?)"
+          data-tour="zkratky"
           aria-pressed={help}
           className={`rounded-lg p-1.5 transition-colors pointer-coarse:hidden ${help ? 'bg-gray-700 text-gray-100' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'}`}
         >
@@ -329,6 +332,7 @@ function Group({ id, open, setOpen, pinned, setPinned, compact, icon, label, bad
   return (
     <div
       className="relative"
+      data-tour={`lista-${id}`}
       onPointerEnter={e => {
         if (e.pointerType !== 'mouse' || (pinned && open !== id)) return
         clearTimeout(timer.current); setOpen(id)
@@ -399,7 +403,7 @@ function Kbd({ children }: { children: React.ReactNode }) {
 }
 
 /** Přehled klávesových zkratek — místo nápovědy nad lištou, dokud je otevřený. */
-function KeyHelp({ keys, onClose }: { keys: Shortcut[]; onClose: () => void }) {
+function KeyHelp({ keys, onClose, onTour }: { keys: Shortcut[]; onClose: () => void; onTour?: () => void }) {
   const rows: { k: string; label: string; note?: string }[] = [
     ...keys.map(sc => ({ k: kbdLabel(sc), label: sc.label, note: sc.note })),
     { k: 'Esc', label: 'Vypnout nástroj, podruhé zrušit výběr' },
@@ -408,10 +412,15 @@ function KeyHelp({ keys, onClose }: { keys: Shortcut[]; onClose: () => void }) {
     { k: '?', label: 'Tenhle přehled' },
   ]
   return (
-    <div onPointerDown={e => e.stopPropagation()} className="max-w-[min(92vw,520px)] rounded-lg border border-gray-700 bg-gray-900/95 px-3 py-2 text-[11px] text-gray-300 shadow-lg">
+    <div onPointerDown={e => e.stopPropagation()} data-tour="prehled-zkratek" className="max-w-[min(92vw,520px)] rounded-lg border border-gray-700 bg-gray-900/95 px-3 py-2 text-[11px] text-gray-300 shadow-lg">
       <div className="mb-1.5 flex items-center gap-2">
         <Keyboard size={13} className="text-gray-400" />
         <span className="flex-1 font-medium text-gray-200">Klávesové zkratky</span>
+        {onTour && (
+          <button onClick={onTour} data-tour-start title="Průvodce tě provede mapou a nástroji" className="flex items-center gap-1 rounded px-1.5 py-0.5 text-sky-300 hover:bg-gray-800">
+            <Compass size={12} /> Průvodce aplikací
+          </button>
+        )}
         <button onClick={onClose} title="Zavřít (Esc)" className="rounded p-0.5 text-gray-400 hover:bg-gray-800 hover:text-gray-200"><X size={13} /></button>
       </div>
       <div className="grid grid-cols-1 gap-x-5 gap-y-1 sm:grid-cols-2">

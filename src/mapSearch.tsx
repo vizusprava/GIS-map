@@ -65,7 +65,7 @@ export function MapSearch(p: Props) {
     // `pointer-events-none` na obalu, `auto` na vnitřcích: mimo lištu a nabídku musí klik projít
     // do mapy, jinak by neviditelný pruh přes celou šířku bral otáčení scény.
     <div className="pointer-events-none absolute right-0 top-3 z-20 flex justify-center px-3 transition-[left]" style={{ left: p.left ?? 0 }}>
-      <div className="pointer-events-auto w-full max-w-[440px]">
+      <div className="pointer-events-auto w-full max-w-[440px]" data-tour="hledani">
         <form
           onSubmit={e => { e.preventDefault(); p.onSubmit() }}
           className="flex items-center gap-1.5 rounded-xl border border-gray-700 bg-gray-900/95 p-1.5 shadow-lg"

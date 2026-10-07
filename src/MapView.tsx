@@ -63,6 +63,9 @@ import { PresentationMenu } from './panels/PresentationMenu'
 import { StorageFooter } from './panels/StorageFooter'
 import { ImportPanel } from './panels/ImportPanel'
 import { PanelHeader } from './panels/PanelHeader'
+import { TourOverlay } from './tour/TourOverlay'
+import { useTourStore } from './tour/tourStore'
+import type { TourCtx } from './tour/steps'
 
 /**
  * Mapa jedné scény. Co se má pamatovat, hlásí přes `scene` (viz lib/scenePersist.ts) —
@@ -538,6 +541,24 @@ export function MapView({ scene }: { scene: ScenePersist }) {
     openPanel: () => setPanelOpen(true),
   })
 
+  // co průvodce aplikací (tour/) potřebuje vědět o mapě a co v ní umí udělat
+  const tourCtx: TourCtx = {
+    viewer: viewerReady ? viewerRef.current : null,
+    guest,
+    canShare: !!scene.share,
+    tool: clickOwner,
+    rulers: rulers.map(r => ({ id: r.id, pts: r.pts.length })),
+    parcelCount,
+    selectedModel: selectedId,
+    modelCount: objects.filter(o => o.kind === 'model').length,
+    drawingCount: objects.filter(o => o.kind === 'drawing').length,
+    objectCount: objects.length,
+    viewCount: camViews.length,
+    openPanel: () => setPanelOpen(true),
+    openSection: id => toggleSec(id, true),
+    removeRulers: rulerTool.delRulers,
+  }
+
   /**
    * Pojistka pro kreslení na vyžádání: po každém překreslení panelu jeden snímek mapy.
    *
@@ -556,7 +577,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
 
   return (
     <div className="relative h-full w-full">
-      <div ref={containerRef} className="absolute inset-0" />
+      <div ref={containerRef} data-tour="mapa" className="absolute inset-0" />
 
       <MapSearch
         query={query}
@@ -665,6 +686,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           minimapOn={mini.on}
           onMinimap={mini.toggle}
           onTurn={deg => { const v = viewerRef.current; if (v && !v.isDestroyed()) turnCamera(v, deg) }}
+          onTour={() => useTourStore.getState().start('resume')}
           viewCount={camViews.length}
           cameraMenu={<CameraMenu views={views} look={look} motion={motion} presentOn={presentOn} readOnly={guest} />}
           presentOn={presentOn}
@@ -690,7 +712,7 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           className="absolute left-3 top-3 z-20 rounded-lg border border-gray-700 bg-gray-900/90 p-1.5 text-gray-300 hover:text-gray-100"
         ><ChevronRight size={16} /></button>
       )}
-      <div className={`absolute inset-y-0 left-0 z-20 flex w-80 flex-col border-r border-gray-700 bg-gray-900/95 transition-transform ${panelOpen ? '' : '-translate-x-full'}`}>
+      <div data-tour="panel" className={`absolute inset-y-0 left-0 z-20 flex w-80 flex-col border-r border-gray-700 bg-gray-900/95 transition-transform ${panelOpen ? '' : '-translate-x-full'}`}>
         <PanelHeader scene={scene} guest={guest} restoring={restoring} onLeave={() => void leaveScene()} onHide={() => setPanelOpen(false)} />
 
         {/* Jediná scrollovaná oblast. Pořadí sekcí kopíruje postup práce: podklad → výběr →
@@ -835,6 +857,9 @@ export function MapView({ scene }: { scene: ScenePersist }) {
           onClose={() => sec.setSecShown(s => { const n = new Set(s); n.delete(d.key); return n })}
         />
       ))}
+
+      {/* průvodce aplikací (tour/) — vypnutý nic nevykresluje */}
+      <TourOverlay ctx={tourCtx} />
     </div>
   )
 }

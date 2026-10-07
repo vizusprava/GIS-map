@@ -26,6 +26,7 @@ import { ROLE_LABEL, leaveScene, sharingOverview } from '../lib/sharing'
 import { signedUrlOrNull } from '../lib/storage'
 import { supabase } from '../lib/supabase'
 import { useAuthStore } from '../stores/authStore'
+import { TourWelcome } from '../tour/TourWelcome'
 import type { SceneItem } from '../lib/types'
 
 /** Kolik souborů která scéna má — jeden dotaz pro celý přehled, ne N dotazů po řádcích. */
@@ -480,6 +481,8 @@ export function ScenesPage() {
           </>
         )}
       </div>
+      {/* nabídka průvodce po prvním přihlášení nového uživatele */}
+      <TourWelcome />
     </div>
   )
 }

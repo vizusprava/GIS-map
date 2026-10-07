@@ -23,7 +23,7 @@ export function NavCorner({ viewer, mini, size }: {
       {/* Minimapa nad kompasem (kompas končí ~92 px ode dna). Pod lištou (z-10), ať přes ni
           nabídky skupin, které se otvírají nahoru, na úzké mapě nezajedou. */}
       {viewer && (
-        <div className="pointer-events-none absolute bottom-[104px] right-4 z-10">
+        <div className="pointer-events-none absolute bottom-[104px] right-4 z-10" data-tour="roh">
           {mini.on ? (
             <MiniMap viewer={viewer} base={mini.base} onBase={mini.setBase} onClose={mini.toggle} size={size} />
           ) : (
