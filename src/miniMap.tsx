@@ -294,7 +294,8 @@ export function MiniMap({ viewer, base, onBase, onClose, size }: {
               fill="url(#minimap-cone)" stroke="#38bdf8" strokeOpacity={0.8} strokeWidth={1.2} strokeLinejoin="round"
             />
             {/* kamera: tečka a šipka ve směru pohledu (azimut od severu po směru hodin) */}
-            <g data-minimap-cam transform={`translate(${half} ${half}) rotate(${snap.heading * DEG})`}>
+            {/* zaokrouhleno: azimut skoro 0 by se jinak vypsal jako „6.3e-15" */}
+            <g data-minimap-cam transform={`translate(${half} ${half}) rotate(${(snap.heading * DEG).toFixed(2)})`}>
               <path d="M0 -11 L5 -3 L-5 -3 Z" fill="#f59e0b" stroke="#111827" strokeWidth={1} />
               <circle r={5} fill="#f59e0b" stroke="#111827" strokeWidth={1.5} />
             </g>
