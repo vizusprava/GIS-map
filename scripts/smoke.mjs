@@ -576,7 +576,10 @@ async function main() {
     const deleteView = async () => {
       await ev(`${kam}.querySelector('button[title="Další akce"]').click()`)
       await sleep(200)
-      expect(await clickText(kam, 'Smazat'), 'v nabídce pohledu chybí Smazat')
+      // nabídka ⋯ stojí mimo panel (ten má posuvník a ořízl by ji) a je celá vidět
+      const box = await ev(`(() => { const r = document.querySelector('[data-view-menu]')?.getBoundingClientRect(); return r && [r.top, r.bottom, r.left, r.right] })()`)
+      expect(box && box[0] >= 0 && box[1] <= await ev('innerHeight') && box[2] >= 0 && box[3] <= await ev('innerWidth'), `nabídka pohledu není celá vidět: ${box}`)
+      expect(await clickText(`document.querySelector('[data-view-menu]')`, 'Smazat'), 'v nabídce pohledu chybí Smazat')
       await waitFor(`!!document.querySelector('[data-dialog]')`, 3000, 'potvrzovací okno')
     }
     await deleteView()

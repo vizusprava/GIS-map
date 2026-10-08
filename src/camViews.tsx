@@ -14,6 +14,7 @@
  * Komponenta je zobrazovací — kamera, ukládání i zachycení náhledu zůstávají v MapView.
  */
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Camera, ChevronLeft, ChevronRight, Copy, GripVertical, MoreVertical, Pencil, Plus, Trash2 } from 'lucide-react'
 import type { CamView } from './types'
 
@@ -37,21 +38,30 @@ type Props = {
 }
 
 export function CamViews(p: Props) {
-  const [menuId, setMenuId] = useState<string | null>(null)
+  // otevřená nabídka ⋯: u kterého pohledu a kde je tlačítko (nabídka se staví k němu)
+  const [menu, setMenu] = useState<{ id: string; at: DOMRect } | null>(null)
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [dragOver, setDragOver] = useState<number | null>(null)
 
   // Nabídka ⋯ se musí zavřít i kliknutím jinam, ne jen opětovným kliknutím na tečky. Seznam
   // sedí v panelu lišty, která kliky dál k oknu nepouští — proto i klik jinam do seznamu.
+  // Posun nebo změna okna ji taky zavře: stojí mimo panel, za tlačítkem by nejela.
   useEffect(() => {
-    if (!menuId) return
-    const close = () => setMenuId(null)
+    if (!menu) return
+    const close = () => setMenu(null)
     window.addEventListener('pointerdown', close)
-    return () => window.removeEventListener('pointerdown', close)
-  }, [menuId])
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      window.removeEventListener('pointerdown', close)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [menu])
+  const menuIdx = menu ? p.views.findIndex(v => v.id === menu.id) : -1
 
   return (
-    <div className="flex flex-col gap-1.5" onPointerDown={() => setMenuId(null)}>
+    <div className="flex flex-col gap-1.5" onPointerDown={() => setMenu(null)}>
       <div className="flex items-center gap-1">
         {p.readOnly ? (
           <span className="flex-1 px-0.5 text-[11px] text-gray-400">Uložené pohledy scény — klik přeletí</span>
@@ -134,27 +144,37 @@ export function CamViews(p: Props) {
 
             {!p.readOnly && <button
               onPointerDown={e => e.stopPropagation()}
-              onClick={() => setMenuId(m => (m === cv.id ? null : cv.id))}
+              onClick={e => { const at = e.currentTarget.getBoundingClientRect(); setMenu(m => (m?.id === cv.id ? null : { id: cv.id, at })) }}
               title="Další akce"
-              className="shrink-0 rounded p-0.5 text-gray-500 hover:text-gray-200"
+              data-view-menu-open
+              className={`shrink-0 rounded p-0.5 hover:text-gray-200 ${menu?.id === cv.id ? 'bg-gray-700 text-gray-200' : 'text-gray-500'}`}
             >
               <MoreVertical size={14} />
             </button>}
-
-            {menuId === cv.id && (
-              <div
-                onPointerDown={e => e.stopPropagation()}
-                className="absolute right-1 top-full z-10 mt-0.5 flex w-44 flex-col rounded-lg border border-gray-700 bg-gray-900 py-1 shadow-xl"
-              >
-                <MenuItem icon={<Camera size={13} />} label="Přepsat tímto záběrem" onClick={() => { setMenuId(null); p.onOverwrite(i) }} />
-                <MenuItem icon={<Pencil size={13} />} label="Přejmenovat" onClick={() => { setMenuId(null); p.onRenameStart(cv.id) }} />
-                <MenuItem icon={<Copy size={13} />} label="Duplikovat" onClick={() => { setMenuId(null); p.onDuplicate(i) }} />
-                <MenuItem icon={<Trash2 size={13} />} label="Smazat" danger onClick={() => { setMenuId(null); p.onDelete(i) }} />
-              </div>
-            )}
           </div>
         )
       })}
+
+      {/* Nabídka ⋯ mimo panel (portál do stránky): panel Kamery má vlastní posuvník a nabídku
+          pod posledními pohledy by ořízl — muselo se rolovat, aby byla vidět. Otevře se dolů,
+          a když dole není místo (panel stojí nad lištou), nahoru. */}
+      {menu && menuIdx >= 0 && createPortal(
+        <div
+          onPointerDown={e => e.stopPropagation()}
+          data-view-menu
+          className="fixed z-[70] flex w-44 flex-col rounded-lg border border-gray-700 bg-gray-900 py-1 shadow-xl"
+          style={{
+            left: Math.max(8, Math.min(window.innerWidth - 176 - 8, menu.at.right - 176)),
+            ...(window.innerHeight - menu.at.bottom < 160 ? { bottom: window.innerHeight - menu.at.top + 2 } : { top: menu.at.bottom + 2 }),
+          }}
+        >
+          <MenuItem icon={<Camera size={13} />} label="Přepsat tímto záběrem" onClick={() => { setMenu(null); p.onOverwrite(menuIdx) }} />
+          <MenuItem icon={<Pencil size={13} />} label="Přejmenovat" onClick={() => { setMenu(null); p.onRenameStart(menu.id) }} />
+          <MenuItem icon={<Copy size={13} />} label="Duplikovat" onClick={() => { setMenu(null); p.onDuplicate(menuIdx) }} />
+          <MenuItem icon={<Trash2 size={13} />} label="Smazat" danger onClick={() => { setMenu(null); p.onDelete(menuIdx) }} />
+        </div>,
+        document.body,
+      )}
 
       {!p.views.length && p.readOnly && (
         <div className="text-[10px] leading-snug text-gray-600">Scéna nemá uložené pohledy.</div>
