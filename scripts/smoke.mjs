@@ -940,10 +940,12 @@ async function main() {
     const after = await ev(`window.__scene.primitives._primitives.filter(p => p.constructor.name.includes('Model') && 'readyEvent' in p).length`)
     expect(after === before, `vadný model zůstal v mapě (${before} → ${after})`)
     expect(!(await ev(`!!document.querySelector('.cesium-widget-errorPanel')`)), 'zůstal chybový panel Cesia')
-    // mapa zase kreslí: po pohybu kamery přibývají snímky
+    // mapa zase kreslí: po pohybu kamery přibývají snímky. Čeká se na 5 snímků (nejvýš 5 s) —
+    // pevné okno 0,5 s nestačilo: softwarová grafika v CI kreslí jen pár snímků za vteřinu,
+    // a mrtvé vykreslování dá 0 tak jako tak
     const frames = await ev(`new Promise(res => { const s = window.__scene; let n = 0; const off = s.postRender.addEventListener(() => n++)
-      let k = 0; const t = setInterval(() => { s.camera.moveRight(5); s.requestRender(); if (++k > 10) { clearInterval(t); off(); res(n) } }, 50) })`)
-    expect(frames > 3, `vykreslování se nerozjelo (${frames} snímků)`)
+      const t0 = performance.now(); const t = setInterval(() => { s.camera.moveRight(5); s.requestRender(); if (n >= 5 || performance.now() - t0 > 5000) { clearInterval(t); off(); res(n) } }, 50) })`)
+    expect(frames >= 5, `vykreslování se nerozjelo (${frames} snímků za 5 s)`)
     const errs = await ev('window.__errors')
     expect(!errs.length, `${errs.length}× chyba:\n    ${errs.slice(0, 5).join('\n    ')}`)
     return `${frames} snímků po obnově`
