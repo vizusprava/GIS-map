@@ -11,6 +11,7 @@
  *   --full         navíc: vyhledání parcely podle čísla a její 2D export (potřebuje síť k ČÚZK)
  *   --swiftshader  softwarová grafika jako v CI (jinak se lokálně bere skutečná grafika)
  *   --keep         nechat build a profil prohlížeče v dočasné složce (pro ladění)
+ *   --slow         zpomalený procesor (4×) jako runner v CI — chytá kontroly závislé na čase
  *   --shots        uložit snímky obrazovky v klíčových chvílích (do dočasné složky, jako --keep)
  *
  * Chrome se hledá v CHROME_PATH, pak na obvyklých místech (Chrome, Edge, Chromium).
@@ -26,6 +27,7 @@ const args = new Set(process.argv.slice(2))
 const FULL = args.has('--full')
 const SOFT = args.has('--swiftshader') || !!process.env.CI
 const SHOTS = args.has('--shots')
+const SLOW = args.has('--slow')
 const KEEP = args.has('--keep') || SHOTS
 const root = resolve(import.meta.dirname, '..')
 const work = mkdtempSync(join(tmpdir(), 'geo-smoke-'))
@@ -222,6 +224,9 @@ async function main() {
     if (m.method === 'Page.javascriptDialogOpening') { dialogs.push(m.params.message); page.send('Page.handleJavaScriptDialog', { accept: true }) }
   })
   await page.send('Page.enable'); await page.send('Runtime.enable')
+  // --slow: zpomalený procesor jako na runneru v CI (dvě jádra, softwarová grafika) — na
+  // rychlém stroji se tak dají chytit kontroly, které počítají s časem
+  if (SLOW) await page.send('Emulation.setCPUThrottlingRate', { rate: 4 })
   await page.send('Page.navigate', { url: `${http}/scripts/smoke/index.html` })
 
   console.log('▸ kontroly')
@@ -936,10 +941,11 @@ async function main() {
     const { result } = await page.send('Runtime.evaluate', { expression: `document.querySelector('input[type=file][accept=".glb,.gltf,.obj"]')` })
     await page.send('DOM.setFileInputFiles', { files: [glbPath], objectId: result.result.objectId })
     await waitFor(`document.body.innerText.includes('se nepodařilo vykreslit')`, 30_000, 'hláška o odebraném modelu')
-    await sleep(500)
+    // panel i model zmizí hned, vykreslování se rozjíždí o dva snímky později — na softwarové
+    // grafice v CI to je skoro půl vteřiny, proto čekat na stav, ne pevnou dobu
+    await waitFor(`!document.querySelector('.cesium-widget-errorPanel')`, 5_000, 'zmizelý chybový panel Cesia')
     const after = await ev(`window.__scene.primitives._primitives.filter(p => p.constructor.name.includes('Model') && 'readyEvent' in p).length`)
     expect(after === before, `vadný model zůstal v mapě (${before} → ${after})`)
-    expect(!(await ev(`!!document.querySelector('.cesium-widget-errorPanel')`)), 'zůstal chybový panel Cesia')
     // mapa zase kreslí: po pohybu kamery přibývají snímky. Čeká se na 5 snímků (nejvýš 5 s) —
     // pevné okno 0,5 s nestačilo: softwarová grafika v CI kreslí jen pár snímků za vteřinu,
     // a mrtvé vykreslování dá 0 tak jako tak

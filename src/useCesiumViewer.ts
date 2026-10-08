@@ -352,14 +352,20 @@ export function useCesiumViewer(deps: {
   /**
    * Znovu rozjede vykreslování po pádu (renderError), když se viník odklidil. Cesium starou
    * smyčku po chybě ukončí až v dalším snímku — nová se proto rozjíždí o dva snímky později,
-   * jinak by kreslily dvě naráz. Chybový panel Cesia zmizí.
+   * jinak by kreslily dvě naráz.
+   *
+   * Chybový panel Cesia se odklidí hned: Cesium ho vkládá ve stejném kroku, ve kterém hlásí
+   * chybu (po této události), takže mikroúloha ho smaže dřív, než se vůbec ukáže. Čekat na dva
+   * snímky by na pomalé grafice znamenalo vidět ho skoro půl vteřiny.
    */
   function resumeRendering() {
     const v = viewerRef.current
     if (!v || v.isDestroyed()) return
+    const dropPanel = () => v.container.querySelectorAll('.cesium-widget-errorPanel').forEach(el => el.remove())
+    queueMicrotask(() => { if (!v.isDestroyed()) dropPanel() })
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (v.isDestroyed()) return
-      v.container.querySelectorAll('.cesium-widget-errorPanel').forEach(el => el.remove())
+      dropPanel()
       v.useDefaultRenderLoop = true
       v.scene.requestRender()
     }))
