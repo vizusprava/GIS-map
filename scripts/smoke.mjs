@@ -309,14 +309,24 @@ async function main() {
       return m ? Number(m[1].replace(/[\s ]/g, '').replace(',', '.')) * (m[2] === 'km' ? 1000 : 1) : 0
     }
     const camNow = `(() => { const c = window.__scene.camera; return { p: [c.positionWC.x, c.positionWC.y, c.positionWC.z], t: Array.from({ length: 16 }, (_, i) => c.transform[i]) } })()`
-    const dbl = async (x, y) => {
+    // `stall`: mezi kliky zablokovat stránku na půl vteřiny — jako dlouhý snímek na slabém stroji
+    // (v CI se tak dvojklik stopovaný stránkou rozpadl na dva kliky; prohlížeč ho pořád hlásí)
+    const dbl = async (x, y, stall = false) => {
       await mouse('mouseMoved', x, y)
       for (const clickCount of [1, 2]) {
         await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount })
         await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount })
+        if (stall && clickCount === 1) await ev(`(() => { const t = performance.now(); while (performance.now() - t < 500); })()`)
         await sleep(60)
       }
-      await sleep(700)
+    }
+    /** délka po dvojkliku — počká, až se v panelu změní (nanejvýš 5 s), jinak vrátí tu původní */
+    const lenAfter = async from => {
+      const until = Date.now() + 5000
+      let l = await lastLen()
+      while (Math.abs(l - from) < 0.005 && Date.now() < until) { await sleep(150); l = await lastLen() }
+      await sleep(400) // ať případný druhý (chybný) krok taky stihne proběhnout
+      return lastLen()
     }
     await press('m')
     // stranou od trojúhelníku z předchozí kontroly
@@ -328,8 +338,8 @@ async function main() {
     expect(!(await ev(mereni)).includes('kreslí se'), 'pravý klik měření neukončil')
     const straight = await lastLen()
     const cam0 = await ev(camNow)
-    await dbl(...pts[1])
-    const curved = await lastLen()
+    await dbl(...pts[1], true)
+    const curved = await lenAfter(straight)
     const cam1 = await ev(camNow)
     await shot('mereni-oblouk')
     // pravoúhlý roh zaoblený obloukem: delší než lomená čára, ale ne o moc
@@ -339,7 +349,7 @@ async function main() {
     expect(moved < 1 && identity, `dvojklik pohnul kamerou o ${moved.toFixed(1)} m${identity ? '' : ' a připoutal ji k bodu'}`)
     expect(!(await ev(mereni)).includes('kreslí se'), 'dvojklik založil nové měření')
     await dbl(...pts[1])
-    const back = await lastLen()
+    const back = await lenAfter(curved)
     expect(Math.abs(back - straight) < 0.01 * straight, `druhý dvojklik nevrátil roh: ${back} m, lomená ${straight} m`)
     await press('Escape')
     return `lomená ${straight} m → oblouk ${curved} m → zpět ${back} m`

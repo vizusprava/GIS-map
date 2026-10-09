@@ -26,7 +26,7 @@ export type RulersTool = ReturnType<typeof useRulers>
 const SNAP_PX = 12
 /** Posun myši (px), od kterého je stisk na bodu tažení, a ne klik. */
 const DRAG_PX = 4
-/** Druhý klik na týž bod do téhle doby (ms) je dvojklik — bod se přepne na hladký (oblouk). */
+/** O kolik (ms) se odloží klik na bod — kdyby šlo o první půlku dvojkliku (viz `tapPoint`). */
 const DBL_MS = 300
 
 /** Co udělá klik, ke kterému se myš zrovna přichytila — pro nápovědu v liště. */
@@ -158,9 +158,23 @@ export function useRulers(deps: {
       setRulerSel(h.id)
     }
 
-    // Klik na bod se provede až po `DBL_MS`: kdyby přišel druhý klik na týž bod, je to dvojklik
-    // a první klik nesmí nic udělat (jinak by třeba dokončil měření nebo přidal kopii bodu).
-    let tap: { hit: RulerHit; at: number; timer: number } | null = null
+    /**
+     * Dvojklik na bod. Pozná se podle `dblclick` od prohlížeče, ne podle vlastního stopování
+     * mezi kliky: prohlížeč počítá s časy skutečného vstupu a s nastavením systému, kdežto
+     * stránka vidí kliky až při zpracování — na slabém stroji mezi ně padne dlouhý snímek
+     * a dvojklik by se rozpadl na dva kliky.
+     *
+     * Klik na bod se proto provede až po `DBL_MS` (první klik dvojkliku nesmí nic udělat — třeba
+     * dokončit měření nebo přidat kopii bodu). Když přijde druhý klik na týž bod, rozhodne se hned
+     * po jeho události: `dblclick` chodí v téže události jako puštění myši, takže na něj stačí
+     * počkat `setTimeout(0)`. Bez `dblclick` (pomalé kliky) proběhnou oba kliky jako dřív.
+     *
+     * `twice` = oba kliky padly na týž bod — jen pak dvojklik přepne oblouk. Dvojklik do prázdna
+     * při kreslení (první klik přidá bod, druhý padne na něj a měření dokončí) tak zůstává.
+     */
+    const same = (a: RulerHit | undefined, b: RulerHit) => a?.id === b.id && a.idx === b.idx
+    let tap: { hit: RulerHit; timer: number; twice: boolean } | null = null
+    let prevTap: { hit: RulerHit; at: number } | null = null
     /** Odložený klik provést hned (přišlo něco jiného, na co musí navázat). */
     const flushTap = () => {
       if (!tap) return
@@ -170,14 +184,24 @@ export function useRulers(deps: {
       clickPoint(t.hit)
     }
     const tapPoint = (h: RulerHit) => {
-      if (tap && tap.hit.id === h.id && tap.hit.idx === h.idx && performance.now() - tap.at < DBL_MS) {
+      const twice = same(prevTap?.hit, h) && performance.now() - (prevTap?.at ?? 0) < 1500
+      prevTap = { hit: h, at: performance.now() }
+      if (tap && same(tap.hit, h)) {
+        // druhý klik na týž bod, první ještě čeká — není-li to dvojklik, proběhnou oba
+        const first = tap.hit
         clearTimeout(tap.timer)
-        tap = null
-        toggleSmooth(h)
+        tap = {
+          hit: h, twice: true,
+          timer: window.setTimeout(() => {
+            tap = null
+            clickPoint(first)
+            tap = { hit: h, twice: true, timer: window.setTimeout(flushTap, DBL_MS) }
+          }, 0),
+        }
         return
       }
       flushTap()
-      tap = { hit: h, at: performance.now(), timer: window.setTimeout(flushTap, DBL_MS) }
+      tap = { hit: h, twice, timer: window.setTimeout(flushTap, DBL_MS) }
     }
 
     handler.setInputAction((e: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
@@ -185,7 +209,7 @@ export function useRulers(deps: {
       const h = layer.hit(v.scene.pick(e.position))
       if (!h) return
       // stisk na jiném bodu, než na který čeká odložený klik, dvojklik být nemůže
-      if (tap && (tap.hit.id !== h.id || tap.hit.idx !== h.idx)) flushTap()
+      if (tap && !same(tap.hit, h)) flushTap()
       press = { hit: h, x: e.position.x, y: e.position.y }
       ssc.enableInputs = false // stisk na bodu nesmí zároveň otáčet mapou
       setRulerSel(h.id)
@@ -244,6 +268,16 @@ export function useRulers(deps: {
       }
       showSnap(null)
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
+
+    // dvojklik na bod (oba kliky na týž bod): roh ↔ oblouk; odložené kliky se zahodí
+    handler.setInputAction(() => {
+      if (!tap?.twice) return
+      const h = tap.hit
+      clearTimeout(tap.timer)
+      tap = null
+      prevTap = null
+      toggleSmooth(h)
+    }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
 
     // pravý klik ukončí rozkreslené měření (kreslení dál pokračuje novým)
     handler.setInputAction(() => { flushTap(); finishRuler(); showSnap(null) }, Cesium.ScreenSpaceEventType.RIGHT_CLICK)
