@@ -60,7 +60,13 @@ async function check(name, fn) {
   } catch (e) {
     results.push({ name, ok: false })
     console.log(`  ✗ ${name} — ${e?.message ?? e}`)
+    ciError(`${name} — ${e?.message ?? e}`)
   }
+}
+/** V GitHub Actions i jako anotace: ty jdou přečíst přes API bez přihlášení, log úlohy ne. */
+function ciError(msg) {
+  if (!process.env.GITHUB_ACTIONS) return
+  console.log(`::error title=Kouřový test::${String(msg).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')}`)
 }
 const expect = (cond, msg) => { if (!cond) throw new Error(msg) }
 
@@ -1388,6 +1394,7 @@ try {
 } catch (e) {
   results.push({ name: 'příprava', ok: false })
   console.log(`  ✗ ${e?.message ?? e}`)
+  ciError(`příprava — ${e?.message ?? e}`)
 } finally {
   // zavřít prohlížeč přes protokol — kill samotného procesu nechá na Windows viset jeho podprocesy
   try { await browser?.send('Browser.close') } catch { /* už neběží */ }

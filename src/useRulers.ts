@@ -165,44 +165,41 @@ export function useRulers(deps: {
      * a dvojklik by se rozpadl na dva kliky.
      *
      * Klik na bod se proto provede až po `DBL_MS` (první klik dvojkliku nesmí nic udělat — třeba
-     * dokončit měření nebo přidat kopii bodu). Když přijde druhý klik na týž bod, rozhodne se hned
-     * po jeho události: `dblclick` chodí v téže události jako puštění myši, takže na něj stačí
-     * počkat `setTimeout(0)`. Bez `dblclick` (pomalé kliky) proběhnou oba kliky jako dřív.
+     * dokončit měření nebo přidat kopii bodu). Po druhém kliku na týž bod se na `dblclick` čeká
+     * znovu nanejvýš `DBL_MS` (chodí až chvilku po puštění myši, ne v téže události); když
+     * nepřijde (pomalé kliky), proběhnou oba kliky jako dřív.
      *
-     * `twice` = oba kliky padly na týž bod — jen pak dvojklik přepne oblouk. Dvojklik do prázdna
-     * při kreslení (první klik přidá bod, druhý padne na něj a měření dokončí) tak zůstává.
+     * `twice` = oba kliky padly na týž bod a nic jiného mezi nimi nebylo (`prevTap` maže každá
+     * jiná akce) — jen pak dvojklik přepne oblouk. Bez časového okna: hodiny stránky na slabém
+     * stroji lžou, a jestli kliky byly dost rychle po sobě, už rozhodl prohlížeč. Dvojklik do
+     * prázdna při kreslení (první klik přidá bod, druhý padne na něj a měření dokončí) tak zůstává.
      */
-    const same = (a: RulerHit | undefined, b: RulerHit) => a?.id === b.id && a.idx === b.idx
-    let tap: { hit: RulerHit; timer: number; twice: boolean } | null = null
-    let prevTap: { hit: RulerHit; at: number } | null = null
+    const same = (a: RulerHit | null | undefined, b: RulerHit) => a?.id === b.id && a.idx === b.idx
+    let tap: { hit: RulerHit; timer: number; twice: boolean; first?: RulerHit } | null = null
+    let prevTap: RulerHit | null = null
     /** Odložený klik provést hned (přišlo něco jiného, na co musí navázat). */
     const flushTap = () => {
       if (!tap) return
       const t = tap
       tap = null
       clearTimeout(t.timer)
+      if (t.first) clickPoint(t.first)
       clickPoint(t.hit)
     }
     const tapPoint = (h: RulerHit) => {
-      const twice = same(prevTap?.hit, h) && performance.now() - (prevTap?.at ?? 0) < 1500
-      prevTap = { hit: h, at: performance.now() }
-      if (tap && same(tap.hit, h)) {
+      const twice = same(prevTap, h)
+      prevTap = h
+      if (tap && same(tap.hit, h) && !tap.first) {
         // druhý klik na týž bod, první ještě čeká — není-li to dvojklik, proběhnou oba
-        const first = tap.hit
         clearTimeout(tap.timer)
-        tap = {
-          hit: h, twice: true,
-          timer: window.setTimeout(() => {
-            tap = null
-            clickPoint(first)
-            tap = { hit: h, twice: true, timer: window.setTimeout(flushTap, DBL_MS) }
-          }, 0),
-        }
+        tap = { hit: h, twice: true, first: tap.hit, timer: window.setTimeout(flushTap, DBL_MS) }
         return
       }
       flushTap()
       tap = { hit: h, twice, timer: window.setTimeout(flushTap, DBL_MS) }
     }
+    /** Mezi kliky se stalo něco jiného — další klik na týž bod už není druhou půlkou dvojkliku. */
+    const otherAction = () => { prevTap = null }
 
     handler.setInputAction((e: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
       justDragged = false
@@ -219,6 +216,7 @@ export function useRulers(deps: {
       if (press && !drag && Math.hypot(e.endPosition.x - press.x, e.endPosition.y - press.y) > DRAG_PX) {
         // klik a hned tažení téhož bodu = posun, ne klik (ten by třeba měření dokončil)
         if (tap) { clearTimeout(tap.timer); tap = null }
+        otherAction()
         drag = press.hit
         layer.setDragging(drag) // tažený bod nesmí zakrýt model pod kurzorem (viz setDragging)
         showSnap(null)
@@ -255,6 +253,7 @@ export function useRulers(deps: {
       const near = rulerDraftRef.current ? layer.nearest(e.position, SNAP_PX) : null
       if (near && snapKind(near)) { tapPoint(near); return }
       flushTap() // odložený klik na bod (třeba dokončení) musí proběhnout před novým bodem
+      otherAction()
       const p = pointAt(e.position)
       if (!p) { toast.error('Tady není povrch — klikni na terén nebo model'); return }
       const draft = rulerDraftRef.current
@@ -280,7 +279,7 @@ export function useRulers(deps: {
     }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
 
     // pravý klik ukončí rozkreslené měření (kreslení dál pokračuje novým)
-    handler.setInputAction(() => { flushTap(); finishRuler(); showSnap(null) }, Cesium.ScreenSpaceEventType.RIGHT_CLICK)
+    handler.setInputAction(() => { flushTap(); otherAction(); finishRuler(); showSnap(null) }, Cesium.ScreenSpaceEventType.RIGHT_CLICK)
 
     return () => {
       if (tap) clearTimeout(tap.timer)
