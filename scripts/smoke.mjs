@@ -636,8 +636,12 @@ async function main() {
     await ev(`(() => { const el = document.querySelector('[data-minimap-height-edit] input')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, '250')
       el.dispatchEvent(new Event('input', { bubbles: true })); el.form.requestSubmit() })()`)
-    await sleep(1200)
-    const hgt = await ev(`(() => { const c = window.__scene.camera.positionCartographic, g = window.__scene.globe.getHeight(c); return { agl: c.height - (g ?? 0), lon: c.longitude, lat: c.latitude } })()`)
+    // přelet trvá 0,6 s a po něm se výška dorovná na terén, který se při sestupu zpřesní
+    // (miniMap.tsx, setCameraHeight) — na pomalém stroji to chvíli trvá, proto čekat na výsledek
+    const readHgt = `(() => { const c = window.__scene.camera.positionCartographic, g = window.__scene.globe.getHeight(c); return { agl: c.height - (g ?? 0), lon: c.longitude, lat: c.latitude } })()`
+    await sleep(800)
+    let hgt = await ev(readHgt)
+    for (const until = Date.now() + 6000; Math.abs(hgt.agl - 250) >= 10 && Date.now() < until;) { await sleep(250); hgt = await ev(readHgt) }
     expect(Math.abs(hgt.agl - 250) < 10, `výška kamery po zadání 250 m: ${hgt.agl.toFixed(1)} m`)
     expect(Math.abs(hgt.lon - ll0[0]) < 1e-7 && Math.abs(hgt.lat - ll0[1]) < 1e-7, 'změna výšky kamerou posunula do strany')
     expect(!(await ev(`!!document.querySelector('[data-minimap-height-edit]')`)), 'políčko na výšku po potvrzení nezmizelo')

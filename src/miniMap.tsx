@@ -97,15 +97,45 @@ function zoomFor(s: Snap, size: number, prev: number | null): number {
 /**
  * Kamera na výšku `agl` metrů nad terénem, svisle na místě — poloha, natočení i sklon zůstanou.
  * Terén pod kamerou z načtených dlaždic (stejně jako údaj v minimapě); rozumný rozsah 2 m až 100 km.
+ *
+ * Při sestupu se pod kamerou dotáhnou jemnější dlaždice terénu a terén „povyroste" (klidně
+ * o desítku metrů) — minimapa by pak místo zadaných 250 m ukázala 239 m. Po doletu se proto výška
+ * dorovná a znovu, kdykoliv se dlaždice dotáhnou (nanejvýš 5 s), dokud s kamerou nikdo nehne.
  */
 function setCameraHeight(v: Cesium.Viewer, agl: number) {
   const cam = v.camera, c = cam.positionCartographic
-  const g = v.scene.globe?.getHeight(c)
-  const ground = g !== undefined && Number.isFinite(g) ? g : 0
+  const lon = c.longitude, lat = c.latitude
+  const want = Math.min(100_000, Math.max(2, agl))
+  const ground = () => {
+    const g = v.scene.globe?.getHeight(Cesium.Cartographic.fromRadians(lon, lat))
+    return g !== undefined && Number.isFinite(g) ? g : 0
+  }
+  let placed = ground() + want
+  /** dorovná výšku; false = kamerou mezitím pohnul někdo jiný, dál nehlídat */
+  const level = () => {
+    if (v.isDestroyed()) return false
+    const p = cam.positionCartographic
+    if (Math.abs(p.longitude - lon) > 1e-9 || Math.abs(p.latitude - lat) > 1e-9 || Math.abs(p.height - placed) > 0.5) return false
+    const target = ground() + want
+    if (Math.abs(target - placed) > 0.2) {
+      placed = target
+      cam.setView({ destination: Cesium.Cartesian3.fromRadians(lon, lat, target), orientation: { heading: cam.heading, pitch: cam.pitch, roll: cam.roll } })
+      v.scene.requestRender()
+    }
+    return true
+  }
   cam.flyTo({
-    destination: Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, ground + Math.min(100_000, Math.max(2, agl))),
+    destination: Cesium.Cartesian3.fromRadians(lon, lat, placed),
     orientation: { heading: cam.heading, pitch: cam.pitch, roll: cam.roll },
     duration: 0.6,
+    complete: () => {
+      if (!level()) return
+      const globe = v.scene.globe
+      if (!globe) return
+      const off = globe.tileLoadProgressEvent.addEventListener((queued: number) => { if (queued === 0 && !level()) stop() })
+      const t = setTimeout(() => stop(), 5000)
+      const stop = () => { off(); clearTimeout(t) }
+    },
   })
 }
 
