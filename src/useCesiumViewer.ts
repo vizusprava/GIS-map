@@ -108,6 +108,10 @@ export function useCesiumViewer(deps: {
       useBrowserRecommendedResolution: false,
     })
     viewerRef.current = viewer
+    // Viewer má z výroby na dvojklik „sleduj entitu": na bod (měření, odečtený bod) kameru
+    // připoutá, na plochu nebo čáru (parcela, výkres) k ní přeletí a celou ji zazoomuje — kamera
+    // pak nečekaně odletí jinam. Nic v aplikaci to nepoužívá a dvojklik patří nástrojům.
+    viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK)
     // Entity přibývají i mimo React — mřížka po dojetí kamery, odečtené body, ztmavení okolí.
     // Přidání ani odebrání si snímek samo nevyžádá (`requestRenderMode`), tak se o něj řekne tady.
     // Hlídá se zničený viewer: entita, na kterou ještě někde drží odkaz, umí tuhle událost
