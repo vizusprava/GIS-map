@@ -14,10 +14,10 @@ export function RulersPanel({ rulers: tool, rulerMode }: { rulers: RulersTool; r
     <>
       {rulers.map(r => {
         // u plochy je hlavní číslo výměra, u čáry celková délka
-        const a = r.kind === 'area' ? rulerArea(r.pts) : null
+        const a = r.kind === 'area' ? rulerArea(r.pts, r.smooth) : null
         const val = r.kind === 'area'
           ? (a ? fmtArea(a.area) : '—')
-          : (r.pts.length > 1 ? fmtLen(rulerTotals(r.pts, r.closed).len) : '—')
+          : (r.pts.length > 1 ? fmtLen(rulerTotals(r.pts, r.closed, r.smooth).len) : '—')
         return (
           <div
             key={r.id}

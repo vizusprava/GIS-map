@@ -497,8 +497,8 @@ function Hint(p: Props) {
           : 'Každý klik přidá bod, u úseku se ukáže jeho délka.'}
         {' '}<span className="text-gray-500">
           {p.rulerDrafting
-            ? 'Klik na první bod měření uzavře, na poslední ho dokončí (nebo pravým klikem). Ke stávajícím bodům se klik přichytí.'
-            : 'Bod jde přetáhnout. Ukončíš klepnutím na poslední bod nebo pravým klikem.'}
+            ? 'Klik na první bod měření uzavře, na poslední ho dokončí (nebo pravým klikem). Ke stávajícím bodům se klik přichytí. Dvojklik na bod udělá oblouk.'
+            : 'Bod jde přetáhnout, dvojklikem z něj uděláš oblouk. Ukončíš klepnutím na poslední bod nebo pravým klikem.'}
         </span>
         {p.rulerDrafting && (
           <button onClick={p.onFinishRuler} className={`${btn} ${toolTheme('ruler').solid}`}>

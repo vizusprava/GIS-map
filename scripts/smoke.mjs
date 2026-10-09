@@ -285,6 +285,8 @@ async function main() {
     await mouse('mouseMoved', pts[0][0] + 6, pts[0][1] + 5)
     await waitFor(`document.body.innerText.includes('uzavře do prvního bodu')`, 3_000, 'nápověda k uzavření u prvního bodu')
     await clickAt(pts[0][0] + 6, pts[0][1] + 5)
+    // klik na bod se provede až po chvíli (mohl by to být dvojklik — viz useRulers DBL_MS)
+    await waitFor(`(${mereni}).includes('uzavřené')`, 3_000, 'uzavření měření kliknutím na první bod')
     const t = await ev(mereni)
     expect(t.includes('uzavřené') && !t.includes('kreslí se'), `měření se neuzavřelo: „${t}"`)
     // délka = obvod trojúhelníku, ne jen dvě strany (uzavírací úsek se počítá); panel píše
@@ -295,6 +297,52 @@ async function main() {
     await shot('mereni-uzavrene')
     await press('Escape')
     return `obvod ${len} m`
+  })
+
+  // ── měření: dvojklik na bod z rohu udělá oblouk (a zpátky) ──
+  await check('měření: dvojklik na bod udělá oblouk, druhý ho vrátí; kamera se nehne', async () => {
+    const mereni = `document.querySelector('[data-sec="mereni"]')?.innerText ?? ''`
+    /** délka posledního měření v panelu (m) — z hodnoty řádku, ne z celého textu („Měření 2" by se slilo s číslem) */
+    const lastLen = async () => {
+      const t = await ev(`[...document.querySelectorAll('[data-sec="mereni"] .tabular-nums')].pop()?.innerText ?? ''`)
+      const m = t.match(/(\d[\d\s ]*(?:,\d+)?)\s*(km|m)\b/)
+      return m ? Number(m[1].replace(/[\s ]/g, '').replace(',', '.')) * (m[2] === 'km' ? 1000 : 1) : 0
+    }
+    const camNow = `(() => { const c = window.__scene.camera; return { p: [c.positionWC.x, c.positionWC.y, c.positionWC.z], t: Array.from({ length: 16 }, (_, i) => c.transform[i]) } })()`
+    const dbl = async (x, y) => {
+      await mouse('mouseMoved', x, y)
+      for (const clickCount of [1, 2]) {
+        await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount })
+        await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount })
+        await sleep(60)
+      }
+      await sleep(700)
+    }
+    await press('m')
+    // stranou od trojúhelníku z předchozí kontroly
+    const pts = [[900, 190], [1080, 190], [1080, 390]]
+    for (const [x, y] of pts) await clickAt(x, y)
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 980, y: 440, button: 'right', buttons: 2, clickCount: 1 })
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 980, y: 440, button: 'right', buttons: 0, clickCount: 1 })
+    await sleep(400)
+    expect(!(await ev(mereni)).includes('kreslí se'), 'pravý klik měření neukončil')
+    const straight = await lastLen()
+    const cam0 = await ev(camNow)
+    await dbl(...pts[1])
+    const curved = await lastLen()
+    const cam1 = await ev(camNow)
+    await shot('mereni-oblouk')
+    // pravoúhlý roh zaoblený obloukem: delší než lomená čára, ale ne o moc
+    expect(curved > straight * 1.01 && curved < straight * 1.3, `délka po dvojkliku ${curved} m, lomená ${straight} m`)
+    const moved = Math.hypot(cam1.p[0] - cam0.p[0], cam1.p[1] - cam0.p[1], cam1.p[2] - cam0.p[2])
+    const identity = cam1.t.every((v, i) => v === (i % 5 === 0 ? 1 : 0))
+    expect(moved < 1 && identity, `dvojklik pohnul kamerou o ${moved.toFixed(1)} m${identity ? '' : ' a připoutal ji k bodu'}`)
+    expect(!(await ev(mereni)).includes('kreslí se'), 'dvojklik založil nové měření')
+    await dbl(...pts[1])
+    const back = await lastLen()
+    expect(Math.abs(back - straight) < 0.01 * straight, `druhý dvojklik nevrátil roh: ${back} m, lomená ${straight} m`)
+    await press('Escape')
+    return `lomená ${straight} m → oblouk ${curved} m → zpět ${back} m`
   })
 
   await check('přehled zkratek (?) a jeho zavření Esc', async () => {

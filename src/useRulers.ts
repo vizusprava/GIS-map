@@ -8,6 +8,9 @@
  * něj. Klik na PRVNÍ bod rozkresleného měření ho uzavře a dokončí (čára se vrátí do začátku,
  * plocha je uzavřená vždy), klik na POSLEDNÍ bod ho jen dokončí. Bod, kam klik skočí, se při
  * najetí zvětší a nápověda v liště řekne, co klik udělá.
+ *
+ * Dvojklik na bod ho přepne na hladký: čára jím vede obloukem místo rohem (rulerCurve.ts),
+ * druhý dvojklik ho vrátí na roh. Klik na bod se proto provede s malým zpožděním (`DBL_MS`).
  */
 import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
@@ -23,6 +26,8 @@ export type RulersTool = ReturnType<typeof useRulers>
 const SNAP_PX = 12
 /** Posun myši (px), od kterého je stisk na bodu tažení, a ne klik. */
 const DRAG_PX = 4
+/** Druhý klik na týž bod do téhle doby (ms) je dvojklik — bod se přepne na hladký (oblouk). */
+const DBL_MS = 300
 
 /** Co udělá klik, ke kterému se myš zrovna přichytila — pro nápovědu v liště. */
 export type RulerSnap = 'close' | 'finish' | 'point' | null
@@ -141,10 +146,46 @@ export function useRulers(deps: {
       showSnap(null) // měření se změnilo — co klik udělá, se při dalším pohybu spočítá znovu
     }
 
+    /** Dvojklik na bod: roh ↔ hladký bod, kterým čára vede obloukem (rulerCurve.ts). */
+    const toggleSmooth = (h: RulerHit) => {
+      persistRulers(rulersRef.current.map(r => {
+        if (r.id !== h.id) return r
+        const s = new Set(r.smooth ?? [])
+        if (s.has(h.idx)) s.delete(h.idx)
+        else s.add(h.idx)
+        return { ...r, smooth: s.size ? [...s].sort((a, b) => a - b) : undefined }
+      }))
+      setRulerSel(h.id)
+    }
+
+    // Klik na bod se provede až po `DBL_MS`: kdyby přišel druhý klik na týž bod, je to dvojklik
+    // a první klik nesmí nic udělat (jinak by třeba dokončil měření nebo přidal kopii bodu).
+    let tap: { hit: RulerHit; at: number; timer: number } | null = null
+    /** Odložený klik provést hned (přišlo něco jiného, na co musí navázat). */
+    const flushTap = () => {
+      if (!tap) return
+      const t = tap
+      tap = null
+      clearTimeout(t.timer)
+      clickPoint(t.hit)
+    }
+    const tapPoint = (h: RulerHit) => {
+      if (tap && tap.hit.id === h.id && tap.hit.idx === h.idx && performance.now() - tap.at < DBL_MS) {
+        clearTimeout(tap.timer)
+        tap = null
+        toggleSmooth(h)
+        return
+      }
+      flushTap()
+      tap = { hit: h, at: performance.now(), timer: window.setTimeout(flushTap, DBL_MS) }
+    }
+
     handler.setInputAction((e: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
       justDragged = false
       const h = layer.hit(v.scene.pick(e.position))
       if (!h) return
+      // stisk na jiném bodu, než na který čeká odložený klik, dvojklik být nemůže
+      if (tap && (tap.hit.id !== h.id || tap.hit.idx !== h.idx)) flushTap()
       press = { hit: h, x: e.position.x, y: e.position.y }
       ssc.enableInputs = false // stisk na bodu nesmí zároveň otáčet mapou
       setRulerSel(h.id)
@@ -152,6 +193,8 @@ export function useRulers(deps: {
 
     handler.setInputAction((e: Cesium.ScreenSpaceEventHandler.MotionEvent) => {
       if (press && !drag && Math.hypot(e.endPosition.x - press.x, e.endPosition.y - press.y) > DRAG_PX) {
+        // klik a hned tažení téhož bodu = posun, ne klik (ten by třeba měření dokončil)
+        if (tap) { clearTimeout(tap.timer); tap = null }
         drag = press.hit
         layer.setDragging(drag) // tažený bod nesmí zakrýt model pod kurzorem (viz setDragging)
         showSnap(null)
@@ -177,7 +220,7 @@ export function useRulers(deps: {
         persistRulers(rulersRef.current.map(r => r.id === moved.id ? { ...r, pts: [...r.pts] } : r))
       } else if (wasPress) {
         justDragged = true // LEFT_CLICK, který po tomhle přijde, už bod nepřidá
-        clickPoint(wasPress.hit)
+        tapPoint(wasPress.hit)
       }
     }, Cesium.ScreenSpaceEventType.LEFT_UP)
 
@@ -186,7 +229,8 @@ export function useRulers(deps: {
       if (layer.hit(v.scene.pick(e.position))) return
       // kousek vedle tečky: přichytit na nejbližší bod
       const near = rulerDraftRef.current ? layer.nearest(e.position, SNAP_PX) : null
-      if (near && snapKind(near)) { clickPoint(near); return }
+      if (near && snapKind(near)) { tapPoint(near); return }
+      flushTap() // odložený klik na bod (třeba dokončení) musí proběhnout před novým bodem
       const p = pointAt(e.position)
       if (!p) { toast.error('Tady není povrch — klikni na terén nebo model'); return }
       const draft = rulerDraftRef.current
@@ -202,9 +246,10 @@ export function useRulers(deps: {
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
 
     // pravý klik ukončí rozkreslené měření (kreslení dál pokračuje novým)
-    handler.setInputAction(() => { finishRuler(); showSnap(null) }, Cesium.ScreenSpaceEventType.RIGHT_CLICK)
+    handler.setInputAction(() => { flushTap(); finishRuler(); showSnap(null) }, Cesium.ScreenSpaceEventType.RIGHT_CLICK)
 
     return () => {
+      if (tap) clearTimeout(tap.timer)
       handler.destroy()
       ssc.enableInputs = true
       layer.setSnap(null)
