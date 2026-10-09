@@ -18,8 +18,9 @@
     "test:gltf": "node --import ./scripts/ts-resolve.mjs scripts/test-gltf.mjs",
     "test:georef": "node --import ./scripts/ts-resolve.mjs scripts/test-georef.mjs",
     "test:footprint": "node --import ./scripts/ts-resolve.mjs scripts/test-footprint.mjs",
+    "test:camera": "node --import ./scripts/ts-resolve.mjs scripts/test-camera.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "npm run test:section && npm run test:terrain && npm run test:dxf && npm run test:savequeue && npm run test:export && npm run test:perf && npm run test:geoid && npm run test:gltf && npm run test:georef && npm run test:footprint"
+    "test": "npm run test:section && npm run test:terrain && npm run test:dxf && npm run test:savequeue && npm run test:export && npm run test:perf && npm run test:geoid && npm run test:gltf && npm run test:georef && npm run test:footprint && npm run test:camera"
   },
   "dependencies": {
     "@mlightcad/libredwg-web": "^0.7.9",

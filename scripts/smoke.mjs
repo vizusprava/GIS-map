@@ -426,6 +426,52 @@ async function main() {
     await waitFor(`${label} === 'Perspektiva'`, 5000, 'přepnutí klávesou T zpátky na perspektivu')
   })
 
+  // ── kamera nesmí z dosahu republiky (cameraBounds.ts) ──
+  await check('kamera: oddálení jen na celou republiku, za hranice jen kousek, skok během ovládání myší se zahodí', async () => {
+    const state = `(() => { const c = window.__scene.camera; return { p: [c.positionWC.x, c.positionWC.y, c.positionWC.z], d: [c.directionWC.x, c.directionWC.y, c.directionWC.z], u: [c.upWC.x, c.upWC.y, c.upWC.z] } })()`
+    const restore = s => ev(`(() => { const c = window.__scene.camera, s = ${JSON.stringify(s)}; c.setView({ destination: { x: s.p[0], y: s.p[1], z: s.p[2] }, orientation: { direction: { x: s.d[0], y: s.d[1], z: s.d[2] }, up: { x: s.u[0], y: s.u[1], z: s.u[2] } } }); window.__scene.requestRender() })()`)
+    const height = () => ev(`window.__scene.camera.positionCartographic.height`)
+    const nadir = () => ev(`(() => { const c = window.__scene.camera.positionCartographic; return [c.longitude * 180 / Math.PI, c.latitude * 180 / Math.PI] })()`)
+    const s0 = await ev(state)
+    try {
+      // 1. kolečkem pořád dál — zastaví se ve výšce, ze které je vidět celá republika
+      const wheel = async n => { for (let i = 0; i < n; i++) { await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 900, y: 300, deltaX: 0, deltaY: 600 }); await sleep(40) } }
+      await wheel(40); await sleep(SOFT ? 4000 : 2500)
+      const h1 = await height()
+      await wheel(15); await sleep(SOFT ? 3000 : 1500)
+      const h2 = await height()
+      expect(h1 > 250_000 && h1 < 1_000_000 && Math.abs(h2 - h1) / h1 < 0.03, `oddálení se nezastavilo u celé republiky: ${(h1 / 1000).toFixed(0)} → ${(h2 / 1000).toFixed(0)} km`)
+      // 2. pohled nad Vídní (57 km za hranicí) se přitáhne k hranici (nanejvýš 15 km za ní)
+      await ev(`window.__scene.camera.setView({ destination: window.__scene.globe.ellipsoid.cartographicToCartesian({ longitude: 16.37 * Math.PI / 180, latitude: 48.21 * Math.PI / 180, height: 20000 }), orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 } }); window.__scene.requestRender()`)
+      await sleep(SOFT ? 1500 : 700)
+      const n = await nadir()
+      expect(n[1] > 48.45, `pohled zůstal za hranicí u Vídně: ${n.map(x => x.toFixed(3))}`)
+      // 3. skok během držení myši (jako otočení kolem vzdáleného bodu) se zahodí
+      await restore(s0); await sleep(SOFT ? 1500 : 600)
+      const before = await ev(state)
+      await mouse('mouseMoved', 900, 300)
+      await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 900, y: 300, button: 'left', buttons: 1, clickCount: 1 })
+      await sleep(200)
+      await ev(`(() => { const c = window.__scene.camera, g = c.positionCartographic; c.setView({ destination: window.__scene.globe.ellipsoid.cartographicToCartesian({ longitude: g.longitude + 0.7 * Math.PI / 180, latitude: g.latitude, height: g.height }) }); window.__scene.requestRender() })()`)
+      await sleep(SOFT ? 1200 : 500)
+      const after = await ev(state)
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 900, y: 300, button: 'left', buttons: 0, clickCount: 1 })
+      const moved = Math.hypot(after.p[0] - before.p[0], after.p[1] - before.p[1], after.p[2] - before.p[2])
+      expect(moved < 500, `skok o 50 km během ovládání myší se nezahodil (posun ${moved.toFixed(0)} m)`)
+      // 4. nejníž 2 m nad zemí: kamera půl metru nad terénem se zvedne
+      await sleep(SOFT ? 1700 : 1600) // dojede setrvačnost po puštění myši
+      const agl = await ev(`new Promise(res => { const s = window.__scene, c = s.camera.positionCartographic.clone(), g = s.globe.getHeight(c)
+        if (g === undefined) return res(null)
+        s.camera.setView({ destination: s.globe.ellipsoid.cartographicToCartesian({ longitude: c.longitude, latitude: c.latitude, height: g + 0.5 }), orientation: { heading: 0, pitch: -0.3, roll: 0 } })
+        s.requestRender(); setTimeout(() => { const h = s.camera.positionCartographic.height - s.globe.getHeight(s.camera.positionCartographic); res(h) }, 600) })`)
+      expect(agl === null || agl >= 1.9, `kamera zůstala pod 2 m nad zemí (${agl?.toFixed(2)} m)`)
+    } finally {
+      await sleep(SOFT ? 1700 : 1600) // dojede setrvačnost, ať obnova pohledu nevypadá jako skok
+      await restore(s0)
+      await sleep(400)
+    }
+  })
+
   await check('minimapa a otáčení: směr, měřítko nezávislé na sklonu, podklad, klik, tažení, Q/E, Shift + tažení bez náklonu, N', async () => {
     const cam = `(() => { const p = window.__scene.camera.positionWC; return [p.x, p.y, p.z] })()`
     const start = await ev(cam)

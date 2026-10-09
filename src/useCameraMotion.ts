@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import { SHAKE_KEY, SHAKE_MAX_DEG, SPIN_KEY, SPIN_DEFAULT_DEG_S, ZOOM_SENS, ZOOM_TAU, ZOOM_MAX } from './config'
 import { viewCenterGround } from './sceneUtils'
+import { MIN_ABOVE_GROUND_M, crMaxHeight } from './cameraBounds'
 import type { CamProj } from './ui'
 
 export type CameraMotion = ReturnType<typeof useCameraMotion>
@@ -263,11 +264,15 @@ export function useCameraMotion(deps: {
       zoomVel = (zoomVel - dt * w * w * rest) / (1 + 2 * w * dt + w * w * dt * dt)
       let step = -zoomVel * dt
       const cc = cam.positionCartographic
-      const h = Math.max(3, cc.height - (scene.globe.getHeight(cc) ?? 0))
+      const h = Math.max(MIN_ABOVE_GROUND_M, cc.height - (scene.globe.getHeight(cc) ?? 0))
       zoomRef.current = rest - step
-      if (step > 0) { // přibližování zastav nad zemí, oddalování omezovat netřeba
+      if (step > 0) { // přibližování zastav nad zemí
         const maxStep = Math.log(h / Math.max(1.5, ssc.minimumZoomDistance))
         if (step > maxStep) { step = Math.max(0, maxStep); zoomRef.current = 0; zoomVel = 0 } // u země zastav i pružinu
+      } else if (step < 0 && cc.height >= crMaxHeight(scene) * 0.995) {
+        // oddalování jen do výšky, ze které je vidět celá republika (cameraBounds.ts) — u stropu
+        // zastav i pružinu, jinak by se o něj opírala a kamera by se cukala
+        step = 0; zoomRef.current = 0; zoomVel = 0
       }
       if (step !== 0) cam.zoomIn(h * (1 - Math.exp(-step))) // step < 0 → negativní posun = oddálení
     }

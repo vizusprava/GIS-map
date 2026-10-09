@@ -64,6 +64,8 @@ import { StorageFooter } from './panels/StorageFooter'
 import { ImportPanel } from './panels/ImportPanel'
 import { PanelHeader } from './panels/PanelHeader'
 import { TourOverlay } from './tour/TourOverlay'
+import { useCameraBounds } from './cameraBounds'
+import { useCrHighlight } from './useCrHighlight'
 import { useTourStore } from './tour/tourStore'
 import type { TourCtx } from './tour/steps'
 
@@ -183,6 +185,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   const { applyDof, dofOn, setDofOn } = look
   const motion = useCameraMotion({ viewerRef, presentOn, fov: look.fov, applyFovRaw: look.applyFovRaw })
   const { camProj, camPerspective, camTopOrtho } = motion
+  // kamera nesmí z dosahu republiky (výška, posun za hranice) a zarazí skoky (cameraBounds.ts)
+  useCameraBounds({ viewerRef, viewerReady })
   // minimapa v rohu: zapnutí a podklad si pamatuje tenhle počítač (miniMap.tsx)
   const mini = useMinimapPref()
 
@@ -221,6 +225,8 @@ export function MapView({ scene }: { scene: ScenePersist }) {
   })
   const { modelsRef, fileRef, selectedId, placement, selectObject, importModel, deleteModel, renameModel } = models
   const layers = useMapLayers({ viewer, sceneRef, perf, parcelsRef, modelsRef, setObjects })
+  // v Google 3D (dlaždice celého světa) ztmavit okolí republiky a protáhnout hranici
+  useCrHighlight({ viewerRef, viewerReady, on: layers.base === 'google' })
 
   // ── řez modelem v mapě: veškerý jeho stav a obsluha žije v `useSectionTool` ──
   // (zatím vypnutý přepínačem ENABLE_MODEL_SECTION — sekce v panelu i výkresy se nevykreslí)
